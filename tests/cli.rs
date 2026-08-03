@@ -6,6 +6,7 @@ use std::{
 };
 
 use ctb_rs::terrain::{ChildMask, HEIGHTMAP_SAMPLE_COUNT, HeightmapTerrain, WaterMask};
+use geotiff_reader::GeoTiffFile;
 use geotiff_writer::GeoTiffBuilder;
 use ndarray::Array2;
 
@@ -59,8 +60,13 @@ fn ctb_tile_and_info_work_as_processes() -> Result<(), Box<dyn std::error::Error
         .output()?;
     assert!(info.status.success());
     let stdout = String::from_utf8(info.stdout)?;
-    assert!(stdout.contains("Child tiles: None"));
-    assert!(stdout.contains("Tile type: all land"));
+    assert_eq!(stdout, "Child tiles: None\nTile type: all land\n");
+
+    let invalid_info = Command::new(env!("CARGO_BIN_EXE_ctb-info"))
+        .arg(directory.join("missing.terrain"))
+        .output()?;
+    assert!(!invalid_info.status.success());
+    assert!(String::from_utf8(invalid_info.stderr)?.starts_with("Error: "));
     fs::remove_dir_all(directory)?;
     Ok(())
 }
@@ -71,6 +77,7 @@ fn ctb_extents_and_export_work_as_processes() -> Result<(), Box<dyn std::error::
     let input = directory.join("dem.tif");
     let extents = directory.join("extents");
     write_world_geotiff(&input)?;
+    fs::create_dir(&extents)?;
 
     let extents_output = Command::new(env!("CARGO_BIN_EXE_ctb-extents"))
         .args([
@@ -81,6 +88,7 @@ fn ctb_extents_and_export_work_as_processes() -> Result<(), Box<dyn std::error::
         .output()?;
     assert!(extents_output.status.success());
     assert!(extents.join("0.geojson").exists());
+    assert!(String::from_utf8(extents_output.stdout)?.contains("creating "));
 
     let terrain_path = directory.join("tile.terrain");
     HeightmapTerrain::new(
@@ -106,6 +114,73 @@ fn ctb_extents_and_export_work_as_processes() -> Result<(), Box<dyn std::error::
         .output()?;
     assert!(export_output.status.success());
     assert!(exported.exists());
+    assert_eq!(
+        String::from_utf8(export_output.stdout)?,
+        format!(
+            "Creating {} using zoom 0 from tile 0,0\n",
+            exported.display()
+        )
+    );
+
+    let fallback_export = directory.join("fallback.tif");
+    let missing_export = Command::new(env!("CARGO_BIN_EXE_ctb-export"))
+        .args(["-i"])
+        .arg(directory.join("missing.terrain"))
+        .args(["-z", "0", "-x", "0", "-y", "0", "-o"])
+        .arg(&fallback_export)
+        .output()?;
+    assert!(missing_export.status.success());
+    assert!(String::from_utf8(missing_export.stderr)?.starts_with("Error: "));
+    assert_eq!(
+        String::from_utf8(missing_export.stdout)?,
+        format!(
+            "Creating {} using zoom 0 from tile 0,0\n",
+            fallback_export.display()
+        )
+    );
+    let fallback = GeoTiffFile::open(&fallback_export)?;
+    let fallback_sample = fallback
+        .read_band_window::<i16>(0, 0, 0, 1, 1)?
+        .iter()
+        .copied()
+        .next()
+        .ok_or("fallback GeoTIFF did not contain a sample")?;
+    assert_eq!(fallback_sample, 0);
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
+fn ctb_extents_honours_geodetic_zoom_options() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = temporary_directory("extents-options")?;
+    let input = directory.join("dem.tif");
+    let extents = directory.join("extents");
+    write_small_geotiff(&input)?;
+    fs::create_dir(&extents)?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ctb-extents"))
+        .args(["-p", "geodetic", "-t", "65", "-s", "1", "-e", "1", "-o"])
+        .arg(&extents)
+        .arg(&input)
+        .output()?;
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert!(extents.join("1.geojson").exists());
+    assert!(!extents.join("0.geojson").exists());
+
+    let mercator = Command::new(env!("CARGO_BIN_EXE_ctb-extents"))
+        .args(["-p", "mercator"])
+        .arg(&input)
+        .output()?;
+    assert!(!mercator.status.success());
+
+    let missing_directory = Command::new(env!("CARGO_BIN_EXE_ctb-extents"))
+        .args(["-o"])
+        .arg(directory.join("missing"))
+        .arg(&input)
+        .output()?;
+    assert!(missing_directory.status.success());
+    assert!(String::from_utf8(missing_directory.stderr)?.contains("File could not be opened:"));
+
     fs::remove_dir_all(directory)?;
     Ok(())
 }

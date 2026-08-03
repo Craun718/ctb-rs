@@ -350,6 +350,21 @@ GeoTIFF 能力验收完成：用 GDAL 在临时目录从该 fixture 生成 `TILE
 
 下一实施阶段为 P1b。P2 与 P3 可在 P1b 的 fixture/契约稳定后并行规划，但 Quantized-Mesh 的编码实现必须等待 P1b 的边界与测试资产完成。P4、P5 不得为当前实现引入预先的 FFI 或泛化依赖。
 
+## 12. 全量原版 CTB 复刻计划（2026-08-04）
+
+用户目标更新为覆盖原版 CTB 的全部公开 CLI 契约与核心行为。仍保持纯 Rust、禁止 GDAL/PROJ/C/C++ GIS FFI 的决策。原版的“任意 GDAL datasource / output driver”并非封闭的 CTB 格式，而是对安装时 GDAL 驱动集合的委托；纯 Rust 方案将以登记式 `RasterSource` / `RasterWriter` 驱动矩阵逐项覆盖其可观察接口，绝不把未知格式伪装成已支持。
+
+实施顺序：
+
+1. 完成 P1b：四个 CLI 的成功/错误输出矩阵、NoData 与损坏输入、可复现 oracle 资产。
+2. P2：并行、缓存、overview 选择、`--thread-count`、`--quiet`、`--verbose`、`--resume` 的原版可观察行为。
+3. P3：Quantized-Mesh 1.0、`layer.json` 及 Cesium 验收。
+4. P4：EPSG:3857、Global Mercator、`--profile mercator` 与纯 Rust 4326/3857 转换。
+5. P5：原版的格式接口矩阵；优先 GeoTIFF writer 以外的实际 CTB 常用输出，再按 HGT、ASCII Grid、DTED、ENVI、mosaic/受限 VRT、COG HTTP Range 交付。每个新 driver 都有输入/输出 oracle 与明确的 CLI `--output-format` 名称。
+6. 最终兼容审计：列出原版每个参数、错误路径、格式与 profile 的状态；只在矩阵全绿时声明全量复刻完成。
+
+每个子阶段结束后必须：核对其实施结果与本方案、更新 TODO、运行比例相称的验证、仅暂存该子阶段文件，再以 `commit-staged` 创建 Conventional Commit。
+
 P1b 要点 1 验收：已建立 `tests/fixtures/MANIFEST.md`，为当前原 CTB oracle 输入记录了来源/许可、SHA-256、可执行的 GeoTIFF 生成命令、空间元数据与兼容性断言；`TEST_STRATEGY.md` 已将它设为权威 fixture 清单入口。后续 fixture 必须按同一字段录入，不能提交未声明来源或 checksum 的二进制 DEM。
 
 ### P1b 当前实施单元：可复现 CTB oracle 命令
@@ -385,3 +400,17 @@ P1b 压缩/overview 验收：oracle 脚本现会从 `oracle-source-v1` 派生 `T
 完成标准：6 组 Float32 原版/Rust payload 一致；manifest 记录派生命令和高度范围；常规 Rust 测试保持通过。
 
 P1b Float32 验收：脚本以 `gdal_translate -ot Float32 -scale 100 400 -100 50` 生成样本范围为 -100 至 50 m 的输入。三种 `-r` 值与自动/受限 zoom 的 6 组原版/Rust payload 全部一致；结合已有 plain 和 tiled overview 路径，当前 oracle 共通过 18 组对比。
+
+### P1b 当前实施单元：其余 CLI 的原版可观察契约
+
+审计修正：`ctb-tile` 的 Terrain 输出固定 Average，故不存在“Terrain 的三算法 oracle 矩阵”这一原版功能；该 TODO 改为已完成的“接受原版列举值且固定 Average”契约。`ctb-extents` 的原版实现以 15 位科学计数法写 GeoJSON，包含空格和换行，并要求 `-o` 指向已存在目录（文件无法打开时仅报告并停止写入）。当前 Rust extents 自动创建目录、使用紧凑 JSON，与原版不一致；本单元应先锁定成功输出和目录失败行为，再将 writer 改为原版格式。`ctb-info` 和 `ctb-export` 也必须以原版的成功 stdout、参数缺失和无效 terrain 输入路径作为进程级契约，而不是只验证退出成功。
+
+完成标准：四个 CLI 均有对应原版命令的成功/失败进程测试；`ctb-extents` 对同一输入产生可比较的原版 GeoJSON 文本；不新增原版未提供的参数、目录创建或输出格式。
+
+浮点验收说明：CTB 的 `Grid::pixelsToCrs` 在其本机构建中可能因 C++ 编译器中间精度而将逻辑零边界写成约 `10^-15`；纯 Rust 的确定性 IEEE-754 `f64` 路径写为 `0`。该差异不对应源代码中的不同算法、tile 或几何边界，不能作为跨语言的字节文本契约。验收固定为同一 `Grid` 像素坐标算式、feature 遍历顺序、15 位科学计数法、空格/换行结构，以及数值在一个 `f64` ULP 内相同；terrain 二进制 payload 继续维持逐字节要求。
+
+原版错误路径补充：`ctb-info` 读取 terrain 失败时打印 `Error:` 并返回 1。`ctb-export` 捕获同一读取错误后仍继续构造并导出默认的零 heightmap，同时打印 `Creating …` 并返回 0；Rust 必须以显式的全零 `HeightmapTerrain` 表示该输出，禁止复刻 C++ 未初始化内存的偶然内容。
+
+P1b 阶段验收（2026-08-04）：常规 Rust 验收为 46 tests、`cargo clippy --all-targets -- -D warnings` 无告警。原版 CTB oracle 脚本共比较 plain、Float32 负/正高程、tiled/DEFLATE/internal overview 三种输入，三种原版列举 `-r` 值及自动/受限 zoom 共 18 组，所有 terrain 路径与 gzip 解压 payload 一致。额外以 GDAL 临时生成的 BigTIFF 和 512×512、128×128 block、LZW GeoTIFF 在 z=0 与原版逐 payload 一致；它们现列为已验证读取路径。JPEG、LERC、ZSTD、外部 overview 和更大 BigTIFF 仍未验证，不能宣称支持。
+
+P1b 后原版功能审计：本阶段没有保留原版不存在的用户可见 CLI 参数或输出格式；移除了 Rust 自动创建 extents 输出目录这一额外行为。当前仍缺失且已按原版归入后续阶段的能力为：`ctb-tile` 的 `mercator` profile、并发/进度参数和任意 GDAL 输出格式；`ctb-extents` 的 mercator profile；以及原版 GDAL 可读取的非 GeoTIFF datasource。Quantized-Mesh 不是原版 CTB 功能，保留为独立产品扩展，不计入原版复刻完成度。下一大阶段转入 P2，首先复刻原版 `ctb-tile` 的并发、进度与 resume 可观察行为；不得提前接入未登记格式或 CRS。

@@ -73,8 +73,8 @@ impl TilesetPlan {
         for zoom in min_zoom..=max_zoom {
             let range = grid.tile_range_for_area(bounds, zoom)?;
             let mut tiles = Vec::new();
-            for y in range.lower_left.y..=range.upper_right.y {
-                for x in range.lower_left.x..=range.upper_right.x {
+            for x in range.lower_left.x..=range.upper_right.x {
+                for y in range.lower_left.y..=range.upper_right.y {
                     tiles.push(TileCoord { zoom, x, y });
                 }
             }

@@ -1,7 +1,11 @@
 use std::{error::Error, path::PathBuf};
 
 use clap::Parser;
-use ctb_rs::{export::export_heightmap_to_geotiff, grid::TileCoord, terrain::HeightmapTerrain};
+use ctb_rs::{
+    export::export_heightmap_to_geotiff,
+    grid::TileCoord,
+    terrain::{ChildMask, HEIGHTMAP_SAMPLE_COUNT, HeightmapTerrain, WaterMask},
+};
 
 #[derive(Debug, Parser)]
 #[command(about = "Export a CTB terrain tile to a GeoTIFF")]
@@ -29,7 +33,24 @@ struct Arguments {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments = Arguments::parse();
-    let terrain = HeightmapTerrain::read_gzip(&arguments.input_filename)?;
+    let terrain = match HeightmapTerrain::read_gzip(&arguments.input_filename) {
+        Ok(terrain) => terrain,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            HeightmapTerrain::new(
+                vec![0; HEIGHTMAP_SAMPLE_COUNT],
+                ChildMask::empty(),
+                WaterMask::AllLand,
+            )?
+        }
+    };
+    println!(
+        "Creating {} using zoom {} from tile {},{}",
+        arguments.output_filename.display(),
+        arguments.zoom_level,
+        arguments.tile_x,
+        arguments.tile_y,
+    );
     export_heightmap_to_geotiff(
         &terrain,
         TileCoord {

@@ -86,7 +86,10 @@ impl GlobalGeodeticGrid {
 
     pub fn resolution(self, zoom: u8) -> Result<f64, CtbError> {
         let scale = self.scale(zoom)?;
-        Ok(180.0 / (f64::from(self.tile_size) * f64::from(scale)))
+        // Match CTB Grid::resolution: compute the initial resolution first,
+        // then divide it by the zoom factor.
+        let initial_resolution = (360.0 / 2.0) / f64::from(self.tile_size);
+        Ok(initial_resolution / f64::from(scale))
     }
 
     pub fn zoom_for_resolution(self, resolution: f64) -> Result<u8, CtbError> {
@@ -137,13 +140,32 @@ impl GlobalGeodeticGrid {
 
     pub fn tile_bounds(self, tile: TileCoord) -> Result<Bounds, CtbError> {
         self.validate_tile(tile)?;
-        let width = 360.0 / f64::from(self.tiles_x(tile.zoom)?);
-        let height = 180.0 / f64::from(self.tiles_y(tile.zoom)?);
+        // Match CTB Grid::tileBounds: it converts tile pixel corners through
+        // resolution(), rather than deriving a tile width directly.
+        let resolution = self.resolution(tile.zoom)?;
+        let lower_pixel_x = tile
+            .x
+            .checked_mul(self.tile_size)
+            .ok_or(CtbError::InvalidZoom(tile.zoom))?;
+        let lower_pixel_y = tile
+            .y
+            .checked_mul(self.tile_size)
+            .ok_or(CtbError::InvalidZoom(tile.zoom))?;
+        let upper_pixel_x = tile
+            .x
+            .checked_add(1)
+            .and_then(|value| value.checked_mul(self.tile_size))
+            .ok_or(CtbError::InvalidZoom(tile.zoom))?;
+        let upper_pixel_y = tile
+            .y
+            .checked_add(1)
+            .and_then(|value| value.checked_mul(self.tile_size))
+            .ok_or(CtbError::InvalidZoom(tile.zoom))?;
         Bounds::new(
-            -180.0 + width * f64::from(tile.x),
-            -90.0 + height * f64::from(tile.y),
-            -180.0 + width * f64::from(tile.x + 1),
-            -90.0 + height * f64::from(tile.y + 1),
+            f64::from(lower_pixel_x) * resolution - 180.0,
+            f64::from(lower_pixel_y) * resolution - 90.0,
+            f64::from(upper_pixel_x) * resolution - 180.0,
+            f64::from(upper_pixel_y) * resolution - 90.0,
         )
     }
 
@@ -250,6 +272,18 @@ mod tests {
                 y: 7
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn tile_bounds_follow_ctb_pixel_to_crs_coordinates() -> Result<(), CtbError> {
+        let bounds = GlobalGeodeticGrid::new(65)?.tile_bounds(TileCoord {
+            zoom: 1,
+            x: 1,
+            y: 0,
+        })?;
+        assert!(bounds.max_x.abs() <= f64::EPSILON);
+        assert!(bounds.max_y.abs() <= f64::EPSILON);
         Ok(())
     }
 

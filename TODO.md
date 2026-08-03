@@ -108,9 +108,19 @@
 - [x] 在无 GDAL 的 runtime fixture 中覆盖整数、浮点、负高程、NoData、损坏 TIFF 与世界边界契约。
 - [x] 扩展 GDAL oracle 覆盖 tiled、DEFLATE 与内部 overview，并与 plain source 交叉比较。
 - [x] 扩展 GDAL oracle 覆盖 Float32 的负/正高程量化路径。
-- [ ] 将三个已支持重采样算法扩展为 fixture × 原 CTB oracle 的 payload 回归矩阵。
-- [ ] 为 `ctb-info`、`ctb-export`、`ctb-extents` 补原版 CLI 成功与错误路径兼容测试。
-- [ ] 明确记录 BigTIFF、更多压缩和多 block 的实际支持状态；未验证 feature 维持拒绝或未承诺状态。
+- [x] 核对 `ctb-tile -r`：Terrain 路径按原版固定 Average，三个列举值只保留解析兼容。
+- [x] 以原版为基准实现并测试 `ctb-extents` 的 GeoJSON 文本、遍历顺序与既有输出目录契约；记录跨编译器零边界 ULP 文本差异。
+- [x] 为 `ctb-info`、`ctb-export` 补原版 CLI 成功 stdout、参数缺失和无效 terrain 输入路径兼容测试。
+- [x] 记录 BigTIFF 与多 block LZW 的原版 payload 验证状态；JPEG、LERC、ZSTD、外部 overview 和更大 BigTIFF 维持未验证状态。
+
+## 全量原版 CTB 复刻跟踪
+
+- [ ] 建立原版每个 CLI 参数、profile、输出格式与错误路径的兼容性矩阵。
+- [ ] 实现并验证 `ctb-tile` 的并发、进度和所有已登记输出格式接口。
+- [ ] 实现 Quantized-Mesh 与 `layer.json`。
+- [ ] 实现 EPSG:3857、Global Mercator 与 Mercator profile。
+- [ ] 按登记式驱动矩阵扩展原版可用输入/输出格式，保持纯 Rust。
+- [ ] 完成全量兼容审计并消除矩阵中的未支持项。
 
 ## 后续：P2 — 性能、大文件与可恢复写入
 
