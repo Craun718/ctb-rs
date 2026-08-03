@@ -19,8 +19,8 @@ if [[ ! -x "$CTB_ORACLE_BIN" || ! -x "$CTB_RS_BIN" ]]; then
   print -u2 -- "CTB_ORACLE_BIN and CTB_RS_BIN must both be executable files"
   exit 2
 fi
-if ! command -v gdal_translate >/dev/null 2>&1; then
-  print -u2 -- "gdal_translate is required to create the oracle GeoTIFF"
+if ! command -v gdal_translate >/dev/null 2>&1 || ! command -v gdaladdo >/dev/null 2>&1; then
+  print -u2 -- "gdal_translate and gdaladdo are required to create oracle GeoTIFFs"
   exit 2
 fi
 
@@ -39,6 +39,9 @@ trap cleanup EXIT INT TERM
 
 source_tiff="$work_directory/oracle-source.tif"
 gdal_translate -q -of GTiff -a_srs EPSG:4326 "$fixture" "$source_tiff"
+compressed_overview_tiff="$work_directory/oracle-source-tiled-overview.tif"
+gdal_translate -q -of GTiff -co TILED=YES -co COMPRESS=DEFLATE "$source_tiff" "$compressed_overview_tiff"
+gdaladdo -q -r average "$compressed_overview_tiff" 2
 
 compare_tiles() {
   local oracle_directory="$1"
@@ -76,19 +79,29 @@ compare_tiles() {
   done < <(cd "$oracle_directory" && find . -type f -name '*.terrain' -print | sed 's|^./||' | sort)
 }
 
-for method in nearest bilinear average; do
-  for range_name in automatic limited; do
-    oracle_directory="$work_directory/original-$method-$range_name"
-    rust_directory="$work_directory/rust-$method-$range_name"
-    mkdir -p "$oracle_directory" "$rust_directory"
-    range_arguments=()
-    if [[ "$range_name" == limited ]]; then
-      range_arguments=(-s 1 -e 1)
-    fi
+for source_name in plain tiled-overview; do
+  if [[ "$source_name" == plain ]]; then
+    input_tiff="$source_tiff"
+  else
+    input_tiff="$compressed_overview_tiff"
+  fi
+  for method in nearest bilinear average; do
+    for range_name in automatic limited; do
+      oracle_directory="$work_directory/original-$source_name-$method-$range_name"
+      rust_directory="$work_directory/rust-$source_name-$method-$range_name"
+      mkdir -p "$oracle_directory" "$rust_directory"
+      range_arguments=()
+      if [[ "$range_name" == limited ]]; then
+        range_arguments=(-s 1 -e 1)
+      fi
 
-    "$CTB_ORACLE_BIN" -q -o "$oracle_directory" -r "$method" "${range_arguments[@]}" "$source_tiff"
-    "$CTB_RS_BIN" -o "$rust_directory" -r "$method" "${range_arguments[@]}" "$source_tiff" >/dev/null
-    compare_tiles "$oracle_directory" "$rust_directory"
-    print -- "verified $method ($range_name)"
+      "$CTB_ORACLE_BIN" -q -o "$oracle_directory" -r "$method" "${range_arguments[@]}" "$input_tiff"
+      "$CTB_RS_BIN" -o "$rust_directory" -r "$method" "${range_arguments[@]}" "$input_tiff" >/dev/null
+      compare_tiles "$oracle_directory" "$rust_directory"
+      if [[ "$source_name" == tiled-overview ]]; then
+        compare_tiles "$work_directory/rust-plain-$method-$range_name" "$rust_directory"
+      fi
+      print -- "verified $source_name $method ($range_name)"
+    done
   done
 done

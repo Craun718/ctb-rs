@@ -369,3 +369,11 @@ P1b oracle 命令验收：`scripts/verify-ctb-oracle.zsh` 已在本机 GDAL 与�
 完成标准：被 decoder 声明支持的代表性数值类型均有测试；NoData 和损坏输入返回错误而非 panic；无需 GDAL 即可在 `cargo test` 中执行。
 
 P1b 输入契约验收：runtime fixture 现覆盖 `f64`、`f32`、signed `i16`（含负高程）和 unsigned `u16`；这些值均经 `GeoTiffRasterSource` 读取并断言为公开的 `f64` 样本。带 `GDAL_NODATA` tag 的读取仍返回 `NoDataEncountered`，三字节截断 TIFF 返回 `RasterRead` 而无 panic。常规验收为 43 tests 与 Clippy 无告警。
+
+### P1b 当前实施单元：压缩与内部 overview oracle
+
+扩展开发期 oracle 脚本：从同一 ASCII source 生成基准 GeoTIFF 以及 `TILED=YES`、`COMPRESS=DEFLATE`、内部 average overview 的 GeoTIFF。对每种输入执行原版与 Rust terrain 输出比较；压缩/overview 源还须与基准源的 Rust payload 比较，从而验证解码路径不会改变采样结果。此单元只以当前已验证的单 block 2×2 fixture 作为能力回归，不据此承诺 BigTIFF、多 block 或外部 overview。
+
+完成标准：脚本明确检查 `gdal_translate` 与 `gdaladdo` 前置条件；三种 `-r` 值、自动/受限 zoom，以及 plain/压缩 overview 源的所有 payload 均通过比较；临时文件保持清理。
+
+P1b 压缩/overview 验收：oracle 脚本现会从 `oracle-source-v1` 派生 `TILED=YES`、`COMPRESS=DEFLATE`、内部 average overview GeoTIFF，并先比较原 CTB 与 Rust，再比较该 Rust 输出与 plain source。plain 与压缩 overview 两种输入下，`nearest`、`bilinear`、`average` 的自动和受限 zoom 共 12 组原版/Rust payload 已全部一致；6 组跨输入 Rust payload 亦一致。此结论仅覆盖本 fixture 的单 block 内部 overview 路径。

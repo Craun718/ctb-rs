@@ -7,6 +7,8 @@ GeoTIFF 派生文件在测试或 oracle 运行时写入临时目录，不提交�
 | --- | --- | --- | --- | --- | --- |
 | `oracle-source-v1` | `oracle-source.asc` | 项目内人工构造数据；无第三方数据或许可限制 | `4da195971dd9635d38275a1180120a5c2b2ce76a42262bda5141cfc640ccbcaa` | 用 `gdal_translate -of GTiff oracle-source.asc oracle-source.tif` 生成临时 EPSG:4326 GeoTIFF；2×2、north-up、1° PixelIsArea，样本为 100/200/300/400 m | 原 CTB 与 ctb-rs 在 z=0–2、`nearest`、`bilinear`、`average` 下的解压 heightmap payload 必须一致；受限 `-s 1 -e 1` 的 child mask 也必须一致 |
 
+`scripts/verify-ctb-oracle.zsh` 还会由此 source 生成 `TILED=YES`、`COMPRESS=DEFLATE` 且带内部 average overview 的临时 GeoTIFF；该派生输入的 terrain payload 必须同时与原 CTB 和 plain source 的 Rust 输出一致。
+
 ## Runtime 生成的 fixture
 
 以下 fixture 不提交二进制输入，故没有独立文件 checksum；其完整来源是受版本控制的 Rust 测试代码。它们仍遵守相同的空间元数据和预期行为记录要求。
