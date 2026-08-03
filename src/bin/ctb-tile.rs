@@ -4,7 +4,7 @@ use clap::{Parser, ValueEnum};
 use ctb_rs::{
     geotiff::GeoTiffRasterSource,
     grid::GlobalGeodeticGrid,
-    sampling::ResamplingMethod,
+    sampling::ResamplingMethod::Average,
     tileset::{HeightmapTilesetOptions, write_heightmap_tileset_with_options},
 };
 
@@ -13,16 +13,6 @@ enum ResamplingArgument {
     Nearest,
     Bilinear,
     Average,
-}
-
-impl From<ResamplingArgument> for ResamplingMethod {
-    fn from(value: ResamplingArgument) -> Self {
-        match value {
-            ResamplingArgument::Nearest => Self::Nearest,
-            ResamplingArgument::Bilinear => Self::Bilinear,
-            ResamplingArgument::Average => Self::Average,
-        }
-    }
 }
 
 #[derive(Debug, Parser)]
@@ -52,9 +42,9 @@ struct Arguments {
     #[arg(short = 'e', long)]
     end_zoom: Option<u8>,
 
-    /// Resampling method: nearest, bilinear, or average (the default).
+    /// Accepted for CTB CLI compatibility. Heightmap Terrain always uses average.
     #[arg(short = 'r', long, value_enum, default_value_t = ResamplingArgument::Average)]
-    resampling_method: ResamplingArgument,
+    _resampling_method: ResamplingArgument,
 
     /// Input single-band, north-up EPSG:4326 GeoTIFF DEM.
     input: PathBuf,
@@ -79,7 +69,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             resume: arguments.resume,
             start_zoom: arguments.start_zoom,
             end_zoom: arguments.end_zoom,
-            resampling: arguments.resampling_method.into(),
+            // Original CTB parses this option but does not pass it to TerrainTiler.
+            resampling: Average,
         },
     )?;
     let tile_count = plan

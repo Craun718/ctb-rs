@@ -351,3 +351,13 @@ GeoTIFF 能力验收完成：用 GDAL 在临时目录从该 fixture 生成 `TILE
 下一实施阶段为 P1b。P2 与 P3 可在 P1b 的 fixture/契约稳定后并行规划，但 Quantized-Mesh 的编码实现必须等待 P1b 的边界与测试资产完成。P4、P5 不得为当前实现引入预先的 FFI 或泛化依赖。
 
 P1b 要点 1 验收：已建立 `tests/fixtures/MANIFEST.md`，为当前原 CTB oracle 输入记录了来源/许可、SHA-256、可执行的 GeoTIFF 生成命令、空间元数据与兼容性断言；`TEST_STRATEGY.md` 已将它设为权威 fixture 清单入口。后续 fixture 必须按同一字段录入，不能提交未声明来源或 checksum 的二进制 DEM。
+
+### P1b 当前实施单元：可复现 CTB oracle 命令
+
+将最小 `oracle-source-v1` fixture 的人工临时目录步骤收敛为仓库内脚本。脚本只用于开发者兼容性验收：通过环境变量接收原 CTB `ctb-tile` 可执行文件，在临时目录使用本地 `gdal_translate` 将 ASCII fixture 转为 GeoTIFF；随后以 `nearest`、`bilinear`、`average` 分别运行原版与 Rust `ctb-tile`，覆盖完整自动 zoom 与 `-s 1 -e 1` 受限范围，并逐个比较 gzip 解压后的 payload。它不是生产运行时依赖，也不进入没有 GDAL/原版 CTB 的常规 `cargo test`。
+
+该单元的完成标准：调用方式、前置条件和失败信息稳定；12 个受限范围 payload 与全部自动范围 payload 均由 `cmp` 验证；临时文件无论成功或失败都会清理。
+
+源码核对修正：原版 `ctb-tile` 虽解析 `-r/--resampling-method`，但 `Terrain` 路径构造 `TerrainTiler(poDataset, grid)` 时未传递 `TilerOptions`；因此 heightmap terrain 始终使用 `GDALTiler` 的默认 `GRA_Average`。该选项仅对原版的非 Terrain GDAL 输出生效。为字节兼容，纯 Rust heightmap CLI 必须保留并接受三个已声明值，但固定使用 `average`；`ResamplingMethod` 的三种领域实现仍保留，不再宣称其已通过 Terrain CLI 生效。
+
+P1b oracle 命令验收：`scripts/verify-ctb-oracle.zsh` 已在本机 GDAL 与原 CTB executable 下通过。它对 `nearest`、`bilinear`、`average` 各执行自动 zoom 和 `-s 1 -e 1`，共六组原版/Rust 对比；所有 tile path 集合和解压 terrain payload 均一致。脚本结束时清理临时目录。常规 Rust 验收同步通过：40 tests、Clippy 无告警。
