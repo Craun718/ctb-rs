@@ -99,3 +99,34 @@
 - [x] 补进程级 CLI 覆盖：参数契约、缩放范围、算法选择和生成文件布局。
 - [x] 执行格式化、测试、clippy，并用原 CTB 对受支持参数组合复核高度 payload。
 - [x] 决定受限 zoom 输出的 child mask：使用原 CTB 的“可覆盖子瓦片”规则，保证限定 zoom 的字节级兼容性。
+
+## 下一阶段：P1b — 兼容性矩阵与输入可靠性
+
+- [x] 编写 fixture manifest：来源/许可证、生成命令、checksum、元数据和预期行为。
+- [ ] 纳入整数、浮点、负高程、striped/tiled、DEFLATE、overview、NoData、损坏元数据及世界边界 fixture。
+- [ ] 将三个已支持重采样算法扩展为 fixture × 原 CTB oracle 的 payload 回归矩阵。
+- [ ] 为 `ctb-info`、`ctb-export`、`ctb-extents` 补原版 CLI 成功与错误路径兼容测试。
+- [ ] 明确记录 BigTIFF、更多压缩和多 block 的实际支持状态；未验证 feature 维持拒绝或未承诺状态。
+
+## 后续：P2 — 性能、大文件与可恢复写入
+
+- [ ] 设计 `RasterSource` 块读取/halo 与有界缓存接口，并先建立无 I/O 的测试。
+- [ ] 实现 overview 选择与确定性并行写入，保持 P1 payload 不变。
+- [ ] 建立大 DEM 基准、内存上限、失败恢复和单/多线程一致性测试。
+
+## 后续：P3 — Quantized-Mesh 1.0
+
+- [ ] 定义 Quantized-Mesh 领域模型、reader/writer 与二进制 fixture。
+- [ ] 实现规则网格编码、边缘索引与 `layer.json`。
+- [ ] 接入 CLI 并完成 Cesium/terrain-server 无裂缝 smoke test。
+
+## 后续：P4 — CRS 与 Global Mercator
+
+- [ ] 定义纯 Rust CRS 转换边界与 EPSG:4326 <-> 3857 控制点测试。
+- [ ] 实现 Global Mercator 与 `--profile mercator`。
+
+## 后续：P5 — 格式生态与产品化
+
+- [ ] 按需求选定下一个 `RasterSource` 格式驱动并完成 compatibility spike。
+- [ ] 规划受限 mosaic、COG HTTP Range 与外部 overview adapter。
+- [ ] 建立 CI、依赖树/许可证/SBOM 及性能/兼容性报告。

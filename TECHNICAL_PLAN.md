@@ -285,3 +285,69 @@ GeoTIFF 能力验收完成：用 GDAL 在临时目录从该 fixture 生成 `TILE
 4. spike 结果写入本方案；若候选库无法满足首期所需能力，停止并请求技术决策，不擅自替换既定设计。
 
 本轮不会修改已确定的首期产品边界（GeoTIFF、EPSG:4326、NoData 报错、heightmap 优先）。
+
+## 11. 后续阶段路线图（2026-08-04）
+
+### 已完成基线：P1a — 兼容 heightmap MVP
+
+纯 Rust 的 EPSG:4326、north-up、单波段 GeoTIFF 到 CTB `heightmap-1.0` 已具备完整垂直链路。四个 CLI 可执行名均可用；`nearest`、`bilinear`、`average`，完整与受限 zoom 范围均已用本地原 CTB oracle 验证裸 payload 字节一致。该基线是后续每一阶段的不可回归条件。
+
+### P1b — 兼容性矩阵与输入可靠性
+
+目标：把当前单一最小 oracle 扩展为可复现的兼容性矩阵，先确认已声明支持的 GeoTIFF 行为，再扩展实现。
+
+1. 固化带许可证、生成脚本和 checksum 的 fixture：整数/浮点、负高程、striped/tiled、DEFLATE、内部 overview、显式 NoData、损坏 TIFF、极点和 Antimeridian 边界。
+2. 对 `nearest`、`bilinear`、`average` 的每个有效 fixture 运行原 CTB 与 Rust oracle；比较 tile 集合和解压 payload。NoData 与不支持元数据必须比较失败类型而非输出。
+3. 补齐已支持 GeoTIFF feature 的真实性验证；BigTIFF、更多压缩和多 block 只在对应 fixture 已被 Rust 库实际读通后进入承诺范围。
+4. 将 `ctb-info`、`ctb-export`、`ctb-extents` 的原版输出与错误路径加入进程级兼容测试。
+
+完成标准：每个已宣布支持的输入特征至少有一份可复现 fixture 和 oracle；未支持 feature 的拒绝信息稳定、无 panic。
+
+### P2 — 性能、大文件与可恢复写入
+
+目标：在不改变 P1 字节输出的前提下，避免全图读取并支持大 DEM 的受控资源使用。
+
+1. 将单像素 `RasterSource::read_window` 调用替换为带 halo 的块读取；引入有界 LRU 块缓存，缓存键包含 source、overview、band 与 block 坐标。
+2. 依据输出 footprint 选择不比目标更粗且最接近的 internal overview，并与原始层输出做数值/字节回归。
+3. 用受限工作队列实现并行 tile 写入，按确定顺序提交并保留原子 rename、`--resume` 语义。
+4. 提供基准：峰值内存、吞吐、线程数和 fixture 尺寸；增加文件描述符、磁盘写入失败、损坏压缩流及取消/重跑测试。
+
+完成标准：单线程与多线程解压 payload 一致；内存上限可配置；大 DEM 测试不会按整图尺寸线性占用内存。
+
+### P3 — Quantized-Mesh 1.0
+
+目标：复用既有 `TerrainSamplePlan`，增加独立的 Cesium Quantized-Mesh 输出，不影响 heightmap 格式和路径。
+
+1. 先定义 `QuantizedMeshTile` 领域模型和严格 reader/writer：头部、量化顶点、规则网格三角形、high-water-mark index 编码及四边 edge index。
+2. 用同一采样坐标保证相邻 tile 边界高度、顶点和 edge index 一致；第一版不做网格简化。
+3. 生成 `layer.json`，在 `ctb-tile` 中以明确输出格式选择接入；补 `ctb-info --format` 检查能力。
+4. 使用 terrain-server/Cesium 进行加载、层级切换和无裂缝 smoke test；skirt、法线、水面掩码和 metadata 扩展仅在核心格式稳定后迭代。
+
+完成标准：同一 DEM 能输出 heightmap 或 Quantized-Mesh；独立 reader 与 Cesium 均能读取，跨 tile 边界无高度裂缝。
+
+### P4 — CRS 与 Global Mercator
+
+目标：以明确的登记式转换器扩展 EPSG:4326，而不引入 GDAL/PROJ FFI 或“任意 EPSG”承诺。
+
+1. 引入纯 Rust CRS 转换边界及轴序策略（固定 GIS x/y），先实现并验证 EPSG:4326 <-> EPSG:3857。
+2. 实现 `GlobalMercator` 格网和 `--profile mercator`，用控制点、世界边界、极区限制与原 CTB 对比锁定行为。
+3. 只有在 datum、椭球、范围和精度阈值明确时，才按需求增加 UTM/WGS84 等投影。
+
+完成标准：每个新增 CRS 都有正反变换精度、有效范围和拒绝行为测试；未知 CRS 从不被静默当作 WGS84。
+
+### P5 — 格式生态与产品化
+
+目标：在稳定的 `RasterSource` 边界上按需求增加输入和 I/O，而非复刻 GDAL 的任意驱动集合。
+
+1. 依需求排序添加 HGT、ASCII Grid、DTED、ENVI 等原生 Rust 驱动，并为每个格式建立最小兼容矩阵。
+2. 实现受限 mosaic/composite 描述；仅在存在明确互操作需求时评估 VRT XML reader。
+3. 增加 COG HTTP Range I/O adapter、外部 overview 和可观测性；网络读取必须具备大小、超时和重试边界。
+4. 引入 CI：MSRV、格式化、clippy、测试、依赖树/许可证/SBOM 检查；发布前提供性能报告与兼容性报告。
+
+完成标准：每个驱动、I/O adapter 和新输出格式均不改变 P1 oracle；依赖树持续证明没有 GDAL、PROJ 或 C/C++ GIS FFI。
+
+### 执行优先级
+
+下一实施阶段为 P1b。P2 与 P3 可在 P1b 的 fixture/契约稳定后并行规划，但 Quantized-Mesh 的编码实现必须等待 P1b 的边界与测试资产完成。P4、P5 不得为当前实现引入预先的 FFI 或泛化依赖。
+
+P1b 要点 1 验收：已建立 `tests/fixtures/MANIFEST.md`，为当前原 CTB oracle 输入记录了来源/许可、SHA-256、可执行的 GeoTIFF 生成命令、空间元数据与兼容性断言；`TEST_STRATEGY.md` 已将它设为权威 fixture 清单入口。后续 fixture 必须按同一字段录入，不能提交未声明来源或 checksum 的二进制 DEM。
