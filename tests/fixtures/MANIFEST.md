@@ -9,6 +9,8 @@ GeoTIFF 派生文件在测试或 oracle 运行时写入临时目录，不提交�
 
 `scripts/verify-ctb-oracle.zsh` 还会由此 source 生成 `TILED=YES`、`COMPRESS=DEFLATE` 且带内部 average overview 的临时 GeoTIFF；该派生输入的 terrain payload 必须同时与原 CTB 和 plain source 的 Rust 输出一致。
 
+同一脚本还会执行 `gdal_translate -ot Float32 -scale 100 400 -100 50`，生成 -100 至 50 m 的 Float32 临时输入；该输入仅与原 CTB 的同输入输出逐 payload 比较。
+
 ## Runtime 生成的 fixture
 
 以下 fixture 不提交二进制输入，故没有独立文件 checksum；其完整来源是受版本控制的 Rust 测试代码。它们仍遵守相同的空间元数据和预期行为记录要求。

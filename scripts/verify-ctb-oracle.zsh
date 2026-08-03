@@ -39,6 +39,8 @@ trap cleanup EXIT INT TERM
 
 source_tiff="$work_directory/oracle-source.tif"
 gdal_translate -q -of GTiff -a_srs EPSG:4326 "$fixture" "$source_tiff"
+float_negative_tiff="$work_directory/oracle-source-float-negative.tif"
+gdal_translate -q -of GTiff -ot Float32 -scale 100 400 -100 50 "$source_tiff" "$float_negative_tiff"
 compressed_overview_tiff="$work_directory/oracle-source-tiled-overview.tif"
 gdal_translate -q -of GTiff -co TILED=YES -co COMPRESS=DEFLATE "$source_tiff" "$compressed_overview_tiff"
 gdaladdo -q -r average "$compressed_overview_tiff" 2
@@ -79,9 +81,11 @@ compare_tiles() {
   done < <(cd "$oracle_directory" && find . -type f -name '*.terrain' -print | sed 's|^./||' | sort)
 }
 
-for source_name in plain tiled-overview; do
+for source_name in plain float-negative tiled-overview; do
   if [[ "$source_name" == plain ]]; then
     input_tiff="$source_tiff"
+  elif [[ "$source_name" == float-negative ]]; then
+    input_tiff="$float_negative_tiff"
   else
     input_tiff="$compressed_overview_tiff"
   fi

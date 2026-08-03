@@ -377,3 +377,11 @@ P1b 输入契约验收：runtime fixture 现覆盖 `f64`、`f32`、signed `i16`�
 完成标准：脚本明确检查 `gdal_translate` 与 `gdaladdo` 前置条件；三种 `-r` 值、自动/受限 zoom，以及 plain/压缩 overview 源的所有 payload 均通过比较；临时文件保持清理。
 
 P1b 压缩/overview 验收：oracle 脚本现会从 `oracle-source-v1` 派生 `TILED=YES`、`COMPRESS=DEFLATE`、内部 average overview GeoTIFF，并先比较原 CTB 与 Rust，再比较该 Rust 输出与 plain source。plain 与压缩 overview 两种输入下，`nearest`、`bilinear`、`average` 的自动和受限 zoom 共 12 组原版/Rust payload 已全部一致；6 组跨输入 Rust payload 亦一致。此结论仅覆盖本 fixture 的单 block 内部 overview 路径。
+
+### P1b 当前实施单元：Float32 负高程 oracle
+
+由 plain source 通过 GDAL 生成 `Float32` 且重标定为负/正高程的临时 GeoTIFF。该输入对三种 CLI `-r` 值及自动/受限 zoom 与原 CTB 逐 payload 对比，用以同时验证原生 `f32 -> f64` 解码、高程 offset/scale 量化与负值路径；它不与 plain source 交叉比较，因为像元值刻意不同。
+
+完成标准：6 组 Float32 原版/Rust payload 一致；manifest 记录派生命令和高度范围；常规 Rust 测试保持通过。
+
+P1b Float32 验收：脚本以 `gdal_translate -ot Float32 -scale 100 400 -100 50` 生成样本范围为 -100 至 50 m 的输入。三种 `-r` 值与自动/受限 zoom 的 6 组原版/Rust payload 全部一致；结合已有 plain 和 tiled overview 路径，当前 oracle 共通过 18 组对比。
