@@ -26,6 +26,16 @@ fn write_world_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn write_small_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let samples = Array2::from_shape_vec((2, 2), vec![100.0_f64, 200.0, 300.0, 400.0])?;
+    GeoTiffBuilder::new(2, 2)
+        .geographic_epsg(4326)
+        .pixel_scale(1.0, 1.0)
+        .origin(-1.0, 1.0)
+        .write_2d(path, samples.view())?;
+    Ok(())
+}
+
 #[test]
 fn ctb_tile_and_info_work_as_processes() -> Result<(), Box<dyn std::error::Error>> {
     let directory = temporary_directory("tile-info")?;
@@ -96,6 +106,43 @@ fn ctb_extents_and_export_work_as_processes() -> Result<(), Box<dyn std::error::
         .output()?;
     assert!(export_output.status.success());
     assert!(exported.exists());
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
+fn ctb_tile_honours_zoom_range_and_supported_resampling() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = temporary_directory("tile-options")?;
+    let input = directory.join("dem.tif");
+    write_small_geotiff(&input)?;
+
+    for method in ["nearest", "bilinear", "average"] {
+        let output = directory.join(method);
+        let result = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+            .args(["-s", "1", "-e", "1", "-r", method, "-t", "65"])
+            .arg("--output-dir")
+            .arg(&output)
+            .arg(&input)
+            .output()?;
+        assert!(result.status.success(), "{method}: {:?}", result.stderr);
+        assert!(output.join("1/1/0.terrain").exists());
+        assert!(!output.join("0").exists());
+        assert!(!output.join("2").exists());
+    }
+
+    let invalid_method = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-r", "cubic"])
+        .arg(&input)
+        .output()?;
+    assert!(!invalid_method.status.success());
+
+    let unsupported_profile = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["--profile", "mercator"])
+        .arg(&input)
+        .output()?;
+    assert!(!unsupported_profile.status.success());
+
     fs::remove_dir_all(directory)?;
     Ok(())
 }

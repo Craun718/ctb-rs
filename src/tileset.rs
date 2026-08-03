@@ -25,15 +25,52 @@ pub struct TilesetPlan {
     pub levels: Vec<TilesetLevel>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeightmapTilesetOptions {
+    pub resume: bool,
+    pub start_zoom: Option<u8>,
+    pub end_zoom: Option<u8>,
+    pub resampling: ResamplingMethod,
+}
+
+impl Default for HeightmapTilesetOptions {
+    fn default() -> Self {
+        Self {
+            resume: false,
+            start_zoom: None,
+            end_zoom: None,
+            resampling: ResamplingMethod::Average,
+        }
+    }
+}
+
 impl TilesetPlan {
     pub fn from_raster(
         metadata: &RasterMetadata,
         grid: GlobalGeodeticGrid,
     ) -> Result<Self, CtbError> {
+        Self::from_raster_with_zoom_range(metadata, grid, None, None)
+    }
+
+    pub fn from_raster_with_zoom_range(
+        metadata: &RasterMetadata,
+        grid: GlobalGeodeticGrid,
+        start_zoom: Option<u8>,
+        end_zoom: Option<u8>,
+    ) -> Result<Self, CtbError> {
         let bounds = metadata.transform.bounds(metadata.width, metadata.height)?;
-        let max_zoom = grid.zoom_for_resolution(metadata.transform.pixel_width)?;
-        let mut levels = Vec::with_capacity(usize::from(max_zoom) + 1);
-        for zoom in 0..=max_zoom {
+        let available_maximum = grid.zoom_for_resolution(metadata.transform.pixel_width)?;
+        let max_zoom = start_zoom.unwrap_or(available_maximum);
+        let min_zoom = end_zoom.unwrap_or(0);
+        if max_zoom > available_maximum || min_zoom > max_zoom {
+            return Err(CtbError::InvalidZoomRange {
+                start: max_zoom,
+                end: min_zoom,
+                maximum: available_maximum,
+            });
+        }
+        let mut levels = Vec::with_capacity(usize::from(max_zoom - min_zoom) + 1);
+        for zoom in min_zoom..=max_zoom {
             let range = grid.tile_range_for_area(bounds, zoom)?;
             let mut tiles = Vec::new();
             for y in range.lower_left.y..=range.upper_right.y {
@@ -66,31 +103,52 @@ pub fn write_heightmap_tileset(
     output_directory: impl AsRef<Path>,
     resume: bool,
 ) -> Result<TilesetPlan, CtbError> {
+    write_heightmap_tileset_with_options(
+        source,
+        grid,
+        output_directory,
+        HeightmapTilesetOptions {
+            resume,
+            ..HeightmapTilesetOptions::default()
+        },
+    )
+}
+
+/// Write CTB heightmap terrain tiles with an explicit CTB-compatible subset of options.
+pub fn write_heightmap_tileset_with_options(
+    source: &dyn RasterSource,
+    grid: GlobalGeodeticGrid,
+    output_directory: impl AsRef<Path>,
+    options: HeightmapTilesetOptions,
+) -> Result<TilesetPlan, CtbError> {
     if grid.tile_size() != HEIGHTMAP_TILE_SIZE as u32 {
         return Err(CtbError::UnsupportedRaster(format!(
             "CTB heightmap tiles require a {HEIGHTMAP_TILE_SIZE} pixel grid"
         )));
     }
-    let plan = TilesetPlan::from_raster(source.metadata(), grid)?;
+    let plan = TilesetPlan::from_raster_with_zoom_range(
+        source.metadata(),
+        grid,
+        options.start_zoom,
+        options.end_zoom,
+    )?;
+    let coverage_plan = TilesetPlan::from_raster(source.metadata(), grid)?;
     let output_directory = output_directory.as_ref();
-    let mut emitted = BTreeSet::new();
 
     for level in plan.levels.iter().rev() {
         for tile in &level.tiles {
             let path = terrain_path(output_directory, *tile);
-            if resume && path.exists() {
-                emitted.insert(*tile);
+            if options.resume && path.exists() {
                 continue;
             }
 
-            let heights = TerrainSamplePlan::new(grid, *tile)?
-                .sample_heights(source, ResamplingMethod::Average)?;
+            let heights =
+                TerrainSamplePlan::new(grid, *tile)?.sample_heights(source, options.resampling)?;
             let terrain = HeightmapTerrain::from_sampled_meters(
                 &heights,
-                child_mask_from_tiles(*tile, &emitted),
+                coverage_plan.child_mask_for(*tile),
             )?;
             write_terrain_atomically(&terrain, &path)?;
-            emitted.insert(*tile);
         }
     }
     Ok(plan)
@@ -274,6 +332,57 @@ mod tests {
         assert!(mask.contains(ChildMask::NORTH_EAST));
         assert!(!mask.contains(ChildMask::SOUTH_EAST));
         assert!(!mask.contains(ChildMask::NORTH_WEST));
+        Ok(())
+    }
+
+    #[test]
+    fn restricts_levels_to_the_requested_zoom_range() -> Result<(), CtbError> {
+        let plan = TilesetPlan::from_raster_with_zoom_range(
+            &metadata()?,
+            GlobalGeodeticGrid::new(65)?,
+            Some(2),
+            Some(1),
+        )?;
+        assert_eq!(plan.max_zoom, 2);
+        assert_eq!(
+            plan.levels
+                .iter()
+                .map(|level| level.zoom)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn coverage_child_mask_is_independent_of_the_output_zoom_range() -> Result<(), CtbError> {
+        let coverage = TilesetPlan::from_raster(&metadata()?, GlobalGeodeticGrid::new(65)?)?;
+        let mask = coverage.child_mask_for(TileCoord {
+            zoom: 1,
+            x: 1,
+            y: 0,
+        });
+        assert_ne!(mask, ChildMask::empty());
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_zoom_ranges_outside_the_source_resolution() -> Result<(), CtbError> {
+        let error = TilesetPlan::from_raster_with_zoom_range(
+            &metadata()?,
+            GlobalGeodeticGrid::new(65)?,
+            Some(3),
+            Some(0),
+        )
+        .expect_err("the source only supports zoom two");
+        assert_eq!(
+            error,
+            CtbError::InvalidZoomRange {
+                start: 3,
+                end: 0,
+                maximum: 2,
+            }
+        );
         Ok(())
     }
 

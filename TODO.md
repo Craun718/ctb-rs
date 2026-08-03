@@ -90,3 +90,12 @@
 - [x] 使 GeoTIFF adapter 按常见原生数值类型解码后转换到 `RasterSource` 的 `f64` 样本契约。
 - [x] 为 CTB VRT 的像元中心与 Average 边缘覆盖行为建立最小 oracle 单元测试。
 - [x] 将 Average 改为源/目标 PixelIsArea footprint 的面积加权，并使最小 fixture 的裸 payload 字节一致。
+
+## 当前：原版 CLI 可兼容子集
+
+- [x] 在 tileset 领域计划中定义并验证受限 zoom 范围，并按下一层源覆盖推导 child mask。
+- [x] 将 `Resampling::{Nearest,Bilinear,Average}` 从 CLI 传入采样与写入路径，并为三者建立回归测试。
+- [x] 为 `ctb-tile` 接入原版同名的 `-s/-e/-r/-t/-p` 参数；不在首期范围的值必须明确拒绝。
+- [x] 补进程级 CLI 覆盖：参数契约、缩放范围、算法选择和生成文件布局。
+- [x] 执行格式化、测试、clippy，并用原 CTB 对受支持参数组合复核高度 payload。
+- [x] 决定受限 zoom 输出的 child mask：使用原 CTB 的“可覆盖子瓦片”规则，保证限定 zoom 的字节级兼容性。

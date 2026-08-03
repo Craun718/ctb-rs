@@ -222,7 +222,7 @@ trait RasterSource: Send + Sync {
 
 gzip 容器结果：`flate2` 使用 `rust_backend` feature 直接依赖，解析到的 `zlib-rs` 也是 Rust 实现，不含系统 zlib 或 C FFI。compact/detailed payload 的内存和文件往返、损坏 gzip 流、超出 terrain 最大 payload 的解压均已测试；解压上限为 detailed payload 加一个检测字节。
 
-下一实施单元：tileset 规划器将以 `RasterMetadata` 的 north-up EPSG:4326 bounds 和像元宽度决定 max zoom；遍历每个 zoom 内与数据集相交的 Global Geodetic `TileCoord`，先生成 all-land tile 的高程 payload，再基于实际成功生成的子坐标回填各 tile 的 child bit，最后写 `{z}/{x}/{y}.terrain`。写入采用临时文件后 rename，`resume` 只跳过已经存在的最终 tile。单元测试先使用内存输出计划验证坐标集合和 child flags，文件系统测试单独覆盖路径布局与原子写入。
+下一实施单元：tileset 规划器将以 `RasterMetadata` 的 north-up EPSG:4326 bounds 和像元宽度决定 max zoom；遍历每个 zoom 内与数据集相交的 Global Geodetic `TileCoord`，先生成 all-land tile 的高程 payload，再按下一层源覆盖范围推导各 tile 的 child bit，最后写 `{z}/{x}/{y}.terrain`。写入采用临时文件后 rename，`resume` 只跳过已经存在的最终 tile。单元测试先使用内存输出计划验证坐标集合和 child flags，文件系统测试单独覆盖路径布局与原子写入。
 
 规划器结果：max zoom、非零面积相交的上界排他范围和 child bit 推导均已实现并通过测试。写入实现被以下待决策项阻塞：对于仅覆盖部分 TMS tile 的局部 DEM，瓦片中落在 DEM bounds 之外的目标样点没有栅格值；严格 NoData 策略仅规定了已读到的 NoData 样本，尚未定义该空间外区域的高程策略。该策略影响边缘地形、接缝和与 CTB 的兼容性，必须先确认。
 
@@ -253,6 +253,29 @@ oracle 发现的输入兼容修正：`geotiff-reader` 的 typed window API 不�
 P1 oracle 完成：Average 已替换为 north-up、轴对齐 PixelIsArea footprint 与源像元的精确相交面积加权；无覆盖面积返回 `0 m`。同一 2×2 Int32 EPSG:4326 fixture 在原 CTB 与 Rust 端均生成 zoom 0–2 的 10 个 terrain 文件，所有 gzip 解压后的 8,452-byte payload 都以 `cmp` 逐字节一致。这覆盖了 west/north overlap、上采样和下采样边缘、Float32 转换、量化、路径、child bit 与 compact 后缀。该 oracle fixture 现为后续扩展的回归基线；更大/压缩/tiled/overview GeoTIFF 与其他 resampling 方法仍按 Phase 2 单独增加。
 
 GeoTIFF 能力验收完成：用 GDAL 在临时目录从该 fixture 生成 `TILED=YES`、`COMPRESS=DEFLATE`、内部 1×1 overview 的 GeoTIFF，纯 Rust `ctb-tile` 成功读取并生成相同的 10 个 terrain 文件；其全部裸 payload 与未分块源逐字节一致。首期 reader 的 tiled、DEFLATE 压缩和 overview 元数据/读取路径已获真实文件验证。大型多 block、BigTIFF 与不同压缩编码仍不扩展为首期承诺。
+
+## 10. 原版 CTB 差异盘点与本轮实施边界
+
+2026-08-04 以原版 `tools/*.cpp` 与当前四个 Rust 二进制逐项核对后的结论如下：
+
+| 能力 | 原版 CTB | 当前 ctb-rs | 本轮处置 |
+| --- | --- | --- | --- |
+| GeoTIFF -> `Terrain`、Global Geodetic、`--resume` | 支持 | 已支持且最小 oracle 裸 payload 字节一致 | 保持回归 |
+| `--start-zoom` / `--end-zoom` | 支持 | 缺失 | 实现并验证范围、路径和 child flags |
+| `nearest` / `bilinear` / `average` | 支持（另有更多 GDAL 算法） | 领域层已实现，CLI 固定 average | 接入三个已实现算法；其余算法明确拒绝 |
+| `--tile-size` | 支持任意尺寸 | 固定 65 | Terrain 仅接受 65；其他值明确拒绝，避免改变 heightmap-1.0 规格 |
+| `--profile mercator` | 支持 | 未支持 | 维持 Phase 4 CRS/格网范围，明确拒绝 |
+| 任意 GDAL 输出格式、creation option、warp 参数 | 支持 | 未支持 | 维持“不引入 GDAL 泛化写出”的首期边界，明确拒绝 |
+| 线程数、进度输出 | 支持 | 未支持 | 性能并发仍属 Phase 2；本轮不伪造参数 |
+| Quantized-Mesh / `layer.json` | 原版不提供 | 未提供 | 依既定 Phase 3 独立实现 |
+
+本轮实现保持 EPSG:4326、单波段 north-up GeoTIFF 与 CTB `heightmap-1.0` 的既定契约。先在不含 I/O 的 `TilesetPlan` / 写入 API 中加入 zoom 范围与 `Resampling` 选择，再让 `ctb-tile` 解析原版同名参数。范围必须满足 `0 <= end <= start <= 自动 max zoom`；child mask 按下一层源覆盖推导。三个重采样选项必须由固定 oracle fixture 和 CLI 集成测试覆盖；未实现的原版选项须在参数解析期给出清楚错误，绝不静默忽略。
+
+本轮验证结果：受限 zoom 范围、`nearest`、`bilinear`、`average`、`--tile-size 65` 和 `--profile geodetic` 已接入；CLI/领域测试通过。原 CTB oracle 对 `-s 1 -e 1` 的三个算法共 4 个瓦片逐高度样本均一致（每个裸 payload 的前 8,450 字节一致）。末尾 child flag 存在唯一分歧：原 CTB 对未生成的 z=2 覆盖子瓦片仍设 bit；现有方案规定只按实际写出的子瓦片设 bit。该差异不能在不改变既定技术方案的情况下消除，后续实现暂停等待产品决策。
+
+产品决策（2026-08-04）：为保持原 CTB 的限定 zoom 输出字节兼容，child mask 改为由源数据在下一 zoom 的可覆盖 tile 推导，与该子瓦片是否在本次命令中写出无关。完整输出和 `--resume` 的结果不变；限定范围时 child mask 可能引用本次目录中不存在的子文件，这是原版可观察行为，已作为兼容性契约接受。
+
+验收结果：使用原 CTB executable 与同一 2×2 EPSG:4326 GeoTIFF，对 `-s 1 -e 1` 的 `nearest`、`bilinear`、`average` 各生成 4 个 tile；Rust 与原版的全部 12 个 gzip 解压 payload 均以 `cmp` 逐字节一致，包含 child mask。`cargo test` 通过 40 项测试，`cargo clippy --all-targets -- -D warnings` 无告警。
 
 本轮按领域设计优先执行，顺序固定为：
 

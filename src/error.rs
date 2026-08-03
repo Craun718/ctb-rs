@@ -5,6 +5,7 @@ pub enum CtbError {
     InvalidBounds,
     InvalidTileSize(u32),
     InvalidZoom(u8),
+    InvalidZoomRange { start: u8, end: u8, maximum: u8 },
     CoordinateOutsideGrid { x: f64, y: f64 },
     InvalidRasterDimensions { width: u32, height: u32 },
     InvalidRasterWindow,
@@ -33,6 +34,14 @@ impl Display for CtbError {
             Self::InvalidZoom(zoom) => write!(
                 formatter,
                 "zoom level {zoom} exceeds the supported grid range"
+            ),
+            Self::InvalidZoomRange {
+                start,
+                end,
+                maximum,
+            } => write!(
+                formatter,
+                "invalid zoom range {start}..={end}; require {maximum} >= start >= end"
             ),
             Self::CoordinateOutsideGrid { x, y } => {
                 write!(
