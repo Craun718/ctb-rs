@@ -361,3 +361,11 @@ P1b 要点 1 验收：已建立 `tests/fixtures/MANIFEST.md`，为当前原 CTB 
 源码核对修正：原版 `ctb-tile` 虽解析 `-r/--resampling-method`，但 `Terrain` 路径构造 `TerrainTiler(poDataset, grid)` 时未传递 `TilerOptions`；因此 heightmap terrain 始终使用 `GDALTiler` 的默认 `GRA_Average`。该选项仅对原版的非 Terrain GDAL 输出生效。为字节兼容，纯 Rust heightmap CLI 必须保留并接受三个已声明值，但固定使用 `average`；`ResamplingMethod` 的三种领域实现仍保留，不再宣称其已通过 Terrain CLI 生效。
 
 P1b oracle 命令验收：`scripts/verify-ctb-oracle.zsh` 已在本机 GDAL 与原 CTB executable 下通过。它对 `nearest`、`bilinear`、`average` 各执行自动 zoom 和 `-s 1 -e 1`，共六组原版/Rust 对比；所有 tile path 集合和解压 terrain payload 均一致。脚本结束时清理临时目录。常规 Rust 验收同步通过：40 tests、Clippy 无告警。
+
+### P1b 当前实施单元：GeoTIFF 输入契约矩阵
+
+以 Rust test runtime 生成小型 GeoTIFF，不提交二进制 DEM。扩展 `GeoTiffRasterSource` 的集成测试，覆盖 signed integer 的负高程、unsigned integer、`f32`、`f64`、显式 NoData 与截断 TIFF；每个成功 fixture 均断言其公开 `f64` 样本契约，每个失败 fixture 均断言结构化 `CtbError`。世界范围/Antimeridian 的格网语义继续保持在无 I/O 的 grid 测试中，不由 GeoTIFF decoder 暗自环绕坐标。
+
+完成标准：被 decoder 声明支持的代表性数值类型均有测试；NoData 和损坏输入返回错误而非 panic；无需 GDAL 即可在 `cargo test` 中执行。
+
+P1b 输入契约验收：runtime fixture 现覆盖 `f64`、`f32`、signed `i16`（含负高程）和 unsigned `u16`；这些值均经 `GeoTiffRasterSource` 读取并断言为公开的 `f64` 样本。带 `GDAL_NODATA` tag 的读取仍返回 `NoDataEncountered`，三字节截断 TIFF 返回 `RasterRead` 而无 panic。常规验收为 43 tests 与 Clippy 无告警。

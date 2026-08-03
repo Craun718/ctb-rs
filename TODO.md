@@ -105,7 +105,8 @@
 - [x] 编写 fixture manifest：来源/许可证、生成命令、checksum、元数据和预期行为。
 - [x] 编写 `oracle-source-v1` 的可复现 CTB oracle 脚本，覆盖三种算法、完整与受限 zoom。
 - [x] 按原版 `TerrainTiler` 行为使 Terrain CLI 接受 `-r` 但固定采用 average，并更新兼容回归。
-- [ ] 纳入整数、浮点、负高程、striped/tiled、DEFLATE、overview、NoData、损坏元数据及世界边界 fixture。
+- [x] 在无 GDAL 的 runtime fixture 中覆盖整数、浮点、负高程、NoData、损坏 TIFF 与世界边界契约。
+- [ ] 另行用 GDAL oracle 覆盖 striped/tiled、DEFLATE 与内部 overview。
 - [ ] 将三个已支持重采样算法扩展为 fixture × 原 CTB oracle 的 payload 回归矩阵。
 - [ ] 为 `ctb-info`、`ctb-export`、`ctb-extents` 补原版 CLI 成功与错误路径兼容测试。
 - [ ] 明确记录 BigTIFF、更多压缩和多 block 的实际支持状态；未验证 feature 维持拒绝或未承诺状态。

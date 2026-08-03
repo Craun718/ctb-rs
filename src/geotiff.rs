@@ -196,6 +196,26 @@ mod tests {
         Ok(())
     }
 
+    fn write_signed_integer_fixture(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let samples = array![[-100_i16, -1], [0, 150]];
+        GeoTiffBuilder::new(2, 2)
+            .geographic_epsg(4326)
+            .pixel_scale(0.5, 0.5)
+            .origin(-180.0, 90.0)
+            .write_2d(path, samples.view())?;
+        Ok(())
+    }
+
+    fn write_unsigned_integer_fixture(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let samples = array![[0_u16, 10], [1_000, u16::MAX]];
+        GeoTiffBuilder::new(2, 2)
+            .geographic_epsg(4326)
+            .pixel_scale(0.5, 0.5)
+            .origin(-180.0, 90.0)
+            .write_2d(path, samples.view())?;
+        Ok(())
+    }
+
     #[test]
     fn opens_epsg_4326_and_reads_a_window() -> Result<(), Box<dyn std::error::Error>> {
         let path = fixture_path("epsg4326");
@@ -288,6 +308,61 @@ mod tests {
                 .samples,
             vec![10.0, 11.0, 12.0, 13.0]
         );
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn converts_signed_integer_negative_elevations_to_f64() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let path = fixture_path("int16-negative");
+        write_signed_integer_fixture(&path)?;
+        let source = GeoTiffRasterSource::open(&path)?;
+        assert_eq!(
+            source
+                .read_window(WindowRequest {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 2,
+                    overview: 0,
+                })?
+                .samples,
+            vec![-100.0, -1.0, 0.0, 150.0]
+        );
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn converts_unsigned_integer_elevations_to_f64() -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("uint16");
+        write_unsigned_integer_fixture(&path)?;
+        let source = GeoTiffRasterSource::open(&path)?;
+        assert_eq!(
+            source
+                .read_window(WindowRequest {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 2,
+                    overview: 0,
+                })?
+                .samples,
+            vec![0.0, 10.0, 1_000.0, f64::from(u16::MAX)]
+        );
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_truncated_geotiff_without_panicking() -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("truncated");
+        fs::write(&path, [0x49_u8, 0x49, 0x2A])?;
+        assert!(matches!(
+            GeoTiffRasterSource::open(&path),
+            Err(CtbError::RasterRead(_))
+        ));
         fs::remove_file(path)?;
         Ok(())
     }
