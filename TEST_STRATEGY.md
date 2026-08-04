@@ -62,5 +62,13 @@ checksum、元数据和预期。最低矩阵如下：
 affine transform 必须等于 `GlobalMercatorGrid::tile_bounds` 与 `resolution`，像素值必须按既有
 RasterTiler footprint 采样。保留 EPSG:4326 Geodetic 现有 tests 作为无回归门禁。
 
+## 7. P2 离散统计核追加策略
+
+使用至少 2×3 的非平坦 source window，覆盖偶数/奇数样本数量、重复值和并列 mode；断言
+`mode` 采用 row-major 首次出现的并列值，`med/q1/q3` 采用 nearest-rank（分别为 0.5、
+0.25、0.75），并覆盖完全在 source 外的 footprint 返回 `0.0`。该测试先锁定 Rust 的
+窗口与排序行为，随后用同一 fixture 的 C++ `-r mode/med/q1/q3` 输出补充差分证据。
+当前 Rust 单元覆盖 2×2 非平坦窗口和完全越界窗口；C++ 差分尚未建立。
+
 Cargo 命令必须在禁用沙盒的环境执行。生产代码和测试均不得以 `unwrap` 隐藏预期失败；测试中
 若使用 `expect`，消息应说明被验证的不变量。

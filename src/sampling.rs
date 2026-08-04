@@ -123,6 +123,10 @@ pub fn sample_with_footprint_level(
         ResamplingMethod::Average => average_at(source, level, footprint, world_x, world_y),
         ResamplingMethod::Max => extrema_at(source, level, footprint, true),
         ResamplingMethod::Min => extrema_at(source, level, footprint, false),
+        ResamplingMethod::Mode => mode_at(source, level, footprint),
+        ResamplingMethod::Med => quantile_at(source, level, footprint, 0.5),
+        ResamplingMethod::Q1 => quantile_at(source, level, footprint, 0.25),
+        ResamplingMethod::Q3 => quantile_at(source, level, footprint, 0.75),
         ResamplingMethod::Nearest | ResamplingMethod::Bilinear => {
             sample_at_level(source, level, world_x, world_y, method)
         }
@@ -130,6 +134,80 @@ pub fn sample_with_footprint_level(
             "{method:?} resampling is not implemented yet"
         ))),
     }
+}
+
+fn samples_in_footprint(
+    source: &dyn RasterSource,
+    level: &SamplingLevel,
+    footprint: Bounds,
+) -> Result<Vec<f64>, CtbError> {
+    let metadata = &level.metadata;
+    let columns = indices_overlapping_footprint(
+        footprint.min_x,
+        footprint.max_x,
+        metadata.transform.origin_x,
+        metadata.transform.pixel_width,
+        metadata.width,
+    );
+    let rows = indices_overlapping_footprint(
+        footprint.min_y,
+        footprint.max_y,
+        metadata.transform.origin_y,
+        metadata.transform.pixel_height,
+        metadata.height,
+    );
+    let (Some((first_column, last_column)), Some((first_row, last_row))) = (columns, rows) else {
+        return Ok(Vec::new());
+    };
+
+    let mut samples = Vec::new();
+    for row in first_row..=last_row {
+        for column in first_column..=last_column {
+            samples.push(read_sample(source, level, column, row)?);
+        }
+    }
+    Ok(samples)
+}
+
+fn mode_at(
+    source: &dyn RasterSource,
+    level: &SamplingLevel,
+    footprint: Bounds,
+) -> Result<f64, CtbError> {
+    let samples = samples_in_footprint(source, level, footprint)?;
+    let mut best: Option<(f64, usize, usize)> = None;
+    for (index, &sample) in samples.iter().enumerate() {
+        let count = samples[..=index]
+            .iter()
+            .filter(|candidate| **candidate == sample)
+            .count()
+            + samples[index + 1..]
+                .iter()
+                .filter(|candidate| **candidate == sample)
+                .count();
+        if best.is_none_or(|(_, best_count, best_index)| {
+            count > best_count || (count == best_count && index < best_index)
+        }) {
+            best = Some((sample, count, index));
+        }
+    }
+    Ok(best.map_or(0.0, |(sample, _, _)| sample))
+}
+
+fn quantile_at(
+    source: &dyn RasterSource,
+    level: &SamplingLevel,
+    footprint: Bounds,
+    quantile: f64,
+) -> Result<f64, CtbError> {
+    let mut samples = samples_in_footprint(source, level, footprint)?;
+    if samples.is_empty() {
+        return Ok(0.0);
+    }
+    samples.sort_by(f64::total_cmp);
+    let rank = (quantile * samples.len() as f64).ceil() as usize;
+    let index = rank.saturating_sub(1).min(samples.len() - 1);
+    Ok(samples[index])
 }
 
 /// RasterTiler sampling uses the warped VRT's strict source bounds. This is
@@ -459,6 +537,50 @@ mod tests {
             sample_with_footprint(&source, 1.0, 1.0, footprint, ResamplingMethod::Average)?,
             15.0
         );
+        Ok(())
+    }
+
+    #[test]
+    fn discrete_statistics_use_row_major_samples_and_nearest_rank() -> Result<(), CtbError> {
+        let source = TestRaster::new()?;
+        let footprint = Bounds::new(0.0, 0.0, 2.0, 2.0)?;
+        assert_eq!(
+            sample_with_footprint(&source, 1.0, 1.0, footprint, ResamplingMethod::Mode)?,
+            0.0,
+            "an all-tied mode keeps the first row-major sample"
+        );
+        assert_eq!(
+            sample_with_footprint(&source, 1.0, 1.0, footprint, ResamplingMethod::Q1)?,
+            0.0
+        );
+        assert_eq!(
+            sample_with_footprint(&source, 1.0, 1.0, footprint, ResamplingMethod::Med)?,
+            10.0
+        );
+        assert_eq!(
+            sample_with_footprint(&source, 1.0, 1.0, footprint, ResamplingMethod::Q3)?,
+            20.0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn discrete_statistics_return_destination_initial_value_outside_source() -> Result<(), CtbError>
+    {
+        let source = TestRaster::new()?;
+        let footprint = Bounds::new(3.0, 3.0, 4.0, 4.0)?;
+        for method in [
+            ResamplingMethod::Mode,
+            ResamplingMethod::Med,
+            ResamplingMethod::Q1,
+            ResamplingMethod::Q3,
+        ] {
+            assert_eq!(
+                sample_with_footprint(&source, 3.5, 3.5, footprint, method)?,
+                0.0,
+                "{method:?} uses the VRT destination initial value"
+            );
+        }
         Ok(())
     }
 

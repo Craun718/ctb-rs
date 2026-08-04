@@ -124,6 +124,21 @@ destination 初始化、采样核、整数转换、内部 overview 选择与缓�
 完成标准：高分辨率、overview、边缘、NoData、所有支持样本类型的 oracle 可重复通过；
 单线程和多线程输出相同。
 
+#### P2 实施记录 1：离散统计采样核（Rust 实现完成，C++ 差分待补）
+
+本阶段先实现 `GDALResampleAlg` 的 `GRA_Mode`、`GRA_Med`、`GRA_Q1` 和 `GRA_Q3`。
+采样窗口沿用当前 `indices_overlapping_footprint` 的闭开像素交集规则，按 row-major 顺序
+读取 source window；空覆盖返回 VRT destination 的初始值 `0.0`。统计值只使用窗口内实际
+覆盖的样本，不引入新的 nodata 语义；并列 mode 选择首次出现的值，以保持稳定的输入顺序。
+分位数采用 nearest-rank 离散定义：排序后 `ceil(p*n)`（最小为第一个）对应
+`p=0.5/0.25/0.75`。该记录对应 `GDALTiler.cpp` 中 `psWarpOptions->eResampleAlg` 的
+算法选择，连续核仍待后续记录和 C++ 差分。
+
+Rust 证据：`sampling.rs` 的 `sample_with_footprint(_level)` 已接入四个分支，并以非平坦
+2×2 fixture 验证 nearest-rank、row-major tie-break 和完全越界时的 `0.0`；`cargo test`
+通过 71 项，`cargo clippy -- -D warnings` 通过。尚未完成的证据是同一 fixture 经 C++
+`ctb-tile -r mode|med|q1|q3` 的输出差分，因此不能据此关闭 P2 的兼容性任务。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为
