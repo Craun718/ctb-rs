@@ -133,9 +133,9 @@ pub fn sample_with_footprint_level(
         ResamplingMethod::Nearest | ResamplingMethod::Bilinear => {
             sample_at_level(source, level, world_x, world_y, method)
         }
-        method => Err(CtbError::UnsupportedRaster(format!(
-            "{method:?} resampling is not implemented yet"
-        ))),
+        ResamplingMethod::Cubic | ResamplingMethod::CubicSpline | ResamplingMethod::Lanczos => {
+            sample_at_level_with_nearest_support(source, level, world_x, world_y, method, true)
+        }
     }
 }
 
@@ -227,12 +227,16 @@ pub fn sample_with_footprint_raster_tiler(
         ResamplingMethod::Average => average_at(source, &level, footprint, world_x, world_y),
         ResamplingMethod::Max => extrema_at(source, &level, footprint, true),
         ResamplingMethod::Min => extrema_at(source, &level, footprint, false),
+        ResamplingMethod::Mode => mode_at(source, &level, footprint),
+        ResamplingMethod::Med => quantile_at(source, &level, footprint, 0.5),
+        ResamplingMethod::Q1 => quantile_at(source, &level, footprint, 0.25),
+        ResamplingMethod::Q3 => quantile_at(source, &level, footprint, 0.75),
         ResamplingMethod::Nearest | ResamplingMethod::Bilinear => {
             sample_at_level_with_nearest_support(source, &level, world_x, world_y, method, false)
         }
-        method => Err(CtbError::UnsupportedRaster(format!(
-            "{method:?} resampling is not implemented yet"
-        ))),
+        ResamplingMethod::Cubic | ResamplingMethod::CubicSpline | ResamplingMethod::Lanczos => {
+            sample_at_level_with_nearest_support(source, &level, world_x, world_y, method, false)
+        }
     }
 }
 
@@ -701,6 +705,30 @@ mod tests {
             sample_with_footprint(&source, 1.0, 1.0, footprint, ResamplingMethod::Min)?,
             0.0
         );
+        Ok(())
+    }
+
+    #[test]
+    fn raster_tiler_supports_all_cli_resampling_methods() -> Result<(), CtbError> {
+        let source = TestRaster::new()?;
+        let footprint = Bounds::new(0.0, 0.0, 2.0, 2.0)?;
+        for method in [
+            ResamplingMethod::Nearest,
+            ResamplingMethod::Bilinear,
+            ResamplingMethod::Cubic,
+            ResamplingMethod::CubicSpline,
+            ResamplingMethod::Lanczos,
+            ResamplingMethod::Average,
+            ResamplingMethod::Mode,
+            ResamplingMethod::Max,
+            ResamplingMethod::Min,
+            ResamplingMethod::Med,
+            ResamplingMethod::Q1,
+            ResamplingMethod::Q3,
+        ] {
+            let value = sample_with_footprint_raster_tiler(&source, 1.0, 1.0, footprint, method)?;
+            assert!(value.is_finite(), "{method:?} returned a finite sample");
+        }
         Ok(())
     }
 

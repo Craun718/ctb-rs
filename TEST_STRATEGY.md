@@ -100,6 +100,12 @@ CRS 边界测试还必须覆盖 EPSG:4326 输入 ±90°、±85.0511287798066° �
 
 Rust 已覆盖 ±90° 到有效边界的裁剪，当前全套测试 78 项通过；GDAL 数值差分仍待补。
 
+RasterTiler resampling 测试必须以非平坦窗口调用 `sample_with_footprint_raster_tiler`，覆盖
+12 个 CLI 算法名称；连续核断言有限输出，离散统计断言与对应 footprint helper 相同，并
+保留 C++ GDAL 输出作为后续数值 oracle。
+
+Rust 当前已覆盖 12 个名称的 RasterTiler 分支，全套测试 79 项通过；C++ 数值差分仍待补。
+
 GTiff creation-option 测试至少覆盖 `COMPRESS=NONE/DEFLATE/LZW` 的写出与 Rust reader 读回，
 并断言未知选项在创建任何 tile 前失败；压缩编码的字节级差异保留给 C++ oracle。
 当前三种压缩均有 CLI 写出/读回证据；C++ 字节差分尚未执行。

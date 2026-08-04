@@ -261,6 +261,18 @@ EPSG:4326 的极点映射到 grid 外；反向变换保持其数学结果。该�
 Rust 证据：正向变换已对 ±90° 和超出有效范围的输入裁剪到有效纬度边界，新增边界测试
 通过；全套测试 78 项、clippy 通过。与 GDAL 的精确数值差分仍待可运行 C++ oracle。
 
+#### P2 实施记录 4：RasterTiler 全 resampling 分支（Rust 路径补齐，GDAL 数值差分待补）
+
+RasterTiler 的 footprint 采样必须覆盖 CLI 声明的 12 个 `ResamplingMethod`。已有连续核
+和离散统计函数不能只在通用 terrain/footprint helper 中可用；`sample_with_footprint_raster_tiler`
+也必须将 cubic、cubicspline、lanczos 连接到有限核，将 mode、med、q1、q3 连接到离散
+统计分支。算法公式、窗口顺序和边界规则沿用现有实现，不新增 resampling 名称；C++
+GDAL 数值差分仍作为独立验证门禁。
+
+Rust 证据：RasterTiler 现在已将 12 个 CLI resampling 名称全部连接到可执行分支，新增
+非平坦 source fixture 覆盖每个名称且全套测试 79 项、clippy 通过；各算法与 C++ GDAL 的
+具体数值差异仍待 oracle。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为
