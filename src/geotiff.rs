@@ -12,8 +12,8 @@ use crate::{
 
 /// A restricted, pure-Rust GeoTIFF source for the direct-source input contract.
 ///
-/// It accepts one north-up band in either CTB built-in grid CRS. Reprojection,
-/// overview selection, and multi-band interpretation belong to later phases.
+/// It accepts one north-up band in either CTB built-in grid CRS. Reprojection
+/// remains at the sampling-plan boundary; overview selection is level-aware.
 pub struct GeoTiffRasterSource {
     file: GeoTiffFile,
     metadata: RasterMetadata,
@@ -306,8 +306,8 @@ fn raster_sample_type(
 mod tests {
     use std::{env, fs};
 
-    use geotiff_writer::GeoTiffBuilder;
-    use ndarray::array;
+    use geotiff_writer::{CogBuilder, GeoTiffBuilder};
+    use ndarray::{Array2, array};
 
     use super::*;
 
@@ -358,6 +358,19 @@ mod tests {
             .geographic_epsg(4326)
             .pixel_scale(0.5, 0.5)
             .origin(-180.0, 90.0)
+            .write_2d(path, samples.view())?;
+        Ok(())
+    }
+
+    fn write_overview_fixture(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let samples = Array2::from_shape_fn((8, 8), |(row, column)| (row * 8 + column) as f64);
+        let builder = GeoTiffBuilder::new(8, 8)
+            .geographic_epsg(4326)
+            .pixel_scale(1.0, 1.0)
+            .origin(0.0, 8.0)
+            .tile_size(16, 16);
+        CogBuilder::new(builder)
+            .overview_levels(vec![2, 4])
             .write_2d(path, samples.view())?;
         Ok(())
     }
@@ -431,6 +444,46 @@ mod tests {
             }),
             Err(CtbError::InvalidRasterWindow)
         ));
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn selects_and_reads_internal_overviews() -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("overviews");
+        write_overview_fixture(&path)?;
+        let source = GeoTiffRasterSource::open(&path)?;
+        assert_eq!(source.overview_count(), 2);
+
+        let base = source.sampling_level_for_ratio(1.5)?;
+        assert_eq!(base.level, 0);
+        assert_eq!(base.metadata.width, 8);
+
+        let half = source.sampling_level_for_ratio(2.0)?;
+        assert_eq!(half.level, 1);
+        assert_eq!(half.metadata.width, 4);
+        assert_eq!(half.metadata.height, 4);
+        assert_eq!(half.metadata.transform.pixel_width, 2.0);
+        assert_eq!(half.metadata.transform.pixel_height, -2.0);
+
+        let quarter = source.sampling_level_for_ratio(4.0)?;
+        assert_eq!(quarter.level, 2);
+        assert_eq!(quarter.metadata.width, 2);
+        assert_eq!(quarter.metadata.height, 2);
+        assert_eq!(quarter.metadata.transform.pixel_width, 4.0);
+        assert_eq!(quarter.metadata.transform.pixel_height, -4.0);
+
+        let window = source.read_sampling_window(
+            &half,
+            WindowRequest {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+                overview: half.level,
+            },
+        )?;
+        assert_eq!(window.samples, vec![0.0, 2.0, 16.0, 18.0]);
         fs::remove_file(path)?;
         Ok(())
     }

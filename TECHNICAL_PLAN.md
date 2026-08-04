@@ -239,6 +239,18 @@ oracle 后，先测量非默认 `-z` 对投影 tile 样本的影响，再决定�
 Rust 证据：`ctb-tile` 已解析两个选项；默认值通过校验，负数/非有限值和非默认值均在
 创建 source 与写出 tile 前失败；相关测试和 clippy 均通过（76 项测试）。
 
+#### P4 实施记录 5：GeoTIFF 内部 overview 读取（Rust 验证补齐，C++ 选择差分待补）
+
+`GeoTiffRasterSource` 已通过 `GeoTiffFile` 暴露内部 overview 数量，依据目标/源分辨率比
+选择 overview，并为所选 IFD 派生像元尺寸；`read_sampling_window` 已按所选 level 读取
+overview 数据。此单元补充真实多级 COG fixture，验证 top-level overview IFD 的发现、级别
+边界、缩放后的 GeoTransform 和窗口样本，不改变当前 `GDALSuggestedWarpOutput2` 公式的
+实现。C++ oracle 恢复后仍需用相同输入确认 tie/boundary 选择和 Terrain/Raster 两条调用链。
+
+Rust 证据：使用 `CogBuilder` 生成 2/4 倍 top-level overview 的真实 GeoTIFF fixture，已
+验证 1.5、2.0、4.0 ratio 的级别选择、overview GeoTransform 和 2×2 窗口样本读回；全套
+测试 77 项、clippy 通过。C++ SuggestedWarp/getOverviewDataset 差分仍待补。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为
