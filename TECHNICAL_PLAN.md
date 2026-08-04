@@ -89,6 +89,15 @@ Rust 的 `RasterSource`、缓存和 writer 只能作为 GDAL dataset/VRT 的内�
 完成标准：三个规划文档重建；每个 C++ 模块、CLI 参数和输出 driver 有责任人（Rust 模块）
 及测试状态。
 
+#### P0 实施记录 1：oracle 基线（已记录，C++ 构建待兼容）
+
+固定 oracle 源码为 `/Users/sander/coding/cesium-terrain-builder` commit
+`d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f`（2025-09-12，CTB 0.4.1）；本机 GDAL 为
+`3.13.2`（2026-07-20），CMake 为 Release，编译器 `/usr/bin/c++`。CMake cache 指向
+`/opt/homebrew/Cellar/gdal/3.13.2_1/lib/libgdal.dylib`。该组合构建失败于旧 CTB 对
+`GDALDataset::GetGeoTransform`、`GetMetadata` 虚函数签名的 override/返回类型不兼容；
+因此 oracle 输入、版本和失败原因已固定，但 C++ 可执行文件尚未生成。
+
 ### P1：收敛既有 Geodetic 路径
 
 先对 Terrain heightmap 和 `-f GTiff` 的 EPSG:4326 direct-source 路径逐项比对：tile range、

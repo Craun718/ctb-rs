@@ -5,7 +5,9 @@
 
 ## P0：规格和现状审计（最高优先级）
 
-- [ ] 建立 C++ CTB commit、构建环境和 GDAL 版本的 oracle 记录。
+- [x] 建立 C++ CTB commit、构建环境和 GDAL 版本的 oracle 记录（CTB
+      `d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f`、GDAL 3.13.2、CMake Release、`/usr/bin/c++`）；
+      旧 CTB 与当前 GDAL API 不兼容，构建失败原因已记录。
 - [ ] 完整盘点 `ctb-tile`、`ctb-info`、`ctb-export`、`ctb-extents` 的参数、默认值、输出与错误路径。
 - [ ] 建立 `src/*` 到 C++ 类/函数的逐项映射，标记“已实现”“已 oracle 验证”“未实现”。
 - [ ] 审计现有 Geodetic Terrain 和 GTiff 路径，消除与 C++ 不符的现有行为后才扩展功能。
