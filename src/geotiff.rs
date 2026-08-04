@@ -169,15 +169,8 @@ impl RasterSource for GeoTiffRasterSource {
 
     fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError> {
         self.validate_window(&self.metadata, request)?;
-        let samples = self.read_samples(0, request)?;
-
-        if let Some(no_data) = self.metadata.no_data
-            && samples.iter().any(|sample| {
-                (no_data.is_nan() && sample.is_nan()) || (!no_data.is_nan() && *sample == no_data)
-            })
-        {
-            return Err(CtbError::NoDataEncountered);
-        }
+        let mut samples = self.read_samples(0, request)?;
+        mark_nodata(&mut samples, self.metadata.no_data);
 
         Ok(RasterWindow { request, samples })
     }
@@ -264,15 +257,20 @@ impl RasterSource for GeoTiffRasterSource {
         request: WindowRequest,
     ) -> Result<RasterWindow, CtbError> {
         self.validate_window(&level.metadata, request)?;
-        let samples = self.read_samples(level.level, request)?;
-        if let Some(no_data) = level.metadata.no_data
-            && samples.iter().any(|sample| {
-                (no_data.is_nan() && sample.is_nan()) || (!no_data.is_nan() && *sample == no_data)
-            })
-        {
-            return Err(CtbError::NoDataEncountered);
-        }
+        let mut samples = self.read_samples(level.level, request)?;
+        mark_nodata(&mut samples, level.metadata.no_data);
         Ok(RasterWindow { request, samples })
+    }
+}
+
+fn mark_nodata(samples: &mut [f64], no_data: Option<f64>) {
+    let Some(no_data) = no_data else {
+        return;
+    };
+    for sample in samples {
+        if (no_data.is_nan() && sample.is_nan()) || (!no_data.is_nan() && *sample == no_data) {
+            *sample = f64::NAN;
+        }
     }
 }
 
@@ -411,20 +409,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_window_containing_nodata() -> Result<(), Box<dyn std::error::Error>> {
+    fn marks_nodata_inside_a_window_without_rejecting_the_window()
+    -> Result<(), Box<dyn std::error::Error>> {
         let path = fixture_path("nodata");
         write_fixture(&path, 4326, Some("10"))?;
         let source = GeoTiffRasterSource::open(&path)?;
-        assert!(matches!(
-            source.read_window(WindowRequest {
-                x: 0,
-                y: 0,
-                width: 1,
-                height: 1,
-                overview: 0,
-            }),
-            Err(CtbError::NoDataEncountered)
-        ));
+        let window = source.read_window(WindowRequest {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 1,
+            overview: 0,
+        })?;
+        assert!(window.samples[0].is_nan());
+        assert_eq!(window.samples[1], 11.0);
         fs::remove_file(path)?;
         Ok(())
     }

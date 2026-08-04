@@ -273,6 +273,19 @@ Rust 证据：RasterTiler 现在已将 12 个 CLI resampling 名称全部连接�
 非平坦 source fixture 覆盖每个名称且全套测试 79 项、clippy 通过；各算法与 C++ GDAL 的
 具体数值差异仍待 oracle。
 
+#### P2 实施记录 5：NoData density 传播（Rust 最小等价实现，GDAL 差分待补）
+
+`GDALTiler` 将 source band 的 NoData 交给 GDAL warp，destination VRT 初始值为 `0.0`；
+NoData 不应使整个 RasterIO window 失败，而应按像元参与 density/权重计算。Rust
+`RasterWindow.samples` 保持现有公开形状，以 `f64::NAN` 表示从 GeoTIFF NoData 转换来的
+无效样本；采样核统一跳过非有限 tap，在没有有效贡献时返回 `0.0`。该设计不新增公开
+mask 接口，先覆盖当前单 band north-up 契约；真实 GDAL source/destination NoData、NaN
+和整数样本差分仍待 oracle。
+
+Rust 证据：GeoTIFF 混合 NoData window 现在返回 NaN 标记与有效样本；12 个 RasterTiler
+分支均过滤无效值，全 NoData footprint 返回 `0.0`，并保留 Terrain 的后续高度编码路径。
+专项测试与全套测试 80 项、clippy 均通过；GDAL density/NaN 数值差分仍待补。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为

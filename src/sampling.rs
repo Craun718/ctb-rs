@@ -166,7 +166,10 @@ fn samples_in_footprint(
     let mut samples = Vec::new();
     for row in first_row..=last_row {
         for column in first_column..=last_column {
-            samples.push(read_sample(source, level, column, row)?);
+            let sample = read_sample_raw(source, level, column, row)?;
+            if sample.is_finite() {
+                samples.push(sample);
+            }
         }
     }
     Ok(samples)
@@ -268,7 +271,10 @@ fn extrema_at(
     let mut result: Option<f64> = None;
     for row in first_row..=last_row {
         for column in first_column..=last_column {
-            let sample = read_sample(source, level, column, row)?;
+            let sample = read_sample_raw(source, level, column, row)?;
+            if !sample.is_finite() {
+                continue;
+            }
             result = Some(match result {
                 Some(current) if maximum => current.max(sample),
                 Some(current) => current.min(sample),
@@ -276,7 +282,7 @@ fn extrema_at(
             });
         }
     }
-    Ok(result.expect("non-empty source index ranges produce at least one extrema sample"))
+    Ok(result.map_or(0.0, |value| value))
 }
 
 fn average_at(
@@ -323,7 +329,11 @@ fn average_at(
                 overlap_length(footprint.min_x, footprint.max_x, pixel_x.0, pixel_x.1)
                     * overlap_length(footprint.min_y, footprint.max_y, pixel_y.0, pixel_y.1);
             if overlap_area > 0.0 {
-                sum += read_sample(source, level, column, row)? * overlap_area;
+                let sample = read_sample_raw(source, level, column, row)?;
+                if !sample.is_finite() {
+                    continue;
+                }
+                sum += sample * overlap_area;
                 total_area += overlap_area;
             }
         }
@@ -387,17 +397,21 @@ fn bilinear(
     let y0 = clamped_pixel(top, metadata.height);
     let y1 = clamped_pixel(top + 1.0, metadata.height);
 
-    let top_value = interpolate(
-        read_sample(source, level, x0, y0)?,
-        read_sample(source, level, x1, y0)?,
+    let top_value = interpolate_valid(
+        read_sample_raw(source, level, x0, y0)?,
+        read_sample_raw(source, level, x1, y0)?,
         horizontal,
     );
-    let bottom_value = interpolate(
-        read_sample(source, level, x0, y1)?,
-        read_sample(source, level, x1, y1)?,
+    let bottom_value = interpolate_valid(
+        read_sample_raw(source, level, x0, y1)?,
+        read_sample_raw(source, level, x1, y1)?,
         horizontal,
     );
-    Ok(interpolate(top_value, bottom_value, vertical))
+    Ok(match (top_value, bottom_value) {
+        (Some(top), Some(bottom)) => interpolate(top, bottom, vertical),
+        (Some(value), None) | (None, Some(value)) => value,
+        (None, None) => 0.0,
+    })
 }
 
 fn filtered_sample(
@@ -437,7 +451,11 @@ fn filtered_sample(
             if weight == 0.0 {
                 continue;
             }
-            weighted_sum += read_sample(source, level, x as u32, y as u32)? * weight;
+            let sample = read_sample_raw(source, level, x as u32, y as u32)?;
+            if !sample.is_finite() {
+                continue;
+            }
+            weighted_sum += sample * weight;
             weight_sum += weight;
         }
     }
@@ -488,11 +506,30 @@ fn interpolate(first: f64, second: f64, proportion: f64) -> f64 {
     first + (second - first) * proportion
 }
 
+fn interpolate_valid(first: f64, second: f64, proportion: f64) -> Option<f64> {
+    match (first.is_finite(), second.is_finite()) {
+        (true, true) => Some(interpolate(first, second, proportion)),
+        (true, false) => Some(first),
+        (false, true) => Some(second),
+        (false, false) => None,
+    }
+}
+
 fn clamped_pixel(value: f64, limit: u32) -> u32 {
     value.clamp(0.0, f64::from(limit.saturating_sub(1))) as u32
 }
 
 fn read_sample(
+    source: &dyn RasterSource,
+    level: &SamplingLevel,
+    x: u32,
+    y: u32,
+) -> Result<f64, CtbError> {
+    let sample = read_sample_raw(source, level, x, y)?;
+    Ok(if sample.is_finite() { sample } else { 0.0 })
+}
+
+fn read_sample_raw(
     source: &dyn RasterSource,
     level: &SamplingLevel,
     x: u32,
@@ -728,6 +765,53 @@ mod tests {
         ] {
             let value = sample_with_footprint_raster_tiler(&source, 1.0, 1.0, footprint, method)?;
             assert!(value.is_finite(), "{method:?} returned a finite sample");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nodata_is_skipped_and_all_nodata_uses_destination_zero() -> Result<(), CtbError> {
+        let mut source = TestRaster::new()?;
+        source.samples[0] = f64::NAN;
+        let footprint = Bounds::new(0.0, 0.0, 2.0, 2.0)?;
+        for method in [
+            ResamplingMethod::Nearest,
+            ResamplingMethod::Bilinear,
+            ResamplingMethod::Cubic,
+            ResamplingMethod::CubicSpline,
+            ResamplingMethod::Lanczos,
+            ResamplingMethod::Average,
+            ResamplingMethod::Mode,
+            ResamplingMethod::Max,
+            ResamplingMethod::Min,
+            ResamplingMethod::Med,
+            ResamplingMethod::Q1,
+            ResamplingMethod::Q3,
+        ] {
+            let value = sample_with_footprint_raster_tiler(&source, 1.0, 1.0, footprint, method)?;
+            assert!(value.is_finite(), "{method:?} filtered NoData");
+        }
+
+        source.samples.fill(f64::NAN);
+        for method in [
+            ResamplingMethod::Nearest,
+            ResamplingMethod::Bilinear,
+            ResamplingMethod::Cubic,
+            ResamplingMethod::CubicSpline,
+            ResamplingMethod::Lanczos,
+            ResamplingMethod::Average,
+            ResamplingMethod::Mode,
+            ResamplingMethod::Max,
+            ResamplingMethod::Min,
+            ResamplingMethod::Med,
+            ResamplingMethod::Q1,
+            ResamplingMethod::Q3,
+        ] {
+            assert_eq!(
+                sample_with_footprint_raster_tiler(&source, 1.0, 1.0, footprint, method,)?,
+                0.0,
+                "{method:?} uses the destination initial value",
+            );
         }
         Ok(())
     }

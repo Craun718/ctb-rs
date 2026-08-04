@@ -106,6 +106,13 @@ RasterTiler resampling 测试必须以非平坦窗口调用 `sample_with_footpri
 
 Rust 当前已覆盖 12 个名称的 RasterTiler 分支，全套测试 79 项通过；C++ 数值差分仍待补。
 
+NoData fixture 必须包含单个无效 tap、边缘混合窗口和全 NoData footprint；断言 reader 不再
+整窗失败，内部无效值为 NaN，有效采样按权重/统计过滤，全无效结果为 0.0，并检查 Terrain
+最终按 CTB `((height + 1000) * 5)` 编码。随后与 GDAL warp 的 density 输出做差分。
+
+Rust 当前已覆盖混合/全 NoData window 及 12 个 RasterTiler 分支，全套测试 80 项通过；
+GDAL density 差分仍待补。
+
 GTiff creation-option 测试至少覆盖 `COMPRESS=NONE/DEFLATE/LZW` 的写出与 Rust reader 读回，
 并断言未知选项在创建任何 tile 前失败；压缩编码的字节级差异保留给 C++ oracle。
 当前三种压缩均有 CLI 写出/读回证据；C++ 字节差分尚未执行。

@@ -42,6 +42,8 @@
       min、med、q1、q3 Rust 分支；复用现有核函数和离散统计实现，非平坦 Rust fixture 待补。
 - [ ] 对上述 12 个 RasterTiler 算法分别生成非平坦 C++ oracle 并完成数值差分。
 - [ ] 对 integer/float、NoData 和 source 覆盖外的转换顺序逐项差分。
+- [ ] 用含多个 NoData 像元的 fixture 验证逐像元 NaN 标记、12 个采样分支的有效样本过滤、
+      全 NoData 时的 destination 初值 0，以及 Terrain 编码结果；与 GDAL density 差分待补。
 
 ## P3：Mercator 与重投影
 
@@ -65,7 +67,7 @@
 - [ ] 完成 GTiff creation options、样本类型和 metadata 的全部已登记组合；当前 None、
       DEFLATE、LZW 已实现，PackBits 受 writer API 限制；C++ 字节差分和其他 options 仍待补。
 - [x] 用真实含 overview 的 GeoTIFF fixture 验证 overview 数量、选择边界、缩放 GeoTransform
-      和 level-aware window 读回（Rust 79 tests passed）；当前实现存在，C++ SuggestedWarp
+      和 level-aware window 读回（Rust 80 tests passed）；当前实现存在，C++ SuggestedWarp
       差分仍待补。
 - [ ] 逐 driver 以纯 Rust 实现 C++ `CreateCopy` 路径；每个 driver 有独立 oracle。
 - [ ] 覆盖 BigTIFF、常用压缩、strip/tile、内部/外部 overview 与损坏文件。
