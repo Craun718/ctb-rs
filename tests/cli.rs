@@ -252,6 +252,16 @@ fn ctb_tile_honours_zoom_range_and_supported_resampling() -> Result<(), Box<dyn 
         assert!(!output.join("2").exists());
     }
 
+    let terrain_option_output = directory.join("terrain-option");
+    fs::create_dir(&terrain_option_output)?;
+    let terrain_option = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-n", "COMPRESS=DEFLATE", "-o"])
+        .arg(&terrain_option_output)
+        .arg(&input)
+        .output()?;
+    assert!(!terrain_option.status.success());
+    assert!(!terrain_option_output.join("0").exists());
+
     let mercator_output = directory.join("terrain-mercator");
     fs::create_dir(&mercator_output)?;
     let unsupported_profile = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
@@ -308,7 +318,8 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         "{:?}",
         deflate_option.stderr
     );
-    assert!(deflate_output.join("0/0/0.tif").exists());
+    let deflate_file = GeoTiffFile::open(deflate_output.join("0/0/0.tif"))?;
+    assert_eq!(deflate_file.width(), 256);
 
     let lzw_output = directory.join("lzw");
     fs::create_dir(&lzw_output)?;
@@ -319,7 +330,7 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         .output()?;
     assert!(lzw_option.status.success(), "{:?}", lzw_option.stderr);
     let lzw_file = GeoTiffFile::open(lzw_output.join("0/0/0.tif"))?;
-    assert_eq!(lzw_file.width(), 65);
+    assert_eq!(lzw_file.width(), 256);
 
     let incompatible_profile_output = directory.join("incompatible-mercator");
     fs::create_dir(&incompatible_profile_output)?;

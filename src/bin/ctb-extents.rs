@@ -20,9 +20,9 @@ struct Arguments {
     #[arg(short, long, default_value = "geodetic")]
     profile: String,
 
-    /// TMS tile edge length in pixels; defaults to the original terrain size of 65.
-    #[arg(short = 't', long, default_value_t = 65)]
-    tile_size: u32,
+    /// TMS tile edge length in pixels; defaults to 65 for geodetic and 256 for mercator.
+    #[arg(short = 't', long)]
+    tile_size: Option<u32>,
 
     /// Highest zoom level to include; defaults to the source-derived maximum.
     #[arg(short = 's', long)]
@@ -40,8 +40,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let arguments = Arguments::parse();
     let source = GeoTiffRasterSource::open(&arguments.input)?;
     let grid: Box<dyn TileGrid> = match arguments.profile.as_str() {
-        "geodetic" => Box::new(GlobalGeodeticGrid::new(arguments.tile_size)?),
-        "mercator" => Box::new(GlobalMercatorGrid::new(arguments.tile_size)?),
+        "geodetic" => Box::new(GlobalGeodeticGrid::new(arguments.tile_size.unwrap_or(65))?),
+        "mercator" => Box::new(GlobalMercatorGrid::new(arguments.tile_size.unwrap_or(256))?),
         profile => return Err(format!("unsupported TMS profile {profile}").into()),
     };
     let plan = TilesetPlan::from_raster_with_tile_grid(

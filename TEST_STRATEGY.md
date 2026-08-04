@@ -98,5 +98,8 @@ GTiff creation-option 测试至少覆盖 `COMPRESS=NONE/DEFLATE/LZW` 的写出�
 并断言未知选项在创建任何 tile 前失败；压缩编码的字节级差异保留给 C++ oracle。
 当前三种压缩均有 CLI 写出/读回证据；C++ 字节差分尚未执行。
 
+CLI 默认值测试分别覆盖 Terrain 65、GTiff 256、geodetic extents 65、mercator extents 256；
+Terrain 携带 creation option 必须在输出目录写入前失败。
+
 Cargo 命令必须在禁用沙盒的环境执行。生产代码和测试均不得以 `unwrap` 隐藏预期失败；测试中
 若使用 `expect`，消息应说明被验证的不变量。

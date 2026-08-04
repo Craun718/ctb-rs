@@ -164,6 +164,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     match arguments.output_format.as_str() {
         "Terrain" => {
+            if !arguments.creation_options.is_empty() {
+                return Err("creation options are not valid for Terrain output".into());
+            }
             if let Some(tile_size) = arguments.tile_size
                 && tile_size != 65
             {
@@ -192,7 +195,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         "GTiff" => {
             let grid: Box<dyn TileGrid> = match arguments.profile.as_str() {
-                "geodetic" => Box::new(GlobalGeodeticGrid::new(arguments.tile_size.unwrap_or(65))?),
+                "geodetic" => {
+                    Box::new(GlobalGeodeticGrid::new(arguments.tile_size.unwrap_or(256))?)
+                }
                 "mercator" => {
                     Box::new(GlobalMercatorGrid::new(arguments.tile_size.unwrap_or(256))?)
                 }

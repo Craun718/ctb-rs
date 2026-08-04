@@ -110,11 +110,10 @@ quiet/verbose/resume 和错误文本。先修正任意与 C++ oracle 不符的�
 #### P1 实施记录 1：RasterTiler 的通用 Grid 写入边界（已实现，尚待 C++ 差分）
 
 `RasterTileSamplePlan::from_grid` 已按 `GDALTiler::createRasterTile` 所持有的 `const Grid &`
-计算目标像素中心和 footprint。下一步将 `RasterTileset` 的公开写入入口同样改为接收
-`&dyn TileGrid`，并只通过 `TilesetPlan::from_raster_with_tile_grid` 生成范围；不匹配的 source
-CRS 必须在任何输出目录写入之前被拒绝。Tile 队列继续严格映射 `GridIterator`：每层 x 递增、
-每个 x 内 y 递增，且调用端按最高 zoom 到最低 zoom 消费。`ctb-tile -f GTiff -p mercator`
-据此构造 `GlobalMercatorGrid`；Terrain 分支在 P3 前仍明确拒绝 Mercator，不能误用 Geodetic。
+计算目标像素中心和 footprint；`RasterTileset` 通过 `TilesetPlan::from_raster_with_tile_grid`
+生成范围，并在 EPSG:4326↔3857 内建 CRS 间执行纯 Rust 反向采样。Tile 队列继续严格映射
+`GridIterator`：每层 x 递增、每个 x 内 y 递增，且调用端按最高 zoom 到最低 zoom 消费。
+`ctb-tile -f GTiff -p mercator` 据此构造 `GlobalMercatorGrid`；未知 CRS 仍拒绝，C++ 差分待补。
 
 Rust 层证据为 `tests/cli.rs::ctb_tile_writes_mercator_direct_source_gtiff` 对 EPSG:3857 z0 的
 path、GeoTransform、CRS 和样本值断言，以及 `ctb_tile_writes_geotiff_rastertiler_tiles` 对
@@ -187,7 +186,8 @@ target grid 不一致时返回结构化错误；`cargo test` 72 项及 clippy �
 使用半长轴 6378137、纬度裁剪到 Web Mercator 有效范围；反向变换使用
 `atan(sinh(y/R))`。RasterTiler 将目标像素中心和 footprint 的四角转换到 source CRS，
 再沿 source north-up transform 采样；Tile metadata、GeoTransform 和 CRS 保持 target grid。
-未知 CRS、越过有效纬度或旋转 transform 仍返回结构化错误，不静默当作 4326。
+未知 CRS 或旋转 transform 仍返回结构化错误，不静默当作 4326；目标边界外的投影坐标交给
+destination 初始值和 source bounds 规则处理，以保留 C++ upper-edge tile 行为。
 
 Rust 证据：`raster::transform_coordinate/transform_bounds` 已覆盖双向控制点，
 `RasterTileSamplePlan` 已把目标中心和 footprint 转入 source CRS，tileset 规划和 GTiff writer 已保留 target CRS；CLI 覆盖 EPSG:4326 source→EPSG:3857 target，`cargo test` 74 项、clippy 通过。TerrainTiler 接入和 upper-edge 行为已覆盖 Rust CLI；缩放/overview、 NoData 和 C++ z0/z1 payload 差分仍未完成。
@@ -213,6 +213,16 @@ Rust 证据：`RasterGeoTiffCompression::Lzw` 与 CLI `COMPRESS=LZW` 已接入�
 可由 `GeoTiffFile` 读回；74 项测试和 clippy 通过。
 
 底层 TIFF 常量还列出 PackBits，但 `GeoTiffBuilder` 当前明确拒绝该压缩方式，因此不能直接映射；JPEG/LERC/ZSTD 等需要单独确认 C++ driver 清单、feature 和有损/无损语义，暂不静默映射。
+
+#### P4 实施记录 3：CLI profile 默认值和 Terrain creation-option 校正（Rust 实现完成，差分待补）
+
+依据 `tools/ctb-tile.cpp` 与 `tools/ctb-extents.cpp`：Terrain 默认 tile size 为 65，非
+Terrain raster profile 默认 256；`-n/--creation-option` 对 Terrain 无效且应被拒绝。Rust
+当前 GTiff 和 extents 路径仍有默认值/忽略 option 差异，本单元先修正这些不涉及 GDAL
+driver 的 CLI 行为。
+
+Rust 证据：GTiff 默认 tile size 为 256，Terrain 默认 65；extents 根据 profile 选择 65/256；
+Terrain creation option 在输出前返回错误。CLI 集成测试与 74 项 Rust 测试、clippy 均通过。
 
 ### P3：完成 Global Mercator 与投影
 

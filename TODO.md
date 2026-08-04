@@ -18,7 +18,8 @@
 - [x] 为 `RasterTileSamplePlan` 接入 `TileGrid`，不改变现有 Geodetic 结果（`RasterTileSamplePlan::from_grid`；Mercator destination-cell 单元测试）。
 - [x] 将 `RasterTileset` 写入入口和内部 sample-plan 构造改为 `TileGrid`，保持 C++ RasterIterator 顺序与路径布局（`RasterIterator.hpp`/`GridIterator.hpp`；Rust z0 Mercator 过程测试）。
 - [ ] 为 `TilesetPlan` 的通用 Grid 范围计算建立 C++ upper-right 边界 oracle。
-- [x] 在 RasterTileset 写入前仅支持 source CRS 等于 target grid CRS，明确拒绝任何尚未实现的重投影（`TilesetPlan::from_raster_with_tile_grid`；CLI 无输出错误测试）。
+- [x] RasterTileset 在写入前计算 TileGrid 范围，并支持内建 EPSG:4326↔3857 重投影；未知 CRS
+      仍拒绝（`TilesetPlan::from_raster_with_tile_grid`、`raster.rs`；CLI 输出 CRS 测试）。
 - [ ] 让 `ctb-tile -f GTiff -p mercator` 构造 Mercator Grid，并以 C++ 固定 EPSG:3857 direct-source z0/z1 的 paths、metadata 和 samples。
 - [ ] 运行 Geodetic 无回归差分及新的 Mercator direct-source 测试。
 
@@ -62,6 +63,9 @@
 - [ ] 逐 driver 以纯 Rust 实现 C++ `CreateCopy` 路径；每个 driver 有独立 oracle。
 - [ ] 覆盖 BigTIFF、常用压缩、strip/tile、内部/外部 overview 与损坏文件。
 - [ ] 对四个 CLI 完成 help、成功、参数错误、I/O 错误、quiet/verbose/thread/resume 差分。
+- [x] 校正 `ctb-tile`/`ctb-extents` 的 profile 默认 tile size（Terrain 65、非 Terrain 256），
+      并拒绝 Terrain 的 `--creation-option`（C++ `ctb-tile.cpp`、`ctb-extents.cpp`；74 tests
+      passed）。C++ CLI 差分仍待补。
 
 ## P5：完成门禁
 
