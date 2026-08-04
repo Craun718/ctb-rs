@@ -101,7 +101,10 @@ fn parse_block_size(option: &str, value: &str) -> Result<u32, Box<dyn Error>> {
 }
 
 #[derive(Debug, Parser)]
-#[command(about = "Create CTB heightmap terrain tiles from an EPSG:4326 GeoTIFF DEM")]
+#[command(
+    about = "Create CTB heightmap terrain tiles from an EPSG:4326 GeoTIFF DEM",
+    version = "0.4.1"
+)]
 struct Arguments {
     /// Directory in which {z}/{x}/{y}.terrain tiles are written.
     #[arg(short, long, default_value = ".")]
@@ -164,6 +167,10 @@ struct Arguments {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    if std::env::args().any(|argument| argument == "--version" || argument == "-V") {
+        println!("0.4.1");
+        return Ok(());
+    }
     let arguments = Arguments::parse();
     if !arguments.output_dir.exists() {
         return Err(format!(

@@ -10,7 +10,10 @@ use ctb_rs::{
 };
 
 #[derive(Debug, Parser)]
-#[command(about = "Write GeoJSON coverage extents for CTB terrain tiles")]
+#[command(
+    about = "Write GeoJSON coverage extents for CTB terrain tiles",
+    version = "0.4.1"
+)]
 struct Arguments {
     /// Directory in which {zoom}.geojson files are written.
     #[arg(short, long, default_value = ".")]
@@ -37,6 +40,10 @@ struct Arguments {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    if std::env::args().any(|argument| argument == "--version" || argument == "-V") {
+        println!("0.4.1");
+        return Ok(());
+    }
     let arguments = Arguments::parse();
     let source = GeoTiffRasterSource::open(&arguments.input)?;
     let grid: Box<dyn TileGrid> = match arguments.profile.as_str() {
