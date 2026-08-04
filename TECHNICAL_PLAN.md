@@ -319,6 +319,17 @@ Rust 证据：`TILED=YES` 默认 256×256、显式 `BLOCKXSIZE=32/BLOCKYSIZE=16`
 路径均可写出；非正数或非 16 倍 block 在 parser 阶段失败；全套测试 82 项、clippy 通过。
 TIFF layout tags 与 C++ GTiff CreateCopy 的差分仍待补。
 
+#### P2 实施记录 6：RasterTiler level-aware overview path（Rust 接入，SuggestedWarp 差分待补）
+
+`RasterTileSamplePlan::sample_values` 先按 source 分辨率请求 `sampling_level_for_ratio`，
+然后整张 tile 复用同一个 `SamplingLevel`，避免每个像元退回 base IFD。RasterTiler footprint
+helper 增加显式 level 入口，保留旧入口作为 base-level wrapper；overview metadata 的
+transform、NoData 和缓存 block 均沿同一 level 传递。当前 ratio 仍是纯 Rust 对内建 north-up
+契约的近似，需与 C++ `GDALSuggestedWarpOutput2`/`getOverviewDataset` 做差分。
+
+Rust 证据：新增 overview-only source 测试，若 RasterTiler 回退 base level 会直接失败；
+`sample_values` 已验证整张 tile 复用 level 1，且全套测试 83 项、clippy 通过。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为

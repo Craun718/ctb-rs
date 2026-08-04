@@ -2,7 +2,7 @@ use crate::{
     CtbError,
     grid::{Bounds, GlobalGeodeticGrid, TileCoord, TileGrid},
     raster::{Crs, RasterSource, transform_bounds, transform_coordinate},
-    sampling::{ResamplingMethod, sample_with_footprint_raster_tiler},
+    sampling::{ResamplingMethod, sample_with_footprint_raster_tiler_level},
 };
 
 /// One destination cell of a CTB `RasterTiler` warped VRT.
@@ -88,6 +88,8 @@ impl RasterTileSamplePlan {
             .checked_mul(side)
             .ok_or(CtbError::InvalidTileSize(self.tile_size))?;
         let mut values = Vec::with_capacity(capacity);
+        let target_ratio = 1.0 / source.metadata().transform.pixel_width.abs();
+        let level = source.sampling_level_for_ratio(target_ratio)?;
         for row in 0..self.tile_size {
             for column in 0..self.tile_size {
                 let point = self.sample(row, column).expect(
@@ -101,8 +103,8 @@ impl RasterTileSamplePlan {
                 )?;
                 let footprint =
                     transform_bounds(point.footprint, &self.target_crs, &source.metadata().crs)?;
-                values.push(sample_with_footprint_raster_tiler(
-                    source, world_x, world_y, footprint, method,
+                values.push(sample_with_footprint_raster_tiler_level(
+                    source, &level, world_x, world_y, footprint, method,
                 )?);
             }
         }
@@ -112,7 +114,13 @@ impl RasterTileSamplePlan {
 
 #[cfg(test)]
 mod tests {
-    use crate::grid::GlobalMercatorGrid;
+    use crate::{
+        grid::GlobalMercatorGrid,
+        raster::{
+            AffineTransform, Crs, RasterMetadata, RasterSampleType, RasterSource, RasterWindow,
+            SamplingLevel, WindowRequest,
+        },
+    };
 
     use super::*;
 
@@ -197,6 +205,87 @@ mod tests {
         let top_left = plan.sample(0, 0).expect("in-bounds Mercator cell");
         assert_eq!(top_left.footprint.max_y, GlobalMercatorGrid::ORIGIN_SHIFT);
         assert_eq!(top_left.footprint.min_x, -GlobalMercatorGrid::ORIGIN_SHIFT);
+        Ok(())
+    }
+
+    struct OverviewOnlySource {
+        base: RasterMetadata,
+        overview: SamplingLevel,
+    }
+
+    impl RasterSource for OverviewOnlySource {
+        fn metadata(&self) -> &RasterMetadata {
+            &self.base
+        }
+
+        fn overview_count(&self) -> u16 {
+            1
+        }
+
+        fn read_window(&self, _request: WindowRequest) -> Result<RasterWindow, CtbError> {
+            Err(CtbError::RasterRead(
+                "base-level read was used instead of the overview".to_owned(),
+            ))
+        }
+
+        fn sampling_level_for_ratio(&self, _target_ratio: f64) -> Result<SamplingLevel, CtbError> {
+            Ok(self.overview.clone())
+        }
+
+        fn read_sampling_window(
+            &self,
+            level: &SamplingLevel,
+            request: WindowRequest,
+        ) -> Result<RasterWindow, CtbError> {
+            if level.level != 1 {
+                return Err(CtbError::RasterRead(
+                    "RasterTiler did not retain the selected overview level".to_owned(),
+                ));
+            }
+            Ok(RasterWindow {
+                request,
+                samples: vec![42.0],
+            })
+        }
+    }
+
+    #[test]
+    fn sample_values_reuses_the_selected_overview_level() -> Result<(), CtbError> {
+        let base_transform = AffineTransform::north_up(-180.0, 90.0, 180.0, -90.0)?;
+        let overview_transform = AffineTransform::north_up(-180.0, 90.0, 360.0, -180.0)?;
+        let source = OverviewOnlySource {
+            base: RasterMetadata {
+                width: 2,
+                height: 2,
+                band_count: 1,
+                crs: Crs::Epsg4326,
+                transform: base_transform,
+                no_data: None,
+                sample_type: RasterSampleType::Float64,
+            },
+            overview: SamplingLevel {
+                level: 1,
+                metadata: RasterMetadata {
+                    width: 1,
+                    height: 1,
+                    band_count: 1,
+                    crs: Crs::Epsg4326,
+                    transform: overview_transform,
+                    no_data: None,
+                    sample_type: RasterSampleType::Float64,
+                },
+            },
+        };
+        let plan = RasterTileSamplePlan::new(
+            GlobalGeodeticGrid::new(2)?,
+            TileCoord {
+                zoom: 0,
+                x: 0,
+                y: 0,
+            },
+        )?;
+        let values = plan.sample_values(&source, ResamplingMethod::Nearest)?;
+        assert_eq!(values, vec![42.0; 4]);
         Ok(())
     }
 }

@@ -148,5 +148,12 @@ Terrain 携带 creation option 必须在输出目录写入前失败。
 当前 Rust overview fixture 已覆盖 2/4 倍 top-level overview、1.5/2/4 ratio 选择、派生
 GeoTransform 和窗口样本；全套测试 77 项通过，C++ tie/boundary 差分仍待补。
 
+Level-aware RasterTiler 测试还需断言 `sample_values` 只选择一次 level，并从 overview IFD
+读取，而不是逐像元回退 base IFD；与同一 fixture 的 base/overview 样本和 C++ SuggestedWarp
+选择结果进行差分。
+
+Rust overview-only source 已验证 RasterTiler 复用选定 level，当前全套测试 83 项通过；
+C++ ratio/tie 差分仍待补。
+
 Cargo 命令必须在禁用沙盒的环境执行。生产代码和测试均不得以 `unwrap` 隐藏预期失败；测试中
 若使用 `expect`，消息应说明被验证的不变量。

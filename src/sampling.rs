@@ -226,19 +226,30 @@ pub fn sample_with_footprint_raster_tiler(
     method: ResamplingMethod,
 ) -> Result<f64, CtbError> {
     let level = source.sampling_level_for_ratio(1.0)?;
+    sample_with_footprint_raster_tiler_level(source, &level, world_x, world_y, footprint, method)
+}
+
+pub fn sample_with_footprint_raster_tiler_level(
+    source: &dyn RasterSource,
+    level: &SamplingLevel,
+    world_x: f64,
+    world_y: f64,
+    footprint: Bounds,
+    method: ResamplingMethod,
+) -> Result<f64, CtbError> {
     match method {
-        ResamplingMethod::Average => average_at(source, &level, footprint, world_x, world_y),
-        ResamplingMethod::Max => extrema_at(source, &level, footprint, true),
-        ResamplingMethod::Min => extrema_at(source, &level, footprint, false),
-        ResamplingMethod::Mode => mode_at(source, &level, footprint),
-        ResamplingMethod::Med => quantile_at(source, &level, footprint, 0.5),
-        ResamplingMethod::Q1 => quantile_at(source, &level, footprint, 0.25),
-        ResamplingMethod::Q3 => quantile_at(source, &level, footprint, 0.75),
+        ResamplingMethod::Average => average_at(source, level, footprint, world_x, world_y),
+        ResamplingMethod::Max => extrema_at(source, level, footprint, true),
+        ResamplingMethod::Min => extrema_at(source, level, footprint, false),
+        ResamplingMethod::Mode => mode_at(source, level, footprint),
+        ResamplingMethod::Med => quantile_at(source, level, footprint, 0.5),
+        ResamplingMethod::Q1 => quantile_at(source, level, footprint, 0.25),
+        ResamplingMethod::Q3 => quantile_at(source, level, footprint, 0.75),
         ResamplingMethod::Nearest | ResamplingMethod::Bilinear => {
-            sample_at_level_with_nearest_support(source, &level, world_x, world_y, method, false)
+            sample_at_level_with_nearest_support(source, level, world_x, world_y, method, false)
         }
         ResamplingMethod::Cubic | ResamplingMethod::CubicSpline | ResamplingMethod::Lanczos => {
-            sample_at_level_with_nearest_support(source, &level, world_x, world_y, method, false)
+            sample_at_level_with_nearest_support(source, level, world_x, world_y, method, false)
         }
     }
 }
