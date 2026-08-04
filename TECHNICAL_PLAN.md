@@ -181,10 +181,7 @@ target grid 不一致时返回结构化错误；`cargo test` 72 项及 clippy �
 未知 CRS、越过有效纬度或旋转 transform 仍返回结构化错误，不静默当作 4326。
 
 Rust 证据：`raster::transform_coordinate/transform_bounds` 已覆盖双向控制点，
-`RasterTileSamplePlan` 已把目标中心和 footprint 转入 source CRS，tileset 规划和 GTiff
-writer 已保留 target CRS；CLI 覆盖 EPSG:4326 source→EPSG:3857 target，`cargo test` 74
-项、clippy 通过。TerrainTiler 接入和 upper-edge 行为已覆盖 Rust CLI；缩放/overview、
-NoData 和 C++ z0/z1 payload 差分仍未完成。
+`RasterTileSamplePlan` 已把目标中心和 footprint 转入 source CRS，tileset 规划和 GTiff writer 已保留 target CRS；CLI 覆盖 EPSG:4326 source→EPSG:3857 target，`cargo test` 74 项、clippy 通过。TerrainTiler 接入和 upper-edge 行为已覆盖 Rust CLI；缩放/overview、 NoData 和 C++ z0/z1 payload 差分仍未完成。
 
 #### P3 实施记录 2：TerrainTiler Grid/重投影接入（Rust 实现完成，差分待补）
 
@@ -205,6 +202,8 @@ C++ oracle 构建记录：现有 CTB 0.4.1 源码在系统 GDAL 3.x 头文件下
 
 Rust 证据：`RasterGeoTiffCompression::Lzw` 与 CLI `COMPRESS=LZW` 已接入，CLI 生成文件
 可由 `GeoTiffFile` 读回；74 项测试和 clippy 通过。
+
+底层 TIFF 常量还列出 PackBits，但 `GeoTiffBuilder` 当前明确拒绝该压缩方式，因此不能直接映射；JPEG/LERC/ZSTD 等需要单独确认 C++ driver 清单、feature 和有损/无损语义，暂不静默映射。
 
 ### P3：完成 Global Mercator 与投影
 
