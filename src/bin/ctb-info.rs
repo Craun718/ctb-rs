@@ -27,11 +27,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let terrain = HeightmapTerrain::read_gzip(&arguments.input)?;
 
     if arguments.show_heights {
-        println!("Heights:");
+        print!("Heights:");
         for row in terrain.heights.chunks(HEIGHTMAP_TILE_SIZE) {
-            let values = row.iter().map(u16::to_string).collect::<Vec<_>>().join(" ");
-            println!("{values}");
+            println!();
+            for value in row {
+                print!("{value} ");
+            }
         }
+        println!();
     }
     if !arguments.no_child {
         let mut names = Vec::new();

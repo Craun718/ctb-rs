@@ -74,6 +74,16 @@ fn ctb_tile_and_info_work_as_processes() -> Result<(), Box<dyn std::error::Error
     let stdout = String::from_utf8(info.stdout)?;
     assert_eq!(stdout, "Child tiles: None\nTile type: all land\n");
 
+    let heights_info = Command::new(env!("CARGO_BIN_EXE_ctb-info"))
+        .args(["-e", "-c", "-t"])
+        .arg(&terrain)
+        .output()?;
+    assert!(heights_info.status.success());
+    let heights_stdout = String::from_utf8(heights_info.stdout)?;
+    assert!(heights_stdout.starts_with("Heights:\n5000 5000 5000 "));
+    assert!(heights_stdout.ends_with('\n'));
+    assert_eq!(heights_stdout.lines().count(), 66);
+
     let invalid_info = Command::new(env!("CARGO_BIN_EXE_ctb-info"))
         .arg(directory.join("missing.terrain"))
         .output()?;

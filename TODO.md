@@ -47,6 +47,9 @@
 
 ## P4：格式与 CLI 全量兼容
 
+- [x] 收敛 `ctb-info -e` 输出换行/尾部空格，并让 `ctb-extents` 通过 `TileGrid` 支持
+      geodetic/mercator（C++ `tools/ctb-info.cpp`、`ctb-extents.cpp`；CLI golden tests；72
+      tests passed）。C++ 逐字节差分与重投影输入仍待补。
 - [ ] 按 C++ 可用 driver 建立输入格式、输出 format、extension 和 creation option 矩阵。
 - [ ] 完成 GTiff creation options、样本类型和 metadata 的全部已登记组合。
 - [ ] 逐 driver 以纯 Rust 实现 C++ `CreateCopy` 路径；每个 driver 有独立 oracle。

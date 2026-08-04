@@ -2,8 +2,11 @@ use std::{error::Error, path::PathBuf};
 
 use clap::Parser;
 use ctb_rs::{
-    extents::write_extents, geotiff::GeoTiffRasterSource, grid::GlobalGeodeticGrid,
-    raster::RasterSource, tileset::TilesetPlan,
+    extents::write_extents,
+    geotiff::GeoTiffRasterSource,
+    grid::{GlobalGeodeticGrid, GlobalMercatorGrid, TileGrid},
+    raster::RasterSource,
+    tileset::TilesetPlan,
 };
 
 #[derive(Debug, Parser)]
@@ -13,7 +16,7 @@ struct Arguments {
     #[arg(short, long, default_value = ".")]
     output_dir: PathBuf,
 
-    /// TMS profile. The pure-Rust implementation currently supports geodetic only.
+    /// TMS profile. Direct-source extents support geodetic and mercator grids.
     #[arg(short, long, default_value = "geodetic")]
     profile: String,
 
@@ -35,18 +38,19 @@ struct Arguments {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments = Arguments::parse();
-    if arguments.profile != "geodetic" {
-        return Err("only the geodetic profile is currently supported".into());
-    }
     let source = GeoTiffRasterSource::open(&arguments.input)?;
-    let grid = GlobalGeodeticGrid::new(arguments.tile_size)?;
-    let plan = TilesetPlan::from_raster_with_zoom_range(
+    let grid: Box<dyn TileGrid> = match arguments.profile.as_str() {
+        "geodetic" => Box::new(GlobalGeodeticGrid::new(arguments.tile_size)?),
+        "mercator" => Box::new(GlobalMercatorGrid::new(arguments.tile_size)?),
+        profile => return Err(format!("unsupported TMS profile {profile}").into()),
+    };
+    let plan = TilesetPlan::from_raster_with_tile_grid(
         source.metadata(),
-        grid,
+        grid.as_ref(),
         arguments.start_zoom,
         arguments.end_zoom,
     )?;
-    if let Err(error) = write_extents(&plan, grid, arguments.output_dir) {
+    if let Err(error) = write_extents(&plan, grid.as_ref(), arguments.output_dir) {
         eprintln!("File could not be opened: {error}");
     }
     Ok(())

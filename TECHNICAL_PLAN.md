@@ -160,6 +160,18 @@ Rust 证据：`sampling.rs` 已实现三种核及边界 tap 丢弃/权重归一�
 证据：脚本已覆盖 12 个 CLI 名称并通过 `zsh -n`；当前环境只有 Rust `target/debug/ctb-tile`
 和 GDAL utilities，没有 C++ `ctb-tile`，故差分执行仍是待办。
 
+#### P4 实施记录 1：info/export/extents CLI 收敛（Rust 实现完成，C++ 差分待补）
+
+依据 C++ `tools/ctb-info.cpp`、`tools/ctb-export.cpp` 和 `tools/ctb-extents.cpp`，本单元
+先修正 `ctb-info -e` 的 ASCII raster 输出为 `Heights:` 后逐行输出、每个样本带尾部空格，
+并让 extents 复用 `TileGrid` 接口覆盖 geodetic 与 mercator。GeoJSON 的属性和科学计数法
+保持现有 C++ 对齐实现；export 的缺失输入 fallback/error 行为保持已有契约。
+
+Rust 证据：`ctb-info -e` CLI golden test 检查 66 行 ASCII 输出、尾部换行和行内尾空格；
+`ctb-extents` 已通过 `&dyn TileGrid` 生成两种 profile 的 GeoJSON，仍在 source CRS 与
+target grid 不一致时返回结构化错误；`cargo test` 72 项及 clippy 通过。C++ 逐字节 CLI
+差分和 EPSG:4326→3857 extents 仍待 P3 oracle。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为

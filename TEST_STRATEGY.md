@@ -80,5 +80,11 @@ C++ 输出差分尚未建立。
 oracle 脚本的算法循环必须覆盖 `nearest bilinear cubic cubicspline lanczos average mode
 max min med q1 q3`；若 `CTB_ORACLE_BIN` 未提供，脚本应明确退出而不能被解释为差分通过。
 
+CLI golden tests 对 `ctb-info -e` 逐字节比较 65×65 ASCII 输出；对 `ctb-extents` 分别检查
+EPSG:4326 geodetic 与 EPSG:3857 mercator 的 z0/z1 文件、GeoJSON polygon 顺序、tile 属性
+和科学计数法。错误路径继续比较 exit status 与 stderr。
+当前 Rust 证据为 `tests/cli.rs` 的 info 输出断言和 extents geodetic/unsupported-mercator
+路径测试；Mercator direct-source 及 C++ 逐字节输出差分仍待补。
+
 Cargo 命令必须在禁用沙盒的环境执行。生产代码和测试均不得以 `unwrap` 隐藏预期失败；测试中
 若使用 `expect`，消息应说明被验证的不变量。

@@ -2,14 +2,11 @@ use std::{fs, path::Path};
 
 use crate::{
     CtbError,
-    grid::GlobalGeodeticGrid,
+    grid::TileGrid,
     tileset::{TilesetLevel, TilesetPlan},
 };
 
-pub fn geojson_for_level(
-    grid: GlobalGeodeticGrid,
-    level: &TilesetLevel,
-) -> Result<String, CtbError> {
+pub fn geojson_for_level(grid: &dyn TileGrid, level: &TilesetLevel) -> Result<String, CtbError> {
     let mut features = Vec::with_capacity(level.tiles.len());
     for tile in &level.tiles {
         let bounds = grid.tile_bounds(*tile)?;
@@ -42,7 +39,7 @@ fn format_scientific_15(value: f64) -> String {
 
 pub fn write_extents(
     plan: &TilesetPlan,
-    grid: GlobalGeodeticGrid,
+    grid: &dyn TileGrid,
     output_directory: impl AsRef<Path>,
 ) -> Result<(), CtbError> {
     let output_directory = output_directory.as_ref();
@@ -57,7 +54,11 @@ pub fn write_extents(
 
 #[cfg(test)]
 mod tests {
-    use crate::{CtbError, grid::TileCoord, tileset::TilesetLevel};
+    use crate::{
+        CtbError,
+        grid::{GlobalGeodeticGrid, TileCoord},
+        tileset::TilesetLevel,
+    };
 
     use super::*;
 
@@ -71,7 +72,8 @@ mod tests {
                 y: 0,
             }],
         };
-        let geojson = geojson_for_level(GlobalGeodeticGrid::new(65)?, &level)?;
+        let grid = GlobalGeodeticGrid::new(65)?;
+        let geojson = geojson_for_level(&grid, &level)?;
         assert!(geojson.contains(r#""tx": 0, "ty": 0"#));
         assert!(geojson.contains("[-1.800000000000000e+02, -9.000000000000000e+01]"));
         assert!(geojson.contains("[0.000000000000000e+00, 9.000000000000000e+01]"));
