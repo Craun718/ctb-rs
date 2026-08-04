@@ -53,6 +53,9 @@
 - [ ] 对上述 12 个 RasterTiler 算法分别生成非平坦 C++ oracle 并完成数值差分；当前脚本已
       证明 Terrain 的 4 组 direct/overview 前置矩阵，RasterTiler GTiff 数值矩阵仍待执行。
 - [ ] 对 integer/float、NoData 和 source 覆盖外的转换顺序逐项差分。
+- [x] 完成 RasterTiler footprint 核的 source-outside destination 初始化差分；plain z0 GTiff
+      tile-size-16 的 12 算法均通过 C++，7 个统计核通过中心 bounds 门禁修复；NoData 和
+      overview 仍单独验证。
 - [ ] 用含多个 NoData 像元的 fixture 验证逐像元 NaN 标记、12 个采样分支的有效样本过滤、
       全 NoData 时的 destination 初值 0，以及 Terrain 编码结果；与 GDAL density 差分待补。
 

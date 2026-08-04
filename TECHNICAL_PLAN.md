@@ -144,6 +144,13 @@ payload 首差异在 byte 4225，边缘高度编码为 C++ `5500/6000`、Rust `6
 EPSG:3857、无重投影的窄范围 fixture；该差异归入 Mercator upper-edge/source coverage 与
 destination 初始化规则，尚未修改实现。
 
+RasterTiler GTiff z0、tile size 16 的 plain fixture 差分显示：nearest、bilinear、cubic、
+cubicspline、lanczos 已逐值通过；average、mode、max、min、med、q1、q3 只在 source 外边缘
+失败。C++ 对目标中心位于 source bounds 外、但目标 footprint 与 source 边界相交的像元保留
+destination 初值 `0`；Rust 原先先按 footprint 相交面积统计，违反了 GDAL warp 的中心有效性
+门禁。现按 C++ 执行顺序仅在 RasterTiler 统计核前加入中心 bounds 检查，Terrain overlap 路径
+继续保留原有行为；plain GTiff z0/tile-size-16 的全部 12 算法已逐值通过。
+
 
 ### P1：收敛既有 Geodetic 路径
 

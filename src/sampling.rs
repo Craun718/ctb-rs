@@ -237,6 +237,17 @@ pub fn sample_with_footprint_raster_tiler_level(
     footprint: Bounds,
     method: ResamplingMethod,
 ) -> Result<f64, CtbError> {
+    let source_bounds = level
+        .metadata
+        .transform
+        .bounds(level.metadata.width, level.metadata.height)?;
+    if world_x < source_bounds.min_x
+        || world_x > source_bounds.max_x
+        || world_y < source_bounds.min_y
+        || world_y > source_bounds.max_y
+    {
+        return Ok(0.0);
+    }
     match method {
         ResamplingMethod::Average => average_at(source, level, footprint, world_x, world_y),
         ResamplingMethod::Max => extrema_at(source, level, footprint, true),

@@ -171,6 +171,10 @@ Mercator 最小差分使用同一 source fixture 改写为 EPSG:3857、z0、Terr
 该边缘像元映射回 source/world 坐标，并分别断言 source 覆盖内采样、覆盖外 destination 初值
 和 child flags，不能只比较整包失败。
 
+RasterTiler plain z0 GTiff/tile-size-16 oracle 结果：5 个连续核和 7 个 footprint 统计核均
+逐值通过。原始失败情形是中心位于 source bounds 外而 footprint 擦边，C++ 样本为 destination
+初值 0；Rust 已在 RasterTiler 统计入口补门禁，且现有 Terrain source-edge overlap 测试仍通过。
+
 `ctb-tile` 参数测试还必须覆盖 `-z` 默认 `0.125`、`-m` 默认 `0` 的解析、负数/非有限值
 拒绝，以及非默认值在任何 tile 写出前显式返回未实现错误。待 C++ oracle 恢复后，再比较
 `-z` 对投影结果的影响，并确认 `-m` 是否仅为执行资源提示。
