@@ -1,4 +1,4 @@
-use crate::CtbError;
+use crate::{CtbError, raster::Crs};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bounds {
@@ -58,6 +58,21 @@ pub struct TileCoord {
 pub struct TileRange {
     pub lower_left: TileCoord,
     pub upper_right: TileCoord,
+}
+
+/// The shared CTB `Grid` contract used by raster tilers.
+///
+/// Concrete profiles retain their original coordinate units: degrees for
+/// Global Geodetic and metres for Global Mercator.
+pub trait TileGrid: Send + Sync {
+    fn crs(&self) -> Crs;
+    fn tile_size(&self) -> u32;
+    fn resolution(&self, zoom: u8) -> Result<f64, CtbError>;
+    fn zoom_for_resolution(&self, resolution: f64) -> Result<u8, CtbError>;
+    fn tiles_x(&self, zoom: u8) -> Result<u32, CtbError>;
+    fn tiles_y(&self, zoom: u8) -> Result<u32, CtbError>;
+    fn tile_bounds(&self, tile: TileCoord) -> Result<Bounds, CtbError>;
+    fn coordinate_to_tile(&self, x: f64, y: f64, zoom: u8) -> Result<TileCoord, CtbError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +221,193 @@ impl GlobalGeodeticGrid {
     }
 }
 
+impl TileGrid for GlobalGeodeticGrid {
+    fn crs(&self) -> Crs {
+        Crs::Epsg4326
+    }
+
+    fn tile_size(&self) -> u32 {
+        (*self).tile_size()
+    }
+
+    fn resolution(&self, zoom: u8) -> Result<f64, CtbError> {
+        (*self).resolution(zoom)
+    }
+
+    fn zoom_for_resolution(&self, resolution: f64) -> Result<u8, CtbError> {
+        (*self).zoom_for_resolution(resolution)
+    }
+
+    fn tiles_x(&self, zoom: u8) -> Result<u32, CtbError> {
+        (*self).tiles_x(zoom)
+    }
+
+    fn tiles_y(&self, zoom: u8) -> Result<u32, CtbError> {
+        (*self).tiles_y(zoom)
+    }
+
+    fn tile_bounds(&self, tile: TileCoord) -> Result<Bounds, CtbError> {
+        (*self).tile_bounds(tile)
+    }
+
+    fn coordinate_to_tile(&self, x: f64, y: f64, zoom: u8) -> Result<TileCoord, CtbError> {
+        (*self).coordinate_to_tile(x, y, zoom)
+    }
+}
+
+/// CTB's TMS Global Mercator grid in EPSG:3857 metres.
+///
+/// This mirrors the cpp `GlobalMercator` constructor: one root tile, a
+/// power-of-two zoom factor, and an extent of ±π×6378137 metres.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalMercatorGrid {
+    tile_size: u32,
+}
+
+impl GlobalMercatorGrid {
+    pub const SEMI_MAJOR_AXIS: f64 = 6_378_137.0;
+    pub const ORIGIN_SHIFT: f64 = std::f64::consts::PI * Self::SEMI_MAJOR_AXIS;
+
+    pub fn new(tile_size: u32) -> Result<Self, CtbError> {
+        if tile_size < 2 {
+            return Err(CtbError::InvalidTileSize(tile_size));
+        }
+        Ok(Self { tile_size })
+    }
+
+    pub fn tile_size(self) -> u32 {
+        self.tile_size
+    }
+
+    pub fn extent(self) -> Bounds {
+        // Constants above are finite and strictly ordered by construction.
+        Bounds::new(
+            -Self::ORIGIN_SHIFT,
+            -Self::ORIGIN_SHIFT,
+            Self::ORIGIN_SHIFT,
+            Self::ORIGIN_SHIFT,
+        )
+        .expect("GlobalMercator origin shift defines a non-empty finite extent")
+    }
+
+    pub fn resolution(self, zoom: u8) -> Result<f64, CtbError> {
+        let scale = self.scale(zoom)?;
+        Ok((2.0 * Self::ORIGIN_SHIFT / f64::from(self.tile_size)) / f64::from(scale))
+    }
+
+    pub fn zoom_for_resolution(self, resolution: f64) -> Result<u8, CtbError> {
+        if !resolution.is_finite() || resolution <= 0.0 {
+            return Err(CtbError::InvalidBounds);
+        }
+        let initial_resolution = self.resolution(0)?;
+        let zoom = (initial_resolution / resolution).log2().ceil().max(0.0);
+        if zoom > 30.0 {
+            return Err(CtbError::InvalidZoom(31));
+        }
+        Ok(zoom as u8)
+    }
+
+    pub fn tiles_x(self, zoom: u8) -> Result<u32, CtbError> {
+        self.scale(zoom)
+    }
+
+    pub fn tiles_y(self, zoom: u8) -> Result<u32, CtbError> {
+        self.scale(zoom)
+    }
+
+    pub fn tile_bounds(self, tile: TileCoord) -> Result<Bounds, CtbError> {
+        self.validate_tile(tile)?;
+        let resolution = self.resolution(tile.zoom)?;
+        let min_x = f64::from(
+            tile.x
+                .checked_mul(self.tile_size)
+                .ok_or(CtbError::InvalidZoom(tile.zoom))?,
+        ) * resolution
+            - Self::ORIGIN_SHIFT;
+        let min_y = f64::from(
+            tile.y
+                .checked_mul(self.tile_size)
+                .ok_or(CtbError::InvalidZoom(tile.zoom))?,
+        ) * resolution
+            - Self::ORIGIN_SHIFT;
+        let max_x = min_x + f64::from(self.tile_size) * resolution;
+        let max_y = min_y + f64::from(self.tile_size) * resolution;
+        Bounds::new(min_x, min_y, max_x, max_y)
+    }
+
+    pub fn coordinate_to_tile(self, x: f64, y: f64, zoom: u8) -> Result<TileCoord, CtbError> {
+        if !x.is_finite()
+            || !y.is_finite()
+            || !(-Self::ORIGIN_SHIFT..=Self::ORIGIN_SHIFT).contains(&x)
+            || !(-Self::ORIGIN_SHIFT..=Self::ORIGIN_SHIFT).contains(&y)
+        {
+            return Err(CtbError::CoordinateOutsideGrid { x, y });
+        }
+        let tiles = self.scale(zoom)?;
+        Ok(TileCoord {
+            zoom,
+            x: Self::index_at(x, tiles),
+            y: Self::index_at(y, tiles),
+        })
+    }
+
+    fn scale(self, zoom: u8) -> Result<u32, CtbError> {
+        1_u32
+            .checked_shl(u32::from(zoom))
+            .ok_or(CtbError::InvalidZoom(zoom))
+    }
+
+    fn validate_tile(self, tile: TileCoord) -> Result<(), CtbError> {
+        let tiles = self.scale(tile.zoom)?;
+        if tile.x > tiles || tile.y > tiles {
+            return Err(CtbError::CoordinateOutsideGrid {
+                x: f64::from(tile.x),
+                y: f64::from(tile.y),
+            });
+        }
+        Ok(())
+    }
+
+    fn index_at(value: f64, tiles: u32) -> u32 {
+        ((value + Self::ORIGIN_SHIFT) / (2.0 * Self::ORIGIN_SHIFT) * f64::from(tiles)).floor()
+            as u32
+    }
+}
+
+impl TileGrid for GlobalMercatorGrid {
+    fn crs(&self) -> Crs {
+        Crs::Epsg3857
+    }
+
+    fn tile_size(&self) -> u32 {
+        (*self).tile_size()
+    }
+
+    fn resolution(&self, zoom: u8) -> Result<f64, CtbError> {
+        (*self).resolution(zoom)
+    }
+
+    fn zoom_for_resolution(&self, resolution: f64) -> Result<u8, CtbError> {
+        (*self).zoom_for_resolution(resolution)
+    }
+
+    fn tiles_x(&self, zoom: u8) -> Result<u32, CtbError> {
+        (*self).tiles_x(zoom)
+    }
+
+    fn tiles_y(&self, zoom: u8) -> Result<u32, CtbError> {
+        (*self).tiles_y(zoom)
+    }
+
+    fn tile_bounds(&self, tile: TileCoord) -> Result<Bounds, CtbError> {
+        (*self).tile_bounds(tile)
+    }
+
+    fn coordinate_to_tile(&self, x: f64, y: f64, zoom: u8) -> Result<TileCoord, CtbError> {
+        (*self).coordinate_to_tile(x, y, zoom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +483,94 @@ mod tests {
                 y: 1
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn global_mercator_matches_ctb_root_grid_constants() -> Result<(), CtbError> {
+        let grid = GlobalMercatorGrid::new(256)?;
+        assert_eq!(grid.tile_size(), 256);
+        assert_eq!(grid.tiles_x(0)?, 1);
+        assert_eq!(grid.tiles_y(0)?, 1);
+        assert_eq!(
+            grid.resolution(0)?,
+            2.0 * GlobalMercatorGrid::ORIGIN_SHIFT / 256.0
+        );
+        assert_eq!(grid.resolution(1)?, grid.resolution(0)? / 2.0);
+        assert_eq!(
+            grid.tile_bounds(TileCoord {
+                zoom: 0,
+                x: 0,
+                y: 0,
+            })?,
+            grid.extent()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn global_mercator_uses_ctb_tms_bottom_left_tile_coordinates() -> Result<(), CtbError> {
+        let grid = GlobalMercatorGrid::new(256)?;
+        let origin = GlobalMercatorGrid::ORIGIN_SHIFT;
+        assert_eq!(
+            grid.coordinate_to_tile(-origin / 2.0, -origin / 2.0, 1)?,
+            TileCoord {
+                zoom: 1,
+                x: 0,
+                y: 0,
+            }
+        );
+        assert_eq!(
+            grid.coordinate_to_tile(origin / 2.0, origin / 2.0, 1)?,
+            TileCoord {
+                zoom: 1,
+                x: 1,
+                y: 1,
+            }
+        );
+        assert_eq!(
+            grid.tile_bounds(TileCoord {
+                zoom: 1,
+                x: 1,
+                y: 1,
+            })?,
+            Bounds::new(0.0, 0.0, origin, origin)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn tile_grid_contract_preserves_each_cpp_profile_crs_and_geometry() -> Result<(), CtbError> {
+        let geodetic = GlobalGeodeticGrid::new(65)?;
+        let mercator = GlobalMercatorGrid::new(256)?;
+        let grids: [(&dyn TileGrid, Crs, u32, TileCoord); 2] = [
+            (
+                &geodetic,
+                Crs::Epsg4326,
+                65,
+                TileCoord {
+                    zoom: 0,
+                    x: 1,
+                    y: 0,
+                },
+            ),
+            (
+                &mercator,
+                Crs::Epsg3857,
+                256,
+                TileCoord {
+                    zoom: 0,
+                    x: 0,
+                    y: 0,
+                },
+            ),
+        ];
+        for (grid, crs, tile_size, origin_tile) in grids {
+            assert_eq!(grid.crs(), crs);
+            assert_eq!(grid.tile_size(), tile_size);
+            assert!(grid.resolution(0)? > 0.0);
+            assert_eq!(grid.coordinate_to_tile(0.0, 0.0, 0)?, origin_tile);
+        }
         Ok(())
     }
 }

@@ -373,9 +373,9 @@ P1b 要点 1 验收：已建立 `tests/fixtures/MANIFEST.md`，为当前原 CTB 
 
 该单元的完成标准：调用方式、前置条件和失败信息稳定；12 个受限范围 payload 与全部自动范围 payload 均由 `cmp` 验证；临时文件无论成功或失败都会清理。
 
-源码核对修正：原版 `ctb-tile` 虽解析 `-r/--resampling-method`，但 `Terrain` 路径构造 `TerrainTiler(poDataset, grid)` 时未传递 `TilerOptions`；因此 heightmap terrain 始终使用 `GDALTiler` 的默认 `GRA_Average`。该选项仅对原版的非 Terrain GDAL 输出生效。为字节兼容，纯 Rust heightmap CLI 必须保留并接受三个已声明值，但固定使用 `average`；`ResamplingMethod` 的三种领域实现仍保留，不再宣称其已通过 Terrain CLI 生效。
+源码核对修正（已替换）：原版 `ctb-tile` 的 `TerrainBuild::setResampleAlg` 将 `-r/--resampling-method` 写入其 `tilerOptions`，并以 `TerrainTiler(poDataset, grid, tilerOptions)` 构造 heightmap 路径；terrain 会实际使用所选 GDAL algorithm。先前“固定 Average”的结论错误，Rust 不得再硬编码该值。
 
-P1b oracle 命令验收：`scripts/verify-ctb-oracle.zsh` 已在本机 GDAL 与原 CTB executable 下通过。它对 `nearest`、`bilinear`、`average` 各执行自动 zoom 和 `-s 1 -e 1`，共六组原版/Rust 对比；所有 tile path 集合和解压 terrain payload 均一致。脚本结束时清理临时目录。常规 Rust 验收同步通过：40 tests、Clippy 无告警。
+历史验收更正：此前 oracle 在 Rust 端硬编码 Average 时比较了原版多种 `-r` 值，不能证明 nearest/bilinear 的算法兼容；该结论已作废。后续 oracle 必须确认两端实际传入相同 algorithm。
 
 ### P1b 当前实施单元：GeoTIFF 输入契约矩阵
 
@@ -456,6 +456,94 @@ GDAL oracle 结论：720×360、bounds `[-179.9,-89.9,179.9,89.9]`、单层 2× 
 边界补充：CTB 的 `crsToPixels` / `pixelsToTile` 不把世界上/右边界 clamp 到名义 extent 内；精确 `180` 或 `90` 可形成 z=0 的 `x=2` 或 `y=1`，并由 iterator 生成其 tile。Rust 的 `index_at` clamp 和 `validate_tile` 的 `< count` 同样是原版不存在的限制，必须改为直接 `floor` / 整数截断及允许 `index == count`。这是一项原版兼容修复，不改变 Grid 算法或产品接口。
 
 核对状态：修正 Grid 后，既有 18 组 oracle 以及高分辨率输入的 tile 路径集合均与 CTB 相同；GDAL oracle 也确认 Rust 选择了 CTB 所选的 overview 0。高分辨率 overview 的首个 terrain payload 仍不一致，故问题已收敛为 sampling/warp 数值，而非规划、ratio 或 overview GeoTransform。下一轮必须把同一高分辨率 DEM 的无 overview 与有 overview 分开完成 nearest/bilinear/average 逐 tile 比较；若无 overview 已不一致，先为高采样倍率补齐 CTB VRT sampling oracle；若只在 overview 不一致，则记录 GDAL overview band 的实际样值和 VRT 采样坐标后修正 level-aware sampler。
+
+VRT sampling oracle：同一 DEM 的无 overview 基线逐 payload 一致；overview IFD 的 Rust/GDAL 窗口值也一致。差异从 terrain raw offset 132（第 66 个 `u16`，即第 2 行第 1 列）开始：CTB 仍取 overview row 89，Rust 取 row 90。结合 `TerrainTiler::terrainTileBounds`（west/north 扩展一个 resolution）与 VRT 的 RasterIO 坐标，结论是当前 Rust 的 `row - 0.5` / `column - 0.5` centre 解释不符合原版实际采样；应改为以 VRT overlapped destination pixel corner 计算，`world_x = tile.min_x + cell_width * (column - 1)`、`world_y = tile.max_y + cell_height * (1 - row)`，footprint 也相应以该 corner 为起点。该修正必须同时通过高分辨率 base 与 overview oracle，不能只以原有低分辨率 fixture 验收。
+
+反证更新：corner 版本保持高分辨率 base payload 一致，却未改变 overview payload 差异，故该坐标解释不构成已验证修复，已从代码撤回。下一步不再改变 sampling 几何；先在 `write_heightmap_tileset_with_factory` 的实际 worker 路径上加入无 I/O test source，断言 target ratio、返回 level 和 `read_sampling_window` 所接收 level。若 worker 确实读取 level 1，再以 CTB/GDAL dataset 的 overview 生命周期（内部 IFD、external `.ovr`、相关 metadata）逐项对照。
+
+本轮执行：先以临时调试程序直接调用与 writer 相同的 `TerrainSamplePlan::sample_heights`，读取第 66 个样本并与写出的 terrain 第 66 个值比较；该观察优先于继续修改接口或采样数学。随后将确定的 level 传递约束写为常规无 I/O 单元测试。
+
+第 66 样本测量：实际 worker 路径确实选择 level 1，`sample_heights[66]` 为 300，并被量化为最终 terrain 的 6500；CTB 同位为 100 / 5500。Rust overview adapter 的 row 90 值是 300，row 89 值是 100。将 x、y 同时改为 corner 会因 x=`-180` 落到 source 之外而错误取 0；保持现有 x centre `-179.296875`、仅将 y 调为 north-overlap 边缘 `0` 时正好取 CTB 的 row 89。下一次实现只调整 y 轴采样坐标/footprint，上述 x 轴保持不变，并重新执行高分辨率 base、overview 对照。
+
+审计更正：原版 `ctb-tile.cpp` 的 `setResampleAlg` 会将 `-r` 的 GDAL enum 传入 `TilerOptions`；Rust CLI 当前将字段命名为 `_resampling_method` 并硬编码 `Average`，这是原版兼容缺失。此前以原版 `nearest` 对 Rust 作 overview 比较无效，因为两端并未使用同一算法。撤回以该比较作出的 overview sampling 结论和 y-axis 改动；先以双方 `Average` 验证 overview，再单列实现 `nearest/bilinear/cubic/cubicspline/lanczos/average/mode/max/min/med/q1/q3` 的原版 CLI 与 GDAL resampling 语义。
+
+VRT oracle 进展：直接链接原版 `libctb`、调用 `TerrainTiler::createRasterTile(1,0,0)` 后 `RasterIO` 得到 `values[65]=0, values[66]=100`，与原版 terrain 相符。手工复刻 `getOverviewDataset`、overview GeoTransform、destination GeoTransform、`GRA_Average` 与 `NUM_THREADS=ALL_CPUS` 的纯 GDAL VRT 却得到 `values[66]=300`。故差异不在 Rust adapter/level 传递，也不能以简单 world-coordinate 采样修复；下一步必须对比两份 VRT 完整 XML（transformer 参数、source window、nodata/density）并将可观察的隐含 GDAL状态写成 oracle，再设计纯 Rust 等价物。
+
+完整 VRT XML 对比：native CTB 额外使用 `ApproxTransformer`，来源是 `TilerOptions::errorThreshold = 0.125`（默认 gdalwarp 值）；Rust 当前没有该层。手工 VRT 加入 `GDALCreateApproxTransformer(..., 0.125)`，以及 CTB 在 `TerrainTiler` 中对 VRT public GeoTransform 的后设操作后，`values[66]` 仍为 300。故 ApproxTransformer 是原版必须复刻的配置，但不是该输入上 100/300 差异的充分解释；在完成 native VRT 内部 transformer/source-window 状态审计前，不引入未经验证的 Rust approximate transform。
+
+补充排除：手工 oracle 也执行了 CTB 在 `GDALCreateWarpedVRT` 后的 `GDALSetProjection`，结果仍为 300。至此已复现 `createRasterTile` 中所有可从公开 C++ 代码直接观察到的调用及其 XML 状态，却无法复现 native `TerrainTiler` VRT 的 100；该内部 GDAL 生命周期差异不能安全外推为 Rust 算法。停止在此处继续试错，overview 单元保持未完成；并行恢复原版 `-r` 的参数/算法兼容审计，避免阻塞其他登记功能。
+
+`-r` 恢复单元：原版 `ctb-tile` 接受 `nearest; bilinear; cubic; cubicspline; lanczos; average; mode; max; min; med; q1; q3`，`TerrainBuild::setResampleAlg` 将每个值对应到 GDAL enum 并写入 `TilerOptions::resampleAlg`。Rust 必须先使 CLI 枚举完整且将选择传入 writer；然后以 GDAL/CTB 生成的小型非平坦 fixture 分别记录各算法 payload。实现顺序按 GDAL 的算法族：nearest、bilinear、cubic/cubicspline/lanczos 插值族；average；mode/min/max/med/q1/q3 聚合族。不得把未知值静默映射为 Average，也不得仅为通过 parsing test 宣称算法支持。
+
+接口完成状态：Rust 的 `ResamplingMethod`、Clap `ResamplingArgument` 和 `HeightmapTilesetOptions` 现可表达并传递全部 12 个原版名称；单元测试遍历全部名称。已有 nearest/bilinear/average 路径维持实现，其余九种当前返回明确 `UnsupportedRaster`，不计为算法实现或 CLI 完成。后续每添加一族必须将该错误替换为经 oracle 验证的计算，而不是回退为 Average。
+
+下一算法单元（max/min）：先从 `gdalwarpkernel.cpp` 的 `GRA_Max`、`GRA_Min` 分支记录 source-window 计算、NoData 跳过和 extrema 取值规则；用原版 CTB 及非平坦 GeoTIFF 将若干 destination samples/payload 固化为 oracle。Rust 仅在该 oracle 覆盖的 north-up EPSG:4326 无重投影路径实现同样的 footprint extrema，随后比较完整 terrain payload；mode/quantile 仍独立等待其 GDAL 规则。
+
+max/min 当前证据：GDAL `GRA_Max/GRA_Min` 在 source window 内跳过 invalid/NoData，取全部有效样本的 strict extrema；Rust 以同一 level metadata 的 footprint 覆盖像元遍历实现，空 source window 返回 CTB destination 初始化值 0。非平坦 plain `oracle-source.asc` 的原版 CTB 与 Rust 自动 zoom 全部 terrain 路径和 gzip 解压 payload 均一致，领域测试覆盖完整 2×2 footprint extrema。扩展 oracle 改为真实传递 nearest/bilinear 后在首个 plain nearest 失败，因而 max/min 的 Float32/tiled/overview 扩展验收尚未完成，不能标记整个算法单元完成。
+
+nearest 诊断单元：以直接链接原版 `TerrainTiler::createRasterTile` 的 VRT `RasterIO` 输出为准，选择与 Rust 首个不同 terrain index 对齐；同时记录 target world coordinate、source pixel coordinate和量化前 `f32` 值。随后只修正可由该 oracle 证明的 nearest round/floor、边界或 default-destination 行为，再跑 plain payload；禁止以 Average 结果推断 nearest。
+
+nearest 边界 oracle：plain z0 tile `(0,0,0)` 的 raw index 2144（row 32, col 64）为原版 100 / Rust 0；对应 Rust world x 为 `-1.40625`，source bounds 为 `[-1,1]`、pixel width 1。原版 native VRT 输出 100，表明 GDAL nearest 接受 source 边缘外半个像元的 support 并 clamp 到 edge pixel；Rust 目前在 `sample_at_level` 的 strict dataset bounds 检查中过早返回 0。修复限定于 nearest：将可采样 bounds 向四周扩展半个 source pixel，再保留现有 `floor` 和 clamped index；超出该 support 的点仍按 CTB INIT_DEST=0 输出。
+
+nearest plain 验收：上述半像元 support 修正后，plain 非平坦 fixture 的原版/Rust 自动 zoom tile path 和全部 gzip 解压 payload 一致；领域测试覆盖 support 内 clamp 与 support 外 0。nearest 尚未完成 Float32、tiled/internal-overview 和受限 zoom 的扩展验收。
+
+bilinear 诊断单元：扩展 oracle 的 plain bilinear 首先在 tile `(0,0,0)` 失败。以同一 native `TerrainTiler` VRT 的首个 raw mismatch 对齐，分别记录 GDAL source support 边界、四邻域缺失时的权重归一化/edge clamp 行为；仅在 oracle 证明后调整 bilinear 的 bounds 或 kernel。
+
+bilinear 边界 oracle：首个 mismatch 同为 `(0,0,0)` raw index 2144，CTB native VRT 为 100、Rust 为 0，world x 同为 `-1.40625`。在该点，半像元 support 后 Rust bilinear 的两个 x neighbour 都被既有 clamp 收敛到 edge pixel，得到 oracle 的 100；修复限定为对 bilinear 采用半 source pixel support，插值权重和 neighbour clamp 保持不变。
+
+bilinear 反证：将 nearest 的半像元 support 应用于 bilinear 后虽消除了 index 2144，却在 raw index 63 产生更早的不一致，表明 GDAL bilinear 的边缘核并非简单的 support 扩展加 neighbour clamp。该探索性修改已撤回；bilinear 继续使用严格 bounds，待以 native VRT 中多个 edge/interior 控制点建立完整的 source-coordinate/weight oracle 后再实现。
+
+bilinear 控制点方法：不再以 terrain 的单一压缩-byte 差异推断算法。临时 native CTB oracle 将输出指定 tile 全部 65×65 VRT float values；Rust 侧以相同 `TerrainSamplePlan` 坐标记录 sample 值、source coordinate 和四邻域。比较至少覆盖 source 外、半像元 support、source corner、水平/垂直边和内部位置；只有这些点形成一致的 kernel/edge 规则后才再次修改代码。
+
+最终源码复核（优先于本节此前相反的诊断）：`tools/ctb-tile.cpp` 在 Terrain output 分支调用 `TerrainTiler(poDataset, *grid)`，没有传入 `command->tilerOptions`；只有非 Terrain GDAL output 分支调用 `RasterTiler(poDataset, *grid, command->tilerOptions)`。因此 Terrain heightmap 的 `-r` 仅解析兼容，实际恒为默认 `GRA_Average`。撤销本节中将 nearest/bilinear/max/min 与 Terrain payload 视为原版功能缺失的判断：Rust Terrain CLI 必须恢复固定 Average，同时保留 12 个名称解析。各算法的实现和 oracle 移至未来 RasterTiler output formats 阶段。
+
+Terrain `-r` 验收（2026-08-04）：Rust 现接受全部 12 个原版名称，heightmap writer 固定 Average。`verify-ctb-oracle.zsh` 对 plain、Float32 和 tiled/internal-overview 三种输入下的 `nearest/bilinear/average/max/min`、自动/受限 zoom 共 30 组比较均通过；这证明 Terrain 分支的选择忽略与原版一致，不证明未来 RasterTiler formats 的各算法实现。常规 Rust 验收为 56 tests 与 Clippy 无告警。
+
+下一原版功能审计：进入 `ctb-tile` 的 `--output-format` 非 Terrain 分支。先从 `tools/ctb-tile.cpp`、`RasterTiler` 和 GDAL driver metadata 建立“原版 format 名称 → creation option → 文件名/扩展名 → RasterIO data type/GeoTransform”矩阵；再选择首个能由现有纯 Rust GeoTIFF writer 复刻的原版 format 作为实现单元。此审计不改变当前 Terrain CLI，也不擅自把 GDAL driver 名称暴露为未实现参数。
+
+GTiff 首单元：以原版 `ctb-tile -f GTiff` 的 plain EPSG:4326 source 为 oracle，记录 `{z}/{x}/{y}.tif` 文件集合、band count/type、size、GeoTransform、projection、NoData、压缩/creation option 传递和裸样本。Rust 仅在这些契约被确认后增加 `-f GTiff`，复用现有纯 Rust GeoTIFF writer；其他任意 GDAL driver 名称在未实现前必须明确拒绝，不能伪装为通用 GDAL 输出。
+
+GTiff oracle 观察：plain source 的 z0 `(0,0,0)` 输出为 `{z}/{x}/{y}.tif`、65×65、单 band `Int32`、NoData `-9999`、EPSG:4326、GeoTransform `[-180, 180/65, 0, 90, 0, -180/65]`，并由 GTiff driver default strip layout 写出。RasterTiler CreateCopy 继承 VRT/source storage type；现有 Rust `RasterSource` 将样本归一为 `f64`，不足以决定目标 TIFF storage type。GTiff 实现前需在 `RasterMetadata` 增加内部 `RasterSampleType`（signed/unsigned/float 与 bits），GeoTiff adapter 从 base IFD 的 `SampleFormat` + `BitsPerSample` 填充，sampling 继续使用 `f64`，writer 根据 metadata 选择对应纯 Rust typed encode。该类型信息不新增 CLI，而是复刻 GDAL VRT/CreateCopy 数据模型。
+
+GTiff storage-type 实施状态（2026-08-04）：`RasterMetadata` 已增加内部 `RasterSampleType`，`GeoTiffRasterSource::open` 从 base IFD 的 `SampleFormat` 与 `BitsPerSample` 确定 8/16/32-bit signed/unsigned 及 32/64-bit float。GeoTIFF adapter 继续向采样层暴露 `f64`；新增 Float64、Float32、Signed16、Unsigned16 fixture 断言，以防 writer 前的数据类型信息丢失。多波段编码不一致及超出上述类型组合的 TIFF 继续明确拒绝；typed GTiff 写出尚未开始。
+
+RasterTiler 领域设计：原版 `GDALTiler::createRasterTile(coord)` 为 `Grid::tileBounds(coord)` 创建 north-up VRT GeoTransform `{min_x, resolution, 0, max_y, 0, -resolution}`，尺寸严格等于 `grid.tileSize()`；`RasterTiler` 不修改此 VRT。Rust 因而先定义独立的 `RasterTileSamplePlan`：每个 destination cell 使用中心 `(min_x + (column + 0.5) * resolution, max_y - (row + 0.5) * resolution)`，footprint 是该 cell 的完整 corner bounds。它与 65×65 heightmap 的 edge-overlap `TerrainSamplePlan` 不共用，且仅调用已有按 footprint 的 resampling 边界。首期只建立 plan 与 north-up/行列顺序/相邻 tile GeoTransform 测试；在 GTiff 样本 oracle 明确前，不得假定 `f64 → source type` 的 GDAL saturate/round 行为，也不得写出文件。
+
+RasterTiler 选项边界：非 Terrain 原版将 `-r` 传给 `TilerOptions::resampleAlg`；`-t` 决定 Grid tile size；`-n` 原样交给 GDAL driver；`-p` 仍由 Grid/profile 决定。纯 Rust 的首个 GTiff 单元会只接受已被 writer 明确复刻的 creation options，其他 `-n` 值报不支持而非静默忽略；待实测 GTiff 默认与 `COMPRESS` 等选项矩阵后扩展。`-c/-q/-v/-R`、源独立打开、原子 `.tmp` rename 和路径顺序复用现有 worker/writer 契约。
+
+RasterTiler sampling-plan 实施状态（2026-08-04）：已实现 `RasterTileSamplePlan`，它保存 tile bounds/resolution，并为每个 row-major destination cell 输出 pixel centre 与完整 footprint。单元测试使用 4×4 geodetic grid 固化 `(0,0)` VRT 的顶左/底右中心、north-up footprint 和横向相邻 tile 的连续边界；它没有接入 CLI、采样文件写出或整数转换。常规验证为 58 tests 与 Clippy 无告警。
+
+GTiff oracle 环境状态（2026-08-04）：为复现原版，已在 `/private/tmp/ctb-original-build` 以 CTB 源码配置 CMake。现代 CMake 需 `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`；通过该兼容设置后，CTB 自带的旧 `FindGDAL` 在本机 GDAL 3.13.2 上将 `GDALOpenEx` 错判为不可用并中止配置。该临时构建目录不属于仓库，未改动 CTB 源码或 Rust 依赖。后续 GTiff 样本/creation-option oracle 必须使用可工作的原版 `ctb-tile` 可执行文件；在此之前只推进不依赖该 oracle 的领域单元，不实现未验证的 `-f GTiff`。
+
+GTiff oracle 恢复（2026-08-04）：在 `/private/tmp/ctb-gdal313-oracle` 的 CTB 源码临时副本上，仅适配 GDAL 3.13 的 `GDALOverviewDataset::GetGeoTransform`、`GetMetadata` C++ 虚方法签名后成功构建 `ctb-tile`；原始 CTB 工作树未修改。以 `oracle-source.asc → Int32 EPSG:4326 GeoTIFF` 运行 `ctb-tile -q -f GTiff`，得到 8 个 `{z}/{x}/{y}.tif` 文件。z0 `(0,0,0)` 为 65×65、`Int32`、NoData `-9999`、EPSG:4326、GeoTransform `[-180, 180/65, 0, 90, 0, -180/65]`、block `65×31`。这确认源码 main 的实际 geodetic default tile size 始终为 65；其 help 中“other GDAL formats 256”的文字与实现不符，不得据此改变 Rust geodetic 默认值。`-t 4` oracle 确认 VRT/GTiff 变为 4×4、`[-180,45,0,90,0,-45]`，并在 source 覆盖的目标 cell 写出 Average 值、其他 cell 保留 0。
+
+Typed GTiff writer 实施状态（2026-08-04）：已新增纯 Rust `write_raster_tile_as_geotiff` 文件边界。它接收 `RasterTileSamplePlan`、metadata 与 row-major `f64` samples，使用 `RasterSampleType` 选择 GeoTIFF typed encoder，写入 EPSG:4326、north-up transform、NoData 和无压缩默认 layout。Signed32 的 4×4 unit oracle 覆盖类型、样本、NoData 与 GeoTransform。由于原版对 integer VRT 的 fractional result 的写入 round/saturate 规则和 GTiff creation options 尚未固定，整数 writer 只接受有限的整值和范围内值；float 输出接受有限且可表示的值。这是明确的领域边界，尚未接入 `ctb-tile -f GTiff`，也不得将该拒绝当作最终行为。常规验证为 60 tests 与 Clippy 无告警。
+
+Integer conversion oracle（2026-08-04）：将 2×2 source 放入 z0/tile-size 4 的单一 destination cell，令 Int32 值为 `100,101,102,103`，Average 为 `101.5`，原版 GTiff 写出 `102`；负值 `-100,-99,-98,-97` 的 Average `-98.5` 写出 `-98`。这与本地 GDAL `gdalwarpkernel.cpp::ClampRoundAndAvoidNoData<T>` 一致：integer destination 先 clamp 到 `lowest..max`，再以 `floor(value + 0.5)` 转换（unsigned 的非负范围具有同样结果）。因此 typed writer 应将此前“fractional 明确拒绝”替换为该 clamp/round 规则；NaN/Infinity 没有 source oracle，仍明确拒绝。
+
+GTiff 接入设计：新增独立 `RasterTilesetOptions` 与 `write_raster_geotiff_tileset_with_factory`，复用 `TilesetPlan` 的 zoom/path traversal、独立 source-per-worker、`-R`、first-error 和 progress 契约，但不生成 child mask 或 terrain gzip。每个 tile 创建 `RasterTileSamplePlan`，按非 Terrain `-r` 传入的 resampling 采样，随后以 typed writer 原子写入 `{z}/{x}/{y}.tif`。CLI 仅对精确名称 `GTiff` 走此路径；`Terrain` 保持原版的固定 Average 分支，其他 GDAL driver 名称继续明确拒绝。首期 `-n` 只接受空列表；其后由已记录的 COMPRESS oracle 增量开启，不得忽略或伪造任何 creation option。
+
+GTiff CLI baseline（2026-08-04）：`ctb-tile -f GTiff` 已接入上述 writer；进程测试覆盖 `-t 4`、路径、尺寸、EPSG:4326 和 GeoTransform。对同一 Int32 `oracle-source.tif`，原版与 Rust 输出 10 个 `.tif` 相对路径完全一致，z0 tile 的 `gdal_translate -of XYZ` 样本矩阵一致；两者裸 TIFF SHA-256 不同，原因是独立 writer 的 IFD/strip 容器布局，非语义不兼容。原版 `-n COMPRESS=DEFLATE` 保持 65×31 strips、仅将 image structure 标记为 DEFLATE；`-n TILED=YES` 在本机 GDAL 3.13 输出 256×256 COG layout，不可由普通 writer 冒充。下一增量只支持精确 `COMPRESS=DEFLATE`（及默认/`COMPRESS=NONE`），其他 option 明确拒绝。
+
+GTiff DEFLATE 实施状态（2026-08-04）：typed writer 与 RasterTileset options 现支持 `COMPRESS=DEFLATE`，默认及 `COMPRESS=NONE` 使用无压缩；未知 `-n` 值仍返回错误。进程级测试确认 DEFLATE 分支成功写出 tile。`TILED=YES`、PREDICTOR、block size、BigTIFF 等未实现，不得作为已兼容的 GDAL creation options 宣传。常规验证为 61 tests 与 Clippy 无告警。
+
+RasterTiler nearest 边界 oracle（2026-08-04）：以 plain Int32 source 的 z0 GTiff 对照，原版在 world `(-1.384615384615389, 0)` 输出 0，而 Rust 输出 100。此前 terrain 调试为 `sample_at_level(Nearest)` 加入的半 source-pixel support 会将该 RasterTiler destination point clamp 到 source 边缘；原版 non-Terrain VRT 不采用此规则。故 `RasterTileSamplePlan` 不得继续调用 terrain-oriented `sample_with_footprint` 的 nearest 分支：需引入 RasterTiler 严格 dataset bounds 采样入口，nearest/bilinear 在 source bounds 外返回 CTB initial destination 0，而 terrain 的既有 helper 保持不变，待其各自 oracle 证明。
+
+RasterTiler strict-boundary 实施状态（2026-08-04）：新增 `sample_with_footprint_raster_tiler`，Average/Max/Min 维持 footprint 路径，Nearest/Bilinear 通过 strict bounds path 调用，不再使用 terrain 的 nearest half-pixel support。重跑 plain Int32 z0 后，原版/Rust 的 Nearest 和 Bilinear 解码 XYZ 矩阵均一致；进程回归固定 z0 row 32/column 64 的 nearest 值为 0。常规验证为 62 tests 与 Clippy 无告警。该结论只覆盖 plain z0 的 nearest/bilinear；其余 zoom、source types、overview 和其余 resampling 算法仍需各自 oracle。
+
+GTiff storage-type z0 matrix（2026-08-04）：对 Int16、无 NoData 的 UInt16、及缩放后的 Float32 source，原版/Rust 的 z0 path 和 `nearest/bilinear/average` 解码样本值均一致；由 `RasterSampleType` 选择的 output types 可读回对应 storage type。将 `-9999` NoData 保留在 UInt16 source 时，原版 GDAL 仍在输出 UInt16 TIFF 写入字面 `NoData=-9999` tag；`geotiff-writer` 正确拒绝该不具表示性的 tag，Rust 当前因此返回错误。这是 writer 能力与原版宽容 metadata 行为的缺口，不能通过删除或改写 NoData 隐藏。z1 的初步对照显示 path 集一致；XYZ 第一、二列仅有 GeoTransform 浮点文本 ULP 差异，后续需以第三列 values 比较完整 z1 matrix。
+
+原版范围校正（2026-08-04）：`cesium-terrain-builder` README 的 “Limitations and TODO” 明确将 Quantized-Mesh 1.0 列为“Add support”未来项；源树中不存在 Quantized-Mesh、`layer.json` 或相关 writer。因而 CTB 0.4.1 的“全部功能和接口”不包含 Quantized-Mesh，Rust 不得将其作为原版已具备的兼容要求。原版真实的非 Terrain 输出是任意 GDAL `CreateCopy` driver（README 示例 JPEG、VRT），以及 `GlobalMercator`/`--profile mercator`；后续矩阵和阶段以这些已存在的路径为准。
+
+GlobalMercator 领域设计：原版 `GlobalMercator(tileSize=256)` 是通用 `Grid` 的 extent `[-originShift,+originShift]^2`，`originShift = π * 6378137`，root tile count 1，zoom factor 2，EPSG:3857。故 z0 resolution 为 `2π*6378137/tileSize`，tile bounds 仍通过底左 PixelToCRS 生成，tile x/y 均为 TMS 自南向北。先引入独立 `GlobalMercatorGrid`，测试 origin shift、z0/z1 resolution、bounds 与边界 tile mapping；它不改变现有 geodetic grid。随后将 `Crs`/GeoTIFF adapter 扩展至 EPSG:3857 direct-source，RasterTiler GTiff 可先支持同 CRS no-reprojection；EPSG:4326 → 3857 的 Web Mercator forward transform、反向 bounds/采样和任意 GDAL CRS 仍按原版 GDAL transformer 另立 oracle，不能仅因存在公式而擅自假定像素对齐。
+
+GlobalMercatorGrid 实施状态（2026-08-04）：已实现独立的纯领域 grid，常量为 `SEMI_MAJOR_AXIS=6378137` 与 `ORIGIN_SHIFT=π×6378137`，默认外部调用可传 CTB 的 256 tile size。控制点覆盖 root tile 1×1、z0/z1 resolution、z0 extent 与 z1 north-east bounds，以及 TMS 自南向北坐标。它未接入 existing geodetic `TilesetPlan`、RasterTiler 或 GeoTIFF adapter；当前不改变任何 I/O/CRS 行为。常规验证为 64 tests 与 Clippy 无告警。
+
+Mercator direct-source oracle（2026-08-04）：以 GDAL 将 plain Int32 EPSG:4326 source warp 为 EPSG:3857，再运行原版 `ctb-tile -q -f GTiff -p mercator`。输出路径为 z0 `0/0/0.tif` 及 z1 全 2×2 tiles；z0 为 256×256 `Int32`、NoData `-9999`、EPSG:3857，GeoTransform `[-20037508.342789244, 156543.03392804097, 0, 20037508.342789244, 0, -156543.03392804097]`、block `256×8`。这证实 cpp CTB 的 Mercator default tile size 256（不同于 geodetic 的 65）且 target CRS 确为 3857。下一实现单元须抽出“Grid/target CRS/metadata bounds”领域边界，使 existing `TilesetPlan`/`RasterTileSamplePlan` 既能表达 geodetic 也能表达 Mercator；禁止把 EPSG:3857 metres 塞入现有 `GlobalGeodeticGrid`。
+
+通用 Grid 接口设计：cpp 的 `Grid` 是所有 tiler 的共同参数，持有 tile size、extent、SRS、initial resolution、origin shift 和 zoom factor；`GlobalGeodetic`、`GlobalMercator` 都以其 `resolution`、`crsToTile`、`tileBounds` 实现 RasterTiler。Rust 增加同等的 `TileGrid` trait（`crs`、`tile_size`、`resolution`、`zoom_for_resolution`、`tile_bounds`、`coordinate_to_tile`、tile counts），由现有两个 concrete grids 实现。首个接口单元只增加 trait 与无副作用控制点；现有 public concrete methods 保持不变。下一单元才让 `TilesetPlan` 与 `RasterTileSamplePlan` 接受 `&dyn TileGrid`，并明确 metadata CRS 必须等于 target CRS 之后才允许 direct-source sampling。
+
+TileGrid 接口实施状态（2026-08-04）：已增加 `TileGrid` trait，并由 GlobalGeodetic/GlobalMercator 实现，trait 覆盖 cpp `Grid` 的 target CRS、tile size、resolution/zoom、tile counts、bounds 与 CRS-to-tile 操作。控制点还固定 root `(0,0)` 的 profile 差异：geodetic root 有两个横向 tiles，原点属于 `(x=1,y=0)`；Mercator root 唯一 tile，原点属于 `(x=0,y=0)`。现有 concrete public methods 保持原样，接口尚未传入 `TilesetPlan` 或任何 writer。常规验证为 65 tests 与 Clippy 无告警。
 
 ### P2 当前实施单元：可复现大 DEM 基准（不依赖 overview）
 

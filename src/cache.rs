@@ -176,7 +176,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use crate::raster::{AffineTransform, Crs};
+    use crate::raster::{AffineTransform, Crs, RasterSampleType};
 
     use super::*;
 
@@ -195,6 +195,7 @@ mod tests {
                     crs: Crs::Epsg4326,
                     transform: AffineTransform::north_up(0.0, 8.0, 1.0, -1.0)?,
                     no_data,
+                    sample_type: RasterSampleType::Float64,
                 },
                 reads,
             })

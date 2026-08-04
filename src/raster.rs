@@ -3,6 +3,7 @@ use crate::{CtbError, grid::Bounds};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Crs {
     Epsg4326,
+    Epsg3857,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -67,6 +68,21 @@ pub struct RasterMetadata {
     pub crs: Crs,
     pub transform: AffineTransform,
     pub no_data: Option<f64>,
+    /// TIFF storage encoding retained for RasterTiler CreateCopy equivalents.
+    /// Sampling continues to expose values as f64.
+    pub sample_type: RasterSampleType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RasterSampleType {
+    Unsigned8,
+    Signed8,
+    Unsigned16,
+    Signed16,
+    Unsigned32,
+    Signed32,
+    Float32,
+    Float64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

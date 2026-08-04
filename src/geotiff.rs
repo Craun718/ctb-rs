@@ -4,7 +4,10 @@ use geotiff_reader::GeoTiffFile;
 
 use crate::{
     CtbError,
-    raster::{AffineTransform, Crs, RasterMetadata, RasterSource, RasterWindow, WindowRequest},
+    raster::{
+        AffineTransform, Crs, RasterMetadata, RasterSampleType, RasterSource, RasterWindow,
+        WindowRequest,
+    },
 };
 
 /// A restricted, pure-Rust GeoTIFF source for the Phase 1 input contract.
@@ -46,6 +49,18 @@ impl GeoTiffRasterSource {
             })?),
             None => None,
         };
+        let base_ifd = file
+            .tiff()
+            .ifd(file.base_ifd_index())
+            .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+        let sample_type = raster_sample_type(
+            base_ifd
+                .sample_format()
+                .map_err(|error| CtbError::RasterRead(error.to_string()))?,
+            base_ifd
+                .bits_per_sample()
+                .map_err(|error| CtbError::RasterRead(error.to_string()))?,
+        )?;
         let metadata = RasterMetadata {
             width: file.width(),
             height: file.height(),
@@ -58,6 +73,7 @@ impl GeoTiffRasterSource {
                 transform.pixel_height,
             )?,
             no_data,
+            sample_type,
         };
         metadata.transform.bounds(metadata.width, metadata.height)?;
 
@@ -232,6 +248,7 @@ impl RasterSource for GeoTiffRasterSource {
                     / f64::from(height),
             )?,
             no_data: self.metadata.no_data,
+            sample_type: self.metadata.sample_type,
         };
         Ok(crate::raster::SamplingLevel {
             level: selected as u16 + 1,
@@ -254,6 +271,32 @@ impl RasterSource for GeoTiffRasterSource {
             return Err(CtbError::NoDataEncountered);
         }
         Ok(RasterWindow { request, samples })
+    }
+}
+
+fn raster_sample_type(
+    sample_formats: Vec<u16>,
+    bits_per_sample: Vec<u16>,
+) -> Result<RasterSampleType, CtbError> {
+    let sample_format = sample_formats
+        .first()
+        .copied()
+        .ok_or_else(|| CtbError::UnsupportedRaster("GeoTIFF is missing SampleFormat".to_owned()))?;
+    let bits = bits_per_sample.first().copied().ok_or_else(|| {
+        CtbError::UnsupportedRaster("GeoTIFF is missing BitsPerSample".to_owned())
+    })?;
+    match (sample_format, bits) {
+        (1, 8) => Ok(RasterSampleType::Unsigned8),
+        (2, 8) => Ok(RasterSampleType::Signed8),
+        (1, 16) => Ok(RasterSampleType::Unsigned16),
+        (2, 16) => Ok(RasterSampleType::Signed16),
+        (1, 32) => Ok(RasterSampleType::Unsigned32),
+        (2, 32) => Ok(RasterSampleType::Signed32),
+        (3, 32) => Ok(RasterSampleType::Float32),
+        (3, 64) => Ok(RasterSampleType::Float64),
+        _ => Err(CtbError::UnsupportedRaster(format!(
+            "unsupported GeoTIFF sample encoding SampleFormat={sample_format}, BitsPerSample={bits}"
+        ))),
     }
 }
 
@@ -325,6 +368,7 @@ mod tests {
         assert_eq!(source.metadata().width, 2);
         assert_eq!(source.metadata().height, 2);
         assert_eq!(source.metadata().crs, Crs::Epsg4326);
+        assert_eq!(source.metadata().sample_type, RasterSampleType::Float64);
         assert_eq!(
             source
                 .read_window(WindowRequest {
@@ -397,6 +441,7 @@ mod tests {
         let path = fixture_path("float32");
         write_float32_fixture(&path)?;
         let source = GeoTiffRasterSource::open(&path)?;
+        assert_eq!(source.metadata().sample_type, RasterSampleType::Float32);
         assert_eq!(
             source
                 .read_window(WindowRequest {
@@ -419,6 +464,7 @@ mod tests {
         let path = fixture_path("int16-negative");
         write_signed_integer_fixture(&path)?;
         let source = GeoTiffRasterSource::open(&path)?;
+        assert_eq!(source.metadata().sample_type, RasterSampleType::Signed16);
         assert_eq!(
             source
                 .read_window(WindowRequest {
@@ -440,6 +486,7 @@ mod tests {
         let path = fixture_path("uint16");
         write_unsigned_integer_fixture(&path)?;
         let source = GeoTiffRasterSource::open(&path)?;
+        assert_eq!(source.metadata().sample_type, RasterSampleType::Unsigned16);
         assert_eq!(
             source
                 .read_window(WindowRequest {

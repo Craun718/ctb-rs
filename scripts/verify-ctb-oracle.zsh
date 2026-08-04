@@ -98,7 +98,7 @@ for source_name in plain float-negative tiled-overview high-resolution high-reso
   else
     input_tiff="$compressed_overview_tiff"
   fi
-  for method in nearest bilinear average; do
+  for method in nearest bilinear average max min; do
     for range_name in automatic limited; do
       oracle_directory="$work_directory/original-$source_name-$method-$range_name"
       rust_directory="$work_directory/rust-$source_name-$method-$range_name"

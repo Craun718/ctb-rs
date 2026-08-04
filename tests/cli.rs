@@ -193,7 +193,20 @@ fn ctb_tile_honours_zoom_range_and_supported_resampling() -> Result<(), Box<dyn 
     let input = directory.join("dem.tif");
     write_small_geotiff(&input)?;
 
-    for method in ["nearest", "bilinear", "average"] {
+    for method in [
+        "nearest",
+        "bilinear",
+        "cubic",
+        "cubicspline",
+        "lanczos",
+        "average",
+        "mode",
+        "max",
+        "min",
+        "med",
+        "q1",
+        "q3",
+    ] {
         let output = directory.join(method);
         fs::create_dir(&output)?;
         let result = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
@@ -208,18 +221,78 @@ fn ctb_tile_honours_zoom_range_and_supported_resampling() -> Result<(), Box<dyn 
         assert!(!output.join("2").exists());
     }
 
-    let invalid_method = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
-        .args(["-r", "cubic"])
-        .arg(&input)
-        .output()?;
-    assert!(!invalid_method.status.success());
-
     let unsupported_profile = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
         .args(["--profile", "mercator"])
         .arg(&input)
         .output()?;
     assert!(!unsupported_profile.status.success());
 
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
+fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = temporary_directory("tile-gtiff")?;
+    let input = directory.join("dem.tif");
+    let output = directory.join("tiles");
+    write_small_geotiff(&input)?;
+    fs::create_dir(&output)?;
+
+    let result = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-f", "GTiff", "-t", "4", "-s", "0", "-e", "0", "-o"])
+        .arg(&output)
+        .arg(&input)
+        .output()?;
+    assert!(result.status.success(), "{:?}", result.stderr);
+    let tile = output.join("0/0/0.tif");
+    assert!(tile.exists());
+    let file = GeoTiffFile::open(&tile)?;
+    assert_eq!(file.width(), 4);
+    assert_eq!(file.height(), 4);
+    assert_eq!(file.epsg(), Some(4326));
+    let transform = file.transform().ok_or("missing GeoTIFF transform")?;
+    assert_eq!(transform.origin_x, -180.0);
+    assert_eq!(transform.origin_y, 90.0);
+    assert_eq!(transform.pixel_width, 45.0);
+    assert_eq!(transform.pixel_height, -45.0);
+
+    let deflate_output = directory.join("deflate");
+    fs::create_dir(&deflate_output)?;
+    let deflate_option = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-f", "GTiff", "-n", "COMPRESS=DEFLATE", "-o"])
+        .arg(&deflate_output)
+        .arg(&input)
+        .output()?;
+    assert!(
+        deflate_option.status.success(),
+        "{:?}",
+        deflate_option.stderr
+    );
+    assert!(deflate_output.join("0/0/0.tif").exists());
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
+fn ctb_tile_gtiff_nearest_uses_strict_source_bounds() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = temporary_directory("tile-gtiff-nearest")?;
+    let input = directory.join("dem.tif");
+    let output = directory.join("tiles");
+    write_small_geotiff(&input)?;
+    fs::create_dir(&output)?;
+    let result = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-f", "GTiff", "-r", "nearest", "-s", "0", "-e", "0", "-o"])
+        .arg(&output)
+        .arg(&input)
+        .output()?;
+    assert!(result.status.success(), "{:?}", result.stderr);
+    let file = GeoTiffFile::open(output.join("0/0/0.tif"))?;
+    let samples = file.read_band_window::<f64>(0, 0, 0, 65, 65)?;
+    // The final z0 column is centred at -1.3846°, outside the [-1, 1]
+    // source bounds. RasterTiler must retain its initial destination 0.
+    assert_eq!(samples[[32, 64]], 0.0);
     fs::remove_dir_all(directory)?;
     Ok(())
 }

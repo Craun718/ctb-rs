@@ -412,7 +412,10 @@ mod tests {
 
     use crate::{
         CtbError,
-        raster::{AffineTransform, Crs, RasterMetadata, RasterSource, RasterWindow, WindowRequest},
+        raster::{
+            AffineTransform, Crs, RasterMetadata, RasterSampleType, RasterSource, RasterWindow,
+            WindowRequest,
+        },
     };
 
     use super::*;
@@ -425,6 +428,7 @@ mod tests {
             crs: Crs::Epsg4326,
             transform: AffineTransform::north_up(-10.0, 10.0, 1.0, -1.0)?,
             no_data: None,
+            sample_type: RasterSampleType::Float64,
         })
     }
 
@@ -443,6 +447,7 @@ mod tests {
                     crs: Crs::Epsg4326,
                     transform: AffineTransform::north_up(-182.8125, 92.8125, 5.625, -2.8125)?,
                     no_data: None,
+                    sample_type: RasterSampleType::Float64,
                 },
                 value: 100.0,
             })

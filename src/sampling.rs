@@ -8,7 +8,16 @@ use crate::{
 pub enum ResamplingMethod {
     Nearest,
     Bilinear,
+    Cubic,
+    CubicSpline,
+    Lanczos,
     Average,
+    Mode,
+    Max,
+    Min,
+    Med,
+    Q1,
+    Q3,
 }
 
 /// Sample an EPSG:4326, north-up source at a world coordinate.
@@ -32,6 +41,17 @@ pub fn sample_at_level(
     world_y: f64,
     method: ResamplingMethod,
 ) -> Result<f64, CtbError> {
+    sample_at_level_with_nearest_support(source, level, world_x, world_y, method, true)
+}
+
+fn sample_at_level_with_nearest_support(
+    source: &dyn RasterSource,
+    level: &SamplingLevel,
+    world_x: f64,
+    world_y: f64,
+    method: ResamplingMethod,
+    nearest_half_pixel_support: bool,
+) -> Result<f64, CtbError> {
     if !world_x.is_finite() || !world_y.is_finite() {
         return Err(CtbError::InvalidBounds);
     }
@@ -43,10 +63,20 @@ pub fn sample_at_level(
         });
     }
     let bounds = metadata.transform.bounds(metadata.width, metadata.height)?;
-    if world_x < bounds.min_x
-        || world_x > bounds.max_x
-        || world_y < bounds.min_y
-        || world_y > bounds.max_y
+    let support = if method == ResamplingMethod::Nearest && nearest_half_pixel_support {
+        Bounds::new(
+            bounds.min_x - metadata.transform.pixel_width.abs() / 2.0,
+            bounds.min_y - metadata.transform.pixel_height.abs() / 2.0,
+            bounds.max_x + metadata.transform.pixel_width.abs() / 2.0,
+            bounds.max_y + metadata.transform.pixel_height.abs() / 2.0,
+        )?
+    } else {
+        bounds
+    };
+    if world_x < support.min_x
+        || world_x > support.max_x
+        || world_y < support.min_y
+        || world_y > support.max_y
     {
         return Ok(0.0);
     }
@@ -63,6 +93,9 @@ pub fn sample_at_level(
         ResamplingMethod::Average => Err(CtbError::UnsupportedRaster(
             "average resampling requires an output-pixel footprint".to_owned(),
         )),
+        method => Err(CtbError::UnsupportedRaster(format!(
+            "{method:?} resampling is not implemented yet"
+        ))),
     }
 }
 
@@ -88,10 +121,77 @@ pub fn sample_with_footprint_level(
 ) -> Result<f64, CtbError> {
     match method {
         ResamplingMethod::Average => average_at(source, level, footprint, world_x, world_y),
+        ResamplingMethod::Max => extrema_at(source, level, footprint, true),
+        ResamplingMethod::Min => extrema_at(source, level, footprint, false),
         ResamplingMethod::Nearest | ResamplingMethod::Bilinear => {
             sample_at_level(source, level, world_x, world_y, method)
         }
+        method => Err(CtbError::UnsupportedRaster(format!(
+            "{method:?} resampling is not implemented yet"
+        ))),
     }
+}
+
+/// RasterTiler sampling uses the warped VRT's strict source bounds. This is
+/// distinct from the terrain helper's nearest edge-support compatibility path.
+pub fn sample_with_footprint_raster_tiler(
+    source: &dyn RasterSource,
+    world_x: f64,
+    world_y: f64,
+    footprint: Bounds,
+    method: ResamplingMethod,
+) -> Result<f64, CtbError> {
+    let level = source.sampling_level_for_ratio(1.0)?;
+    match method {
+        ResamplingMethod::Average => average_at(source, &level, footprint, world_x, world_y),
+        ResamplingMethod::Max => extrema_at(source, &level, footprint, true),
+        ResamplingMethod::Min => extrema_at(source, &level, footprint, false),
+        ResamplingMethod::Nearest | ResamplingMethod::Bilinear => {
+            sample_at_level_with_nearest_support(source, &level, world_x, world_y, method, false)
+        }
+        method => Err(CtbError::UnsupportedRaster(format!(
+            "{method:?} resampling is not implemented yet"
+        ))),
+    }
+}
+
+fn extrema_at(
+    source: &dyn RasterSource,
+    level: &SamplingLevel,
+    footprint: Bounds,
+    maximum: bool,
+) -> Result<f64, CtbError> {
+    let metadata = &level.metadata;
+    let columns = indices_overlapping_footprint(
+        footprint.min_x,
+        footprint.max_x,
+        metadata.transform.origin_x,
+        metadata.transform.pixel_width,
+        metadata.width,
+    );
+    let rows = indices_overlapping_footprint(
+        footprint.min_y,
+        footprint.max_y,
+        metadata.transform.origin_y,
+        metadata.transform.pixel_height,
+        metadata.height,
+    );
+    let (Some((first_column, last_column)), Some((first_row, last_row))) = (columns, rows) else {
+        return Ok(0.0);
+    };
+
+    let mut result: Option<f64> = None;
+    for row in first_row..=last_row {
+        for column in first_column..=last_column {
+            let sample = read_sample(source, level, column, row)?;
+            result = Some(match result {
+                Some(current) if maximum => current.max(sample),
+                Some(current) => current.min(sample),
+                None => sample,
+            });
+        }
+    }
+    Ok(result.expect("non-empty source index ranges produce at least one extrema sample"))
 }
 
 fn average_at(
@@ -251,7 +351,7 @@ fn read_sample(
 mod tests {
     use crate::{
         CtbError,
-        raster::{AffineTransform, Crs, RasterMetadata, RasterWindow},
+        raster::{AffineTransform, Crs, RasterMetadata, RasterSampleType, RasterWindow},
     };
 
     use super::*;
@@ -271,6 +371,7 @@ mod tests {
                     crs: Crs::Epsg4326,
                     transform: AffineTransform::north_up(0.0, 2.0, 1.0, -1.0)?,
                     no_data: None,
+                    sample_type: RasterSampleType::Float64,
                 },
                 samples: vec![0.0, 10.0, 20.0, 30.0],
             })
@@ -317,6 +418,20 @@ mod tests {
     }
 
     #[test]
+    fn nearest_clamps_within_half_a_source_pixel_of_the_edge() -> Result<(), CtbError> {
+        let source = TestRaster::new()?;
+        assert_eq!(
+            sample_at(&source, -0.25, 1.0, ResamplingMethod::Nearest)?,
+            20.0
+        );
+        assert_eq!(
+            sample_at(&source, -0.51, 1.0, ResamplingMethod::Nearest)?,
+            0.0
+        );
+        Ok(())
+    }
+
+    #[test]
     fn bilinear_interpolates_pixel_centres() -> Result<(), CtbError> {
         let source = TestRaster::new()?;
         assert_eq!(
@@ -343,6 +458,21 @@ mod tests {
         assert_eq!(
             sample_with_footprint(&source, 1.0, 1.0, footprint, ResamplingMethod::Average)?,
             15.0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn extrema_use_all_source_pixels_overlapping_the_footprint() -> Result<(), CtbError> {
+        let source = TestRaster::new()?;
+        let footprint = Bounds::new(0.0, 0.0, 2.0, 2.0)?;
+        assert_eq!(
+            sample_with_footprint(&source, 1.0, 1.0, footprint, ResamplingMethod::Max)?,
+            30.0
+        );
+        assert_eq!(
+            sample_with_footprint(&source, 1.0, 1.0, footprint, ResamplingMethod::Min)?,
+            0.0
         );
         Ok(())
     }

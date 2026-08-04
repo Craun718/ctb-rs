@@ -98,7 +98,9 @@ impl TerrainSamplePlan {
 mod tests {
     use crate::{
         CtbError,
-        raster::{AffineTransform, Crs, RasterMetadata, RasterWindow, WindowRequest},
+        raster::{
+            AffineTransform, Crs, RasterMetadata, RasterSampleType, RasterWindow, WindowRequest,
+        },
     };
 
     use super::*;
@@ -118,6 +120,7 @@ mod tests {
                     crs: Crs::Epsg4326,
                     transform: AffineTransform::north_up(-360.0, 270.0, 180.0, -180.0)?,
                     no_data: None,
+                    sample_type: RasterSampleType::Float64,
                 },
             })
         }
@@ -224,6 +227,7 @@ mod tests {
                 crs: Crs::Epsg4326,
                 transform: AffineTransform::north_up(-1.0, 1.0, 1.0, -1.0)?,
                 no_data: None,
+                sample_type: RasterSampleType::Float64,
             },
         };
         let grid = GlobalGeodeticGrid::new(65)?;

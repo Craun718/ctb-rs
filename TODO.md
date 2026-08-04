@@ -117,7 +117,7 @@
 
 - [ ] 建立原版每个 CLI 参数、profile、输出格式与错误路径的兼容性矩阵。
 - [ ] 实现并验证 `ctb-tile` 的并发、进度和所有已登记输出格式接口。
-- [ ] 实现 Quantized-Mesh 与 `layer.json`。
+- [x] 核对 Quantized-Mesh 与 `layer.json`：原版 CTB 0.4.1 不具备该功能，非复刻范围。
 - [ ] 实现 EPSG:3857、Global Mercator 与 Mercator profile。
 - [ ] 按登记式驱动矩阵扩展原版可用输入/输出格式，保持纯 Rust。
 - [ ] 完成全量兼容审计并消除矩阵中的未支持项。
@@ -133,21 +133,44 @@
   - [ ] 建立 GDAL SuggestedWarp/overview GeoTransform 临时 oracle，消除 target ratio 等价式的不确定性。
   - [ ] 将 oracle 结论固化为 Rust 领域测试，并完成高分辨率 internal overview 的 CTB payload 对照。
 - [ ] 按原版 `Grid::crsToTile` 修复 dataset upper-right 边界的范围包含语义，并复核 child mask 与路径集。
+- [ ] 以 `TerrainTiler::terrainTileBounds` 的 VRT overlap corner 语义修正 terrain sampling 坐标与 footprint；用高分辨率 base/overview oracle 验证。
+- [ ] 以实际 `TerrainSamplePlan → GeoTiffRasterSource → writer` 路径断言 selected level 和第 66 个 sample 的传递值，再继续 overview 数值核对。
+- [x] 核对 `ctb-tile -r` 的固定 Average：Terrain 分支忽略该参数，全部算法留待 RasterTiler formats。
+  - [x] 将原版全部 12 个名称纳入 CLI 枚举；Terrain path 固定 Average，复刻原版分支。
+  - [ ] 实现原版 RasterTiler output formats 后，为每个算法建立非平坦 GeoTIFF payload oracle 并逐项接入。
+
+## 下一阶段：RasterTiler 输出格式
+
+- [ ] 建立原版 `ctb-tile --output-format` 的 driver/creation option/输出布局兼容矩阵。
+- [ ] 选择并实现第一个可由现有纯 Rust writer 复刻的 RasterTiler format，建立原版文件 oracle。
+  - [ ] 记录原版 `GTiff` RasterTiler 的文件/元数据/creation option oracle。
+    - [x] 准备可运行的原版 `ctb-tile` oracle：以临时 GDAL 3.13 API 适配副本构建，原始 CTB 未修改。
+    - [x] 固定 GTiff baseline：geodetic 默认 65、`-t 4`、单 band Int32/NoData/EPSG:4326/GeoTransform/路径集。
+    - [x] 记录 GTiff 非整数 sample conversion oracle；creation option 矩阵仍持续扩展。
+  - [x] 在 RasterMetadata 增加 storage sample type，供 GTiff CreateCopy 等价 writer 保留 source/VRT data type。
+  - [x] 定义并测试 RasterTiler 的 destination pixel-centre/footprint sampling plan；不得复用 heightmap edge-overlap plan。
+  - [x] 实现不带 CLI 副作用的 typed GTiff 文件 writer，并对 Signed32 的路径、样本、NoData 与 GeoTransform 建立 unit oracle。
+  - [x] 定义 RasterTileset writer：复用 worker/resume/progress，按 RasterTileSamplePlan 原子写 `{z}/{x}/{y}.tif`。
+  - [ ] 实现纯 Rust `-f GTiff` 并进行原版 TIFF 语义对照。
+    - [x] 默认 GTiff 的路径集、z0 metadata 与解码样本矩阵对照。
+    - [x] 接入并对照 `COMPRESS=DEFLATE`；`TILED=YES` 等 options 维持明确拒绝。
+    - [x] 拆分 RasterTiler 与 Terrain 的 nearest/bilinear 边界 support，并固化 plain z0 GTiff oracle。
+    - [ ] 扩展 GTiff `nearest/bilinear` 对照至其他 zoom、source storage type 和 internal overview。
+    - [ ] 复刻 GDAL 在 unsigned storage type 写入范围外 NoData tag（如 UInt16 的 `-9999`）的 metadata 行为。
 - [ ] 建立大 DEM 基准、内存上限、失败恢复和单/多线程一致性测试。
 - [x] 编写不依赖 overview 的可复现大 DEM benchmark 脚本，记录单/多 worker wall-clock、tile 数和 payload 一致性。
 
-## 后续：P3 — Quantized-Mesh 1.0
-
-- [ ] 定义 Quantized-Mesh 领域模型、reader/writer 与二进制 fixture。
-- [ ] 实现规则网格编码、边缘索引与 `layer.json`。
-- [ ] 接入 CLI 并完成 Cesium/terrain-server 无裂缝 smoke test。
-
-## 后续：P4 — CRS 与 Global Mercator
+## 后续：P3 — CRS 与 Global Mercator
 
 - [ ] 定义纯 Rust CRS 转换边界与 EPSG:4326 <-> 3857 控制点测试。
 - [ ] 实现 Global Mercator 与 `--profile mercator`。
+  - [x] 定义并测试与原版 `Grid` 同公式的 `GlobalMercatorGrid`，暂不接入 I/O。
+  - [ ] 扩展 GeoTIFF direct-source 至 EPSG:3857，并为 GTiff RasterTiler 接入同 CRS Mercator grid。
+    - [x] 固定原版 EPSG:3857 direct-source 的 Mercator GTiff z0/z1 路径、type、NoData、CRS 与 GeoTransform oracle。
+    - [ ] 定义通用 target-grid/target-CRS 边界，并在不改变 geodetic 语义的前提下重构 RasterTiler plan。
+      - [x] 增加 cpp `Grid` 等价的 `TileGrid` trait，并让 GlobalGeodetic/Mercator 实现；不接入 I/O。
 
-## 后续：P5 — 格式生态与产品化
+## 后续：P4 — 格式生态与产品化
 
 - [ ] 按需求选定下一个 `RasterSource` 格式驱动并完成 compatibility spike。
 - [ ] 规划受限 mosaic、COG HTTP Range 与外部 overview adapter。
