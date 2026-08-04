@@ -11,7 +11,10 @@ use crate::{
     CtbError,
     grid::{TileCoord, TileGrid},
     raster::RasterSource,
-    raster_geotiff::{RasterGeoTiffCompression, write_raster_tile_as_geotiff_with_compression},
+    raster_geotiff::{
+        RasterGeoTiffCompression, RasterGeoTiffWriteOptions,
+        write_raster_tile_as_geotiff_with_options,
+    },
     raster_sampling::RasterTileSamplePlan,
     sampling::ResamplingMethod,
     tileset::{TileWriteProgress, TilesetPlan},
@@ -24,6 +27,8 @@ pub struct RasterTilesetOptions {
     pub end_zoom: Option<u8>,
     pub resampling: ResamplingMethod,
     pub compression: RasterGeoTiffCompression,
+    pub tiff_variant: geotiff_writer::TiffVariant,
+    pub predictor: Option<geotiff_writer::Predictor>,
     pub worker_count: usize,
 }
 
@@ -35,6 +40,8 @@ impl Default for RasterTilesetOptions {
             end_zoom: None,
             resampling: ResamplingMethod::Average,
             compression: RasterGeoTiffCompression::None,
+            tiff_variant: geotiff_writer::TiffVariant::Auto,
+            predictor: None,
             worker_count: 1,
         }
     }
@@ -102,7 +109,11 @@ pub fn write_raster_geotiff_tileset_with_factory(
                                         &sample_plan,
                                         &output_metadata,
                                         values,
-                                        options.compression,
+                                        RasterGeoTiffWriteOptions {
+                                            compression: options.compression,
+                                            tiff_variant: options.tiff_variant,
+                                            predictor: options.predictor,
+                                        },
                                         &path,
                                     )
                                 })
@@ -144,7 +155,7 @@ fn write_raster_geotiff_atomically(
     plan: &RasterTileSamplePlan,
     metadata: &crate::raster::RasterMetadata,
     values: Vec<f64>,
-    compression: RasterGeoTiffCompression,
+    options: RasterGeoTiffWriteOptions,
     path: &Path,
 ) -> Result<(), CtbError> {
     let parent = path.parent().ok_or_else(|| {
@@ -162,7 +173,7 @@ fn write_raster_geotiff_atomically(
         filename.to_string_lossy(),
         std::process::id()
     ));
-    write_raster_tile_as_geotiff_with_compression(&temporary, plan, metadata, values, compression)?;
+    write_raster_tile_as_geotiff_with_options(&temporary, plan, metadata, values, options)?;
     fs::rename(&temporary, path).map_err(|error| CtbError::TilesetIo(error.to_string()))
 }
 

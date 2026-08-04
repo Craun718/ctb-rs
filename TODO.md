@@ -65,7 +65,7 @@
       tests passed）。C++ 逐字节差分与重投影输入仍待补。
 - [ ] 按 C++ 可用 driver 建立输入格式、输出 format、extension 和 creation option 矩阵。
 - [ ] 完成 GTiff creation options、样本类型和 metadata 的全部已登记组合；当前 None、
-      DEFLATE、LZW、ZSTD 已实现，PackBits 受 writer API 限制；C++ 字节差分和其他 options 仍待补。
+      DEFLATE、LZW、ZSTD、BIGTIFF、PREDICTOR 已实现，PackBits 受 writer API 限制；C++ 字节差分和其他 options 仍待补。
 - [x] 用真实含 overview 的 GeoTIFF fixture 验证 overview 数量、选择边界、缩放 GeoTransform
       和 level-aware window 读回（Rust 80 tests passed）；当前实现存在，C++ SuggestedWarp
       差分仍待补。

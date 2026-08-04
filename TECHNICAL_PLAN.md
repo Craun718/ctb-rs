@@ -296,6 +296,18 @@ Rust 证据：`COMPRESS=ZSTD` 已接入 `RasterGeoTiffCompression`，CLI 生成�
 `GeoTiffFile` 打开并读取，未知 creation option 仍拒绝；全套测试 80 项、clippy 通过。
 C++ driver metadata 与压缩字节差分仍待补。
 
+BigTIFF/Predictor 证据：CLI 已将 `BIGTIFF=NO/YES/IF_NEEDED` 和 `PREDICTOR=1/2/3` 解析并
+传递到 writer；测试覆盖 BigTIFF header、浮点 Predictor=3、浮点使用 Predictor=2 的失败
+路径和 parser 错误路径；全套测试 82 项、clippy 通过。
+
+#### P4 实施记录 8：GeoTIFF BigTIFF 与 Predictor creation options（Rust 接入，driver 差分待补）
+
+`geotiff-writer` 暴露 `TiffVariant::{Classic, BigTiff, Auto}` 和 TIFF `Predictor::{None,
+Horizontal, FloatingPoint}`。将 `BIGTIFF=NO/YES/IF_NEEDED` 分别映射为 Classic/BigTiff/Auto，
+将 `PREDICTOR=1/2/3` 映射为对应 predictor，并把选项沿 `RasterTileset` 写出路径传递到
+builder。只接受 C++ GTiff 语义中可确定且与源样本类型相容的值；冲突或未知选项在写出
+前拒绝，`TILED/BLOCKXSIZE/BLOCKYSIZE` 另行处理。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为

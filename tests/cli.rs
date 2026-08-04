@@ -344,6 +344,64 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
     assert_eq!(zstd_file.width(), 256);
     assert_eq!(zstd_file.epsg(), Some(4326));
 
+    let bigtiff_output = directory.join("bigtiff");
+    fs::create_dir(&bigtiff_output)?;
+    let bigtiff_option = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-f", "GTiff", "-n", "BIGTIFF=YES", "-o"])
+        .arg(&bigtiff_output)
+        .arg(&input)
+        .output()?;
+    assert!(
+        bigtiff_option.status.success(),
+        "{:?}",
+        bigtiff_option.stderr
+    );
+    assert_eq!(
+        fs::read(bigtiff_output.join("0/0/0.tif"))?.get(..4),
+        Some([b'I', b'I', 43, 0].as_slice())
+    );
+
+    let predictor_output = directory.join("predictor");
+    fs::create_dir(&predictor_output)?;
+    let predictor_option = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args([
+            "-f",
+            "GTiff",
+            "-n",
+            "COMPRESS=DEFLATE",
+            "-n",
+            "PREDICTOR=3",
+            "-o",
+        ])
+        .arg(&predictor_output)
+        .arg(&input)
+        .output()?;
+    assert!(
+        predictor_option.status.success(),
+        "{:?}",
+        predictor_option.stderr
+    );
+    let predictor_file = GeoTiffFile::open(predictor_output.join("0/0/0.tif"))?;
+    assert_eq!(predictor_file.width(), 256);
+
+    let invalid_predictor_output = directory.join("invalid-predictor");
+    fs::create_dir(&invalid_predictor_output)?;
+    let invalid_predictor = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args([
+            "-f",
+            "GTiff",
+            "-n",
+            "COMPRESS=DEFLATE",
+            "-n",
+            "PREDICTOR=2",
+            "-o",
+        ])
+        .arg(&invalid_predictor_output)
+        .arg(&input)
+        .output()?;
+    assert!(!invalid_predictor.status.success());
+    assert!(!invalid_predictor_output.join("0/0/0.tif").exists());
+
     let incompatible_profile_output = directory.join("incompatible-mercator");
     fs::create_dir(&incompatible_profile_output)?;
     let incompatible_profile = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))

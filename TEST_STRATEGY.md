@@ -120,6 +120,13 @@ GTiff creation-option 测试至少覆盖 `COMPRESS=NONE/DEFLATE/LZW/ZSTD` 的写
 压缩矩阵新增 `COMPRESS=ZSTD`：CLI 写出后由 Rust reader 读回样本、CRS、transform 和
 NoData tag；C++ oracle 恢复后再比较压缩字节与 driver metadata。
 
+Creation-option 测试还需覆盖 `BIGTIFF=NO/YES/IF_NEEDED` 的 TIFF header/reader 读取，以及
+整数样本 `PREDICTOR=2`、浮点样本 `PREDICTOR=3`；不相容 predictor、重复冲突选项和未知
+选项必须在写出任何 tile 前失败。
+
+Rust 当前已覆盖上述 BigTIFF 变体解析、YES header、浮点 Predictor=3 成功和 Predictor=2
+失败路径；全套测试 82 项通过，整数 Predictor=2 与 C++ driver 差分仍待补。
+
 Overview fixture 使用 `geotiff-writer` 的多级 top-level COG：断言 overview 数量、ratio 在
 1/2/4 附近的选择、overview metadata 的像元尺寸和 `read_sampling_window` 的实际样本；
 再以 C++ `GDALSuggestedWarpOutput2`/`getOverviewDataset` 输出复核 tie 与边界规则。

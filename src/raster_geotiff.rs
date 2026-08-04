@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use geotiff_writer::{Compression, GeoTiffBuilder};
+use geotiff_writer::{Compression, GeoTiffBuilder, Predictor, TiffVariant};
 use ndarray::Array2;
 
 use crate::{
@@ -19,6 +19,23 @@ pub enum RasterGeoTiffCompression {
     Deflate,
     Lzw,
     Zstd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RasterGeoTiffWriteOptions {
+    pub compression: RasterGeoTiffCompression,
+    pub tiff_variant: TiffVariant,
+    pub predictor: Option<Predictor>,
+}
+
+impl Default for RasterGeoTiffWriteOptions {
+    fn default() -> Self {
+        Self {
+            compression: RasterGeoTiffCompression::None,
+            tiff_variant: TiffVariant::Auto,
+            predictor: None,
+        }
+    }
 }
 
 pub fn write_raster_tile_as_geotiff(
@@ -42,6 +59,25 @@ pub fn write_raster_tile_as_geotiff_with_compression(
     metadata: &RasterMetadata,
     values: Vec<f64>,
     compression: RasterGeoTiffCompression,
+) -> Result<(), CtbError> {
+    write_raster_tile_as_geotiff_with_options(
+        path,
+        plan,
+        metadata,
+        values,
+        RasterGeoTiffWriteOptions {
+            compression,
+            ..RasterGeoTiffWriteOptions::default()
+        },
+    )
+}
+
+pub fn write_raster_tile_as_geotiff_with_options(
+    path: impl AsRef<Path>,
+    plan: &RasterTileSamplePlan,
+    metadata: &RasterMetadata,
+    values: Vec<f64>,
+    options: RasterGeoTiffWriteOptions,
 ) -> Result<(), CtbError> {
     let side =
         usize::try_from(plan.tile_size()).map_err(|_| CtbError::InvalidRasterDimensions {
@@ -77,12 +113,16 @@ pub fn write_raster_tile_as_geotiff_with_compression(
     }
     .pixel_scale(plan.resolution(), plan.resolution())
     .origin(bounds.min_x, bounds.max_y)
-    .compression(match compression {
+    .compression(match options.compression {
         RasterGeoTiffCompression::None => Compression::None,
         RasterGeoTiffCompression::Deflate => Compression::Deflate,
         RasterGeoTiffCompression::Lzw => Compression::Lzw,
         RasterGeoTiffCompression::Zstd => Compression::Zstd,
-    });
+    })
+    .tiff_variant(options.tiff_variant);
+    if let Some(predictor) = options.predictor {
+        builder = builder.predictor(predictor);
+    }
     if let Some(no_data) = metadata.no_data {
         builder = builder.nodata(&no_data.to_string());
     }

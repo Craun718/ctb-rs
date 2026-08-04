@@ -5,7 +5,7 @@ use ctb_rs::{
     cache::CachedRasterSource,
     geotiff::GeoTiffRasterSource,
     grid::{GlobalGeodeticGrid, GlobalMercatorGrid, TileGrid},
-    raster_geotiff::RasterGeoTiffCompression,
+    raster_geotiff::{RasterGeoTiffCompression, RasterGeoTiffWriteOptions},
     raster_tileset::{
         RasterTilesetOptions, raster_geotiff_path, write_raster_geotiff_tileset_with_factory,
     },
@@ -15,6 +15,7 @@ use ctb_rs::{
         write_heightmap_tileset_with_factory,
     },
 };
+use geotiff_writer::{Predictor, TiffVariant};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ResamplingArgument {
@@ -51,18 +52,27 @@ impl From<ResamplingArgument> for ResamplingMethod {
     }
 }
 
-fn gtiff_compression(options: &[String]) -> Result<RasterGeoTiffCompression, Box<dyn Error>> {
-    let mut compression = RasterGeoTiffCompression::None;
+fn gtiff_options(options: &[String]) -> Result<RasterGeoTiffWriteOptions, Box<dyn Error>> {
+    let mut result = RasterGeoTiffWriteOptions::default();
     for option in options {
-        compression = match option.as_str() {
-            "COMPRESS=NONE" => RasterGeoTiffCompression::None,
-            "COMPRESS=DEFLATE" => RasterGeoTiffCompression::Deflate,
-            "COMPRESS=LZW" => RasterGeoTiffCompression::Lzw,
-            "COMPRESS=ZSTD" => RasterGeoTiffCompression::Zstd,
+        let (name, value) = option
+            .split_once('=')
+            .ok_or_else(|| format!("GTiff creation option {option} must be NAME=VALUE"))?;
+        match (name, value) {
+            ("COMPRESS", "NONE") => result.compression = RasterGeoTiffCompression::None,
+            ("COMPRESS", "DEFLATE") => result.compression = RasterGeoTiffCompression::Deflate,
+            ("COMPRESS", "LZW") => result.compression = RasterGeoTiffCompression::Lzw,
+            ("COMPRESS", "ZSTD") => result.compression = RasterGeoTiffCompression::Zstd,
+            ("BIGTIFF", "NO") => result.tiff_variant = TiffVariant::Classic,
+            ("BIGTIFF", "YES") => result.tiff_variant = TiffVariant::BigTiff,
+            ("BIGTIFF", "IF_NEEDED") => result.tiff_variant = TiffVariant::Auto,
+            ("PREDICTOR", "1") => result.predictor = Some(Predictor::None),
+            ("PREDICTOR", "2") => result.predictor = Some(Predictor::Horizontal),
+            ("PREDICTOR", "3") => result.predictor = Some(Predictor::FloatingPoint),
             _ => return Err(format!("GTiff creation option {option} is not implemented").into()),
-        };
+        }
     }
-    Ok(compression)
+    Ok(result)
 }
 
 #[derive(Debug, Parser)]
@@ -204,6 +214,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             )?;
         }
         "GTiff" => {
+            let geotiff_options = gtiff_options(&arguments.creation_options)?;
             let grid: Box<dyn TileGrid> = match arguments.profile.as_str() {
                 "geodetic" => {
                     Box::new(GlobalGeodeticGrid::new(arguments.tile_size.unwrap_or(256))?)
@@ -222,7 +233,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     start_zoom: arguments.start_zoom,
                     end_zoom: arguments.end_zoom,
                     resampling: arguments.resampling_method.into(),
-                    compression: gtiff_compression(&arguments.creation_options)?,
+                    compression: geotiff_options.compression,
+                    tiff_variant: geotiff_options.tiff_variant,
+                    predictor: geotiff_options.predictor,
                     worker_count: worker_count(arguments.thread_count),
                 },
                 progress.as_deref(),
@@ -274,7 +287,10 @@ fn worker_count(requested: Option<i32>) -> usize {
 mod tests {
     use clap::Parser;
 
-    use super::{Arguments, validate_warp_options, worker_count};
+    use super::{
+        Arguments, Predictor, RasterGeoTiffCompression, TiffVariant, gtiff_options,
+        validate_warp_options, worker_count,
+    };
 
     #[test]
     fn parses_output_dir_and_resume() {
@@ -336,6 +352,37 @@ mod tests {
         assert!(validate_warp_options(0.125, -1.0).is_err());
         assert!(validate_warp_options(0.25, 0.0).is_err());
         assert!(validate_warp_options(0.125, 1_048_576.0).is_err());
+    }
+
+    #[test]
+    fn parses_supported_geotiff_container_options() {
+        let options = gtiff_options(&[
+            "COMPRESS=ZSTD".to_owned(),
+            "BIGTIFF=YES".to_owned(),
+            "PREDICTOR=3".to_owned(),
+        ])
+        .expect("supported GeoTIFF options should parse");
+        assert_eq!(options.compression, RasterGeoTiffCompression::Zstd);
+        assert_eq!(options.tiff_variant, TiffVariant::BigTiff);
+        assert_eq!(options.predictor, Some(Predictor::FloatingPoint));
+        assert_eq!(
+            gtiff_options(&["BIGTIFF=NO".to_owned()])
+                .expect("Classic TIFF option should parse")
+                .tiff_variant,
+            TiffVariant::Classic
+        );
+        assert_eq!(
+            gtiff_options(&["BIGTIFF=IF_NEEDED".to_owned()])
+                .expect("automatic TIFF option should parse")
+                .tiff_variant,
+            TiffVariant::Auto
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_geotiff_creation_options() {
+        assert!(gtiff_options(&["COMPRESS".to_owned()]).is_err());
+        assert!(gtiff_options(&["PREDICTOR=4".to_owned()]).is_err());
     }
 
     #[test]
