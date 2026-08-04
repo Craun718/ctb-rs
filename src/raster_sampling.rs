@@ -1,6 +1,6 @@
 use crate::{
     CtbError,
-    grid::{Bounds, GlobalGeodeticGrid, TileCoord},
+    grid::{Bounds, GlobalGeodeticGrid, TileCoord, TileGrid},
     raster::RasterSource,
     sampling::{ResamplingMethod, sample_with_footprint_raster_tiler},
 };
@@ -20,7 +20,7 @@ pub struct RasterTileSample {
 /// Destination pixel geometry for one CTB `RasterTiler` tile.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RasterTileSamplePlan {
-    grid: GlobalGeodeticGrid,
+    tile_size: u32,
     tile: TileCoord,
     bounds: Bounds,
     resolution: f64,
@@ -28,10 +28,14 @@ pub struct RasterTileSamplePlan {
 
 impl RasterTileSamplePlan {
     pub fn new(grid: GlobalGeodeticGrid, tile: TileCoord) -> Result<Self, CtbError> {
+        Self::from_grid(&grid, tile)
+    }
+
+    pub fn from_grid(grid: &dyn TileGrid, tile: TileCoord) -> Result<Self, CtbError> {
         let bounds = grid.tile_bounds(tile)?;
         let resolution = grid.resolution(tile.zoom)?;
         Ok(Self {
-            grid,
+            tile_size: grid.tile_size(),
             tile,
             bounds,
             resolution,
@@ -51,11 +55,11 @@ impl RasterTileSamplePlan {
     }
 
     pub fn tile_size(&self) -> u32 {
-        self.grid.tile_size()
+        self.tile_size
     }
 
     pub fn sample(&self, row: u32, column: u32) -> Option<RasterTileSample> {
-        if row >= self.grid.tile_size() || column >= self.grid.tile_size() {
+        if row >= self.tile_size || column >= self.tile_size {
             return None;
         }
         let min_x = self.bounds.min_x + f64::from(column) * self.resolution;
@@ -76,14 +80,14 @@ impl RasterTileSamplePlan {
         source: &dyn RasterSource,
         method: ResamplingMethod,
     ) -> Result<Vec<f64>, CtbError> {
-        let side = usize::try_from(self.grid.tile_size())
-            .map_err(|_| CtbError::InvalidTileSize(self.grid.tile_size()))?;
+        let side = usize::try_from(self.tile_size)
+            .map_err(|_| CtbError::InvalidTileSize(self.tile_size))?;
         let capacity = side
             .checked_mul(side)
-            .ok_or(CtbError::InvalidTileSize(self.grid.tile_size()))?;
+            .ok_or(CtbError::InvalidTileSize(self.tile_size))?;
         let mut values = Vec::with_capacity(capacity);
-        for row in 0..self.grid.tile_size() {
-            for column in 0..self.grid.tile_size() {
+        for row in 0..self.tile_size {
+            for column in 0..self.tile_size {
                 let point = self.sample(row, column).expect(
                     "row and column bounded by tile size always identify a destination cell",
                 );
@@ -102,6 +106,8 @@ impl RasterTileSamplePlan {
 
 #[cfg(test)]
 mod tests {
+    use crate::grid::GlobalMercatorGrid;
+
     use super::*;
 
     #[test]
@@ -165,6 +171,26 @@ mod tests {
             east.sample(0, 0).expect("in-bounds cell").footprint.min_x,
             0.0
         );
+        Ok(())
+    }
+
+    #[test]
+    fn can_plan_cpp_global_mercator_destination_cells() -> Result<(), CtbError> {
+        let grid = GlobalMercatorGrid::new(256)?;
+        let plan = RasterTileSamplePlan::from_grid(
+            &grid,
+            TileCoord {
+                zoom: 0,
+                x: 0,
+                y: 0,
+            },
+        )?;
+        assert_eq!(plan.tile_size(), 256);
+        assert_eq!(plan.bounds(), grid.extent());
+        assert_eq!(plan.resolution(), grid.resolution(0)?);
+        let top_left = plan.sample(0, 0).expect("in-bounds Mercator cell");
+        assert_eq!(top_left.footprint.max_y, GlobalMercatorGrid::ORIGIN_SHIFT);
+        assert_eq!(top_left.footprint.min_x, -GlobalMercatorGrid::ORIGIN_SHIFT);
         Ok(())
     }
 }

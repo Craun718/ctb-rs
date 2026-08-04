@@ -10,7 +10,7 @@ use std::{
 
 use crate::{
     CtbError,
-    grid::{GlobalGeodeticGrid, TileCoord},
+    grid::{GlobalGeodeticGrid, TileCoord, TileGrid},
     raster::{RasterMetadata, RasterSource},
     sampling::ResamplingMethod,
     terrain::{ChildMask, HEIGHTMAP_TILE_SIZE, HeightmapTerrain},
@@ -90,6 +90,47 @@ impl TilesetPlan {
             let mut tiles = Vec::new();
             for x in range.lower_left.x..=range.upper_right.x {
                 for y in range.lower_left.y..=range.upper_right.y {
+                    tiles.push(TileCoord { zoom, x, y });
+                }
+            }
+            levels.push(TilesetLevel { zoom, tiles });
+        }
+        Ok(Self { max_zoom, levels })
+    }
+
+    /// Plan direct-source RasterTiler coverage against any cpp-CTB Grid
+    /// profile. Reprojection is intentionally outside this domain boundary.
+    pub fn from_raster_with_tile_grid(
+        metadata: &RasterMetadata,
+        grid: &dyn TileGrid,
+        start_zoom: Option<u8>,
+        end_zoom: Option<u8>,
+    ) -> Result<Self, CtbError> {
+        if metadata.crs != grid.crs() {
+            return Err(CtbError::UnsupportedCrs(format!(
+                "source CRS {:?} does not match target grid CRS {:?}",
+                metadata.crs,
+                grid.crs()
+            )));
+        }
+        let bounds = metadata.transform.bounds(metadata.width, metadata.height)?;
+        let available_maximum = grid.zoom_for_resolution(metadata.transform.pixel_width.abs())?;
+        let max_zoom = start_zoom.unwrap_or(available_maximum);
+        let min_zoom = end_zoom.unwrap_or(0);
+        if max_zoom > available_maximum || min_zoom > max_zoom {
+            return Err(CtbError::InvalidZoomRange {
+                start: max_zoom,
+                end: min_zoom,
+                maximum: available_maximum,
+            });
+        }
+        let mut levels = Vec::with_capacity(usize::from(max_zoom - min_zoom) + 1);
+        for zoom in min_zoom..=max_zoom {
+            let lower_left = grid.coordinate_to_tile(bounds.min_x, bounds.min_y, zoom)?;
+            let upper_right = grid.coordinate_to_tile(bounds.max_x, bounds.max_y, zoom)?;
+            let mut tiles = Vec::new();
+            for x in lower_left.x..=upper_right.x {
+                for y in lower_left.y..=upper_right.y {
                     tiles.push(TileCoord { zoom, x, y });
                 }
             }
@@ -412,6 +453,7 @@ mod tests {
 
     use crate::{
         CtbError,
+        grid::GlobalMercatorGrid,
         raster::{
             AffineTransform, Crs, RasterMetadata, RasterSampleType, RasterSource, RasterWindow,
             WindowRequest,
@@ -430,6 +472,48 @@ mod tests {
             no_data: None,
             sample_type: RasterSampleType::Float64,
         })
+    }
+
+    #[test]
+    fn plans_direct_mercator_source_on_the_mercator_grid() -> Result<(), CtbError> {
+        let metadata = RasterMetadata {
+            width: 2,
+            height: 2,
+            band_count: 1,
+            crs: Crs::Epsg3857,
+            transform: AffineTransform::north_up(-100.0, 100.0, 100.0, -100.0)?,
+            no_data: None,
+            sample_type: RasterSampleType::Signed32,
+        };
+        let grid = GlobalMercatorGrid::new(256)?;
+        let plan = TilesetPlan::from_raster_with_tile_grid(&metadata, &grid, Some(0), Some(0))?;
+        assert_eq!(plan.max_zoom, 0);
+        assert_eq!(
+            plan.levels,
+            vec![TilesetLevel {
+                zoom: 0,
+                tiles: vec![TileCoord {
+                    zoom: 0,
+                    x: 0,
+                    y: 0,
+                }],
+            }]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_direct_plan_when_source_and_target_crs_differ() -> Result<(), CtbError> {
+        assert!(matches!(
+            TilesetPlan::from_raster_with_tile_grid(
+                &metadata()?,
+                &GlobalMercatorGrid::new(256)?,
+                Some(0),
+                Some(0),
+            ),
+            Err(CtbError::UnsupportedCrs(_))
+        ));
+        Ok(())
     }
 
     struct FlatRaster {
