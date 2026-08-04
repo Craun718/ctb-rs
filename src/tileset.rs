@@ -257,7 +257,7 @@ pub fn write_heightmap_tileset_with_progress(
                         Ok(())
                     } else {
                         let heights = TerrainSamplePlan::new(grid, tile).and_then(|sample_plan| {
-                            sample_plan.sample_heights(source, options.resampling)
+                            sample_plan.sample_heights(source, ResamplingMethod::Average)
                         });
                         heights
                             .and_then(|heights| {
@@ -364,7 +364,8 @@ pub fn write_heightmap_tileset_with_factory(
                     } else {
                         let heights =
                             TerrainSamplePlan::from_grid(grid, tile).and_then(|sample_plan| {
-                                sample_plan.sample_heights(source.as_ref(), options.resampling)
+                                sample_plan
+                                    .sample_heights(source.as_ref(), ResamplingMethod::Average)
                             });
                         heights
                             .and_then(|heights| {

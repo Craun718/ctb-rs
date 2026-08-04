@@ -98,6 +98,33 @@ Rust 的 `RasterSource`、缓存和 writer 只能作为 GDAL dataset/VRT 的内�
 `GDALDataset::GetGeoTransform`、`GetMetadata` 虚函数签名的 override/返回类型不兼容；
 因此 oracle 输入、版本和失败原因已固定，但 C++ 可执行文件尚未生成。
 
+#### P0 实施记录 2：恢复 C++ oracle 后的阻塞项收敛（进行中）
+
+用户已修复 `/Users/sander/coding/cesium-terrain-builder/build-with-gdal.sh`。脚本已成功生成
+`build-gdal-v3.11.4/tools/ctb-tile`、`ctb-info`、`ctb-export` 和 `ctb-extents`；使用 GDAL
+`3.11.4`，C++ commit 为 `d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f`。C++ 工程仍保留用户的
+已暂存 `.gitignore` 与 `build-with-gdal.sh`，本项目不修改它们。当前以该 binary 为唯一 oracle，
+按本方案中标记为“C++ 差分待补”的顺序执行 Grid 右上边界、Raster/Terrain payload、12 种
+resampling、destination/NoData/整数转换、overview、EPSG:4326↔3857、GeoTIFF tags 及四个
+CLI 契约。每个差异先登记为可复现证据，再修改 Rust；未获得 oracle 证据的实现继续保持未完成标记。
+
+#### P2 实施记录 7：RasterTiler overview 目标比例修正（已实现，继续扩展 oracle）
+
+恢复 oracle 后，`high-resolution-overview / nearest / automatic / 0/0/0.terrain` 首次差分
+可稳定复现：C++ 与 Rust payload 长度均为 8452，但 overview 选择区域的 Rust 高程编码为
+`6500`、C++ 为 `5500`；同一高分辨率输入去掉 overview 后的全部 12 算法均通过。根因是
+Rust `RasterTileSamplePlan` 用固定 `1 / source_pixel_width` 估算比例，忽略当前目标 tile 的
+像元分辨率。现改为 `destination_resolution / source_pixel_width`，使 overview 选择与
+`GDALTiler` 的目标 warp resolution 对齐；仍需完成完整 overview、边界和不同 zoom 的差分。
+
+#### P1 实施记录 2：TerrainTiler 固定 Average 路径（已实现，oracle 回归中）
+
+C++ `TerrainTiler::createRasterTile` 沿用未设置 `TilerOptions` 的 GDAL 默认
+`GRA_Average`，CLI 的 `-r` 只影响 RasterTiler。已将两个 Terrain tileset 写入入口固定为
+`Average`，即使调用方传入其它 resampling 也不改变 heightmap payload；CLI 仍保留完整参数
+解析和 RasterTiler 的 12 个分支。恢复 oracle 后的首个 overview 差异正是该遗漏暴露的证据，
+修复后须重跑 5 输入 × 12 算法 × 2 range 矩阵。
+
 ### P1：收敛既有 Geodetic 路径
 
 先对 Terrain heightmap 和 `-f GTiff` 的 EPSG:4326 direct-source 路径逐项比对：tile range、

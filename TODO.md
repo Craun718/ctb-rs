@@ -5,9 +5,10 @@
 
 ## P0：规格和现状审计（最高优先级）
 
-- [x] 建立 C++ CTB commit、构建环境和 GDAL 版本的 oracle 记录（CTB
-      `d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f`、GDAL 3.13.2、CMake Release、`/usr/bin/c++`）；
-      旧 CTB 与当前 GDAL API 不兼容，构建失败原因已记录。
+- [x] 用已修复的 `/Users/sander/coding/cesium-terrain-builder/build-with-gdal.sh` 重新构建 C++
+      oracle；产物为 `build-gdal-v3.11.4/tools/{ctb-tile,ctb-info,ctb-export,ctb-extents}`，
+      GDAL `3.11.4`、C++ commit `d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f`。旧的 GDAL API
+      构建阻塞已解除。
 - [ ] 完整盘点 `ctb-tile`、`ctb-info`、`ctb-export`、`ctb-extents` 的参数、默认值、输出与错误路径。
 - [ ] 建立 `src/*` 到 C++ 类/函数的逐项映射，标记“已实现”“已 oracle 验证”“未实现”。
 - [ ] 审计现有 Geodetic Terrain 和 GTiff 路径，消除与 C++ 不符的现有行为后才扩展功能。
@@ -23,7 +24,8 @@
       仍拒绝（`TilesetPlan::from_raster_with_tile_grid`、`raster.rs`；CLI 输出 CRS 测试）。
 - [x] 让 `ctb-tile -f GTiff -p mercator` 构造 Mercator Grid（Rust z0/z1 路径与 metadata 已覆盖）；
       C++ 固定 EPSG:3857 direct-source 的 paths/samples 差分仍待补。
-- [ ] 运行 Geodetic 无回归差分及新的 Mercator direct-source C++ oracle 测试。
+- [ ] 运行 Geodetic 无回归差分及新的 Mercator direct-source C++ oracle 测试；按脚本首个差异
+      逐项补 Rust 实现和回归测试。
 
 ## P2：GDAL VRT 等价
 
@@ -35,10 +37,14 @@
       边缘 tap 丢弃和权重归一化；用非平坦 source fixture 锁定数值（`sampling.rs`，72 tests
       passed）。C++ 差分、缩放和 NoData/density 仍待补。
 - [x] 将 `scripts/verify-ctb-oracle.zsh` 的 resampling 矩阵扩展到 CLI 的全部 12 个算法；
-      脚本通过 `zsh -n`。运行所需的 C++ oracle binary 尚未构建，差分仍待执行。
+      脚本通过 `zsh -n`。使用恢复后的 C++ oracle 执行并记录 12 个算法的数值差异。
 - [ ] 固定 `GDALTiler::createRasterTile` 的 GeoTransform、destination 初始化和 band 行为 oracle。
 - [ ] 以 `TerrainTiler::terrainTileBounds` 验证 terrain 重叠坐标和第 66 个边缘样本。
-- [ ] 用 `getOverviewDataset` 的 SuggestedWarp 中间值建立 overview 选择 oracle。
+- [ ] 以 C++ TerrainTiler 的固定 `GRA_Average` 验证所有 `-r` 名称输出相同；Rust 写入入口已
+      固定 Average，待完整 oracle 矩阵通过后关闭。
+- [ ] 用 `getOverviewDataset` 的 SuggestedWarp 中间值建立 overview 选择 oracle；已观察到
+      high-resolution overview case 的目标/source resolution ratio 差异，Rust 已改为按目标
+      tile resolution 选择，仍需完整矩阵回归。
 - [x] 实现并验证 Terrain/RasterTiler 的内部 overview level-aware 读取与有界缓存（Rust
       fixture 已覆盖，Rust 83 tests passed；C++ SuggestedWarp ratio 差分仍待补）。
 - [x] 补齐 RasterTiler 的 nearest、bilinear、cubic、cubicspline、lanczos、average、mode、max、

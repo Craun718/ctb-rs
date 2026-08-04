@@ -56,6 +56,17 @@ checksum、元数据和预期。最低矩阵如下：
 
 ## 6. P1 RasterTiler 通用 Grid 追加策略
 
+## 6a. C++ oracle 恢复后的执行顺序
+
+使用 `/Users/sander/coding/cesium-terrain-builder/build-gdal-v3.11.4/tools` 下由
+`build-with-gdal.sh` 生成的 binary，不修改该工程的源文件或工作树。当前构建证据为 C++
+commit `d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f`、GDAL `3.11.4`；macOS 运行时需把
+`.deps/gdal-install-v3.11.4/lib` 加入动态库搜索路径。执行前记录 binary 的 `--help`/版本信息；
+随后固定同一 source fixture，依次比较 geodetic/mercator 的路径与右上边界、Terrain payload、
+RasterTiler 的 12 个 resampling、NoData/整数/浮点/越界 destination、overview、EPSG:4326↔3857、
+`-z/-m` 及 GTiff tags/layout/compression，最后比较 info/export/extents 的 stdout/stderr/exit
+status。首次差异先登记失败证据，再增加最小 Rust 回归测试并修复；通过后才关闭对应 TODO。
+
 `RasterTileset` 接入 `TileGrid` 时，`tests/cli.rs` 已以 EPSG:3857 全世界 direct-source fixture
 覆盖 z0：断言 `{z}/{x}/{y}.tif` 路径、输出 CRS、affine transform 及恒定样本；并以 EPSG:4326
 输入 + Mercator profile 断言写入前失败、没有 `.tif`。z1 的 C++ 差分 fixture 仍待补充。输出
@@ -157,6 +168,15 @@ GeoTransform 和窗口样本；全套测试 77 项通过，C++ tie/boundary 差�
 Level-aware RasterTiler 测试还需断言 `sample_values` 只选择一次 level，并从 overview IFD
 读取，而不是逐像元回退 base IFD；与同一 fixture 的 base/overview 样本和 C++ SuggestedWarp
 选择结果进行差分。
+
+已恢复的 C++ oracle 首个 overview 证据为：`high-resolution-overview / nearest / automatic`
+的 `0/0/0.terrain` 两个 raw payload 均 8452 字节，但 overview 区域出现 `5500`（C++）对
+`6500`（修复前 Rust）的差异；去掉 overview 后 12 算法均通过。回归要求目标/source 像元
+分辨率比例参与 level 选择，并重跑完整 5 输入 × 12 算法 × 2 zoom-range 矩阵。
+
+进一步的 C++ `CPL_DEBUG=ON` 证据显示 Terrain warp 使用 `GWKAverageOrMode`，与 C++ CLI
+传入的 12 个 `-r` 名称无关。因此 Terrain 差分必须同时断言：12 个命令的 payload 彼此相同，
+且等于 C++ 默认 Average；`-r` 差分只在 `-f GTiff` RasterTiler 路径执行。
 
 Rust overview-only source 已验证 RasterTiler 复用选定 level，当前全套测试 83 项通过；
 C++ ratio/tie 差分仍待补。

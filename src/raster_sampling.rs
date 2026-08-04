@@ -88,7 +88,7 @@ impl RasterTileSamplePlan {
             .checked_mul(side)
             .ok_or(CtbError::InvalidTileSize(self.tile_size))?;
         let mut values = Vec::with_capacity(capacity);
-        let target_ratio = 1.0 / source.metadata().transform.pixel_width.abs();
+        let target_ratio = self.resolution / source.metadata().transform.pixel_width.abs();
         let level = source.sampling_level_for_ratio(target_ratio)?;
         for row in 0..self.tile_size {
             for column in 0..self.tile_size {
