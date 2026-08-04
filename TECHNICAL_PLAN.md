@@ -226,3 +226,10 @@ driver 文件扩展名与失败方式。
 在无 GDAL/PROJ 的 CI 环境运行 Rust 测试；在隔离 oracle 环境运行 C++ 对照。输出版本化的
 compatibility report，列出每个模块、参数组合、fixture、比较方式和已知差异；有未处理差异
 即不宣布完成。
+
+#### P5 实施记录 1：纯 Rust 依赖审计（已完成）
+
+`cargo tree --all-features` 仅显示 `clap`、`flate2`、`geotiff-reader`、`geotiff-writer`、
+`ndarray` 及其 Rust 传递依赖；没有 GDAL、PROJ、bindgen、cc/cxx GIS FFI 或系统 GIS 库。
+源码中的 GDAL/PROJ 文本仅用于 C++ 行为注释、测试 fixture 和 oracle 脚本。该门禁已完成，
+但不等同于 C++ 全量兼容审计完成。
