@@ -18,7 +18,11 @@ GeoTIFF 派生文件在测试或 oracle 运行时写入临时目录，不提交�
 | ID | 生成位置 | 样本/元数据 | 预期 |
 | --- | --- | --- | --- |
 | `runtime-geotiff-numeric-v1` | `src/geotiff.rs` 的单元测试 | EPSG:4326、north-up、2×2、0.5° PixelIsArea；`f64`、`f32`、`i16` 负高程与 `u16` | 每种类型读取后必须保持值并转换为 `f64` 公共契约 |
-| `runtime-geotiff-failure-v1` | `src/geotiff.rs` 的单元测试 | 具有 `GDAL_NODATA` tag 的 GeoTIFF，以及三字节截断 TIFF | 分别返回 `NoDataEncountered` 和 `RasterRead`，不得 panic |
+| `runtime-geotiff-failure-v1` | `src/geotiff.rs` 的单元测试 | 具有 `GDAL_NODATA` tag 的 GeoTIFF，以及三字节截断 TIFF | NoData window 返回 NaN 标记而不整窗失败；截断 TIFF 返回 `RasterRead`，不得 panic |
+| `runtime-geotiff-overview-v1` | `src/geotiff.rs` 的单元测试 | EPSG:4326、8×8、f64、2/4 倍 top-level overview、north-up | overview 数量、ratio 边界、派生 GeoTransform 和 level-aware window 样本必须一致 |
+
+NoData 采样 fixture 还在 `src/sampling.rs` 中以非有限样本构造，覆盖混合 tap、全 NoData
+footprint 和 12 个 RasterTiler resampling 分支；无有效贡献时预期为 destination 初值 `0.0`。
 
 ## 录入规则
 
