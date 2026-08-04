@@ -62,6 +62,8 @@
       CLI 已覆盖；C++ payload 差分待补）。
 - [ ] 固定 EPSG:4326↔3857 的控制点、轴顺序、纬度范围和 C++ tile oracle（Rust 控制点已
       覆盖，C++ 差分待补）。
+- [ ] 完成 Mercator direct-source z0 upper-edge payload 回归；最小 fixture 差异已固定，仍需
+      从 GDAL warp source coordinate/边界规则继续定位并补 child/destination 初始化回归。
 - [x] 实现纯 Rust 4326↔3857 source/target 坐标变换及反向采样，覆盖 RasterTiler 目标像素
       中心/footprint（`raster.rs`、`raster_sampling.rs`、CLI；74 tests passed）；TerrainTiler
       已接入 `TerrainSamplePlan` 和 factory writer，C++ 差分仍待完成。

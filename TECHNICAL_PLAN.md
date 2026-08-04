@@ -139,6 +139,12 @@ tiled-overview 和无 overview 的 high-resolution 输入共 4 组均完成 12 �
 `0/0/0.terrain`；C++ debug 明确显示 Terrain 使用 `GWKAverageOrMode`，差异收敛到 GDAL
 overview warp 的 source window/坐标语义，未将该部分标记为完成。
 
+Mercator direct-source z0 也已建立最小 oracle：C++/Rust 均生成 `0/0/0.terrain`，但 raw
+payload 首差异在 byte 4225，边缘高度编码为 C++ `5500/6000`、Rust `6500/7000`。输入为
+EPSG:3857、无重投影的窄范围 fixture；该差异归入 Mercator upper-edge/source coverage 与
+destination 初始化规则，尚未修改实现。
+
+
 ### P1：收敛既有 Geodetic 路径
 
 先对 Terrain heightmap 和 `-f GTiff` 的 EPSG:4326 direct-source 路径逐项比对：tile range、

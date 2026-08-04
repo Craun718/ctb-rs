@@ -166,6 +166,11 @@ tiled-overview、high-resolution（无 overview）四类输入的 12 算法和 a
 范围均逐字节通过；high-resolution-overview 在 `0/0/0.terrain` 首个失败。该失败保留为
 overview source-window 回归，不得用已通过的 direct 矩阵代替。
 
+Mercator 最小差分使用同一 source fixture 改写为 EPSG:3857、z0、Terrain；两边路径集合均为
+`0/0/0.terrain`，但 raw byte 4225 起出现 C++ `5500/6000` 对 Rust `6500/7000`。测试需把
+该边缘像元映射回 source/world 坐标，并分别断言 source 覆盖内采样、覆盖外 destination 初值
+和 child flags，不能只比较整包失败。
+
 `ctb-tile` 参数测试还必须覆盖 `-z` 默认 `0.125`、`-m` 默认 `0` 的解析、负数/非有限值
 拒绝，以及非默认值在任何 tile 写出前显式返回未实现错误。待 C++ oracle 恢复后，再比较
 `-z` 对投影结果的影响，并确认 `-m` 是否仅为执行资源提示。
