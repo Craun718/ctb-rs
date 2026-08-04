@@ -19,6 +19,8 @@ pub enum RasterGeoTiffCompression {
     Deflate,
     Lzw,
     Zstd,
+    Jpeg,
+    Lerc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +122,8 @@ pub fn write_raster_tile_as_geotiff_with_options(
         RasterGeoTiffCompression::Deflate => Compression::Deflate,
         RasterGeoTiffCompression::Lzw => Compression::Lzw,
         RasterGeoTiffCompression::Zstd => Compression::Zstd,
+        RasterGeoTiffCompression::Jpeg => Compression::Jpeg,
+        RasterGeoTiffCompression::Lerc => Compression::Lerc,
     })
     .tiff_variant(options.tiff_variant);
     if let Some(predictor) = options.predictor {

@@ -319,6 +319,16 @@ Rust 证据：`TILED=YES` 默认 256×256、显式 `BLOCKXSIZE=32/BLOCKYSIZE=16`
 路径均可写出；非正数或非 16 倍 block 在 parser 阶段失败；全套测试 82 项、clippy 通过。
 TIFF layout tags 与 C++ GTiff CreateCopy 的差分仍待补。
 
+#### P4 实施记录 10：GeoTIFF JPEG/LERC compression（Rust 接入，参数/driver 差分待补）
+
+纯 Rust writer 已提供 JPEG 与 LERC codec。`COMPRESS=JPEG` 映射为 JPEG，实际样本类型与
+writer 的 8-bit JPEG 约束不相容时返回结构化错误；`COMPRESS=LERC` 映射为无额外量化参数
+的 LERC。LERC quality/max-z-error 等 GDAL creation options 尚未加入，不能静默丢弃。
+
+Rust 证据：8-bit source 的 JPEG CLI 输出与 reader 打开成功，Float source 的 JPEG 在写出
+tile 前失败；Float GeoTIFF 的 LERC CLI 输出可读回；全套测试 83 项、clippy 通过。JPEG
+质量与 LERC 参数、C++ driver metadata/字节差分仍待补。
+
 #### P2 实施记录 6：RasterTiler level-aware overview path（Rust 接入，SuggestedWarp 差分待补）
 
 `RasterTileSamplePlan::sample_values` 先按 source 分辨率请求 `sampling_level_for_ratio`，

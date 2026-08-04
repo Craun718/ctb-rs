@@ -117,8 +117,14 @@ GTiff creation-option 测试至少覆盖 `COMPRESS=NONE/DEFLATE/LZW/ZSTD` 的写
 并断言未知选项在创建任何 tile 前失败；压缩编码的字节级差异保留给 C++ oracle。
 当前四种压缩均有 CLI 写出/读回证据；C++ 字节差分尚未执行。
 
-压缩矩阵新增 `COMPRESS=ZSTD`：CLI 写出后由 Rust reader 读回样本、CRS、transform 和
+压缩矩阵覆盖 `COMPRESS=ZSTD/JPEG/LERC`：CLI 写出后由 Rust reader 读回样本、CRS、transform 和
 NoData tag；C++ oracle 恢复后再比较压缩字节与 driver metadata。
+
+JPEG 测试使用 8-bit source 并断言非 8-bit source 在 tile 写出前失败；LERC 使用 Float32/64
+source 验证无额外量化参数的读回，LERC 参数选项仍作为未实现/错误路径覆盖。
+
+Rust 当前已覆盖上述 JPEG/LERC 成功与 JPEG 样本类型错误路径，全套测试 83 项通过；质量、
+LERC 参数和 C++ driver 差分仍待补。
 
 Creation-option 测试还需覆盖 `BIGTIFF=NO/YES/IF_NEEDED` 的 TIFF header/reader 读取，以及
 整数样本 `PREDICTOR=2`、浮点样本 `PREDICTOR=3`；不相容 predictor、重复冲突选项和未知

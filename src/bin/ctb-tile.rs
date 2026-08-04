@@ -65,6 +65,8 @@ fn gtiff_options(options: &[String]) -> Result<RasterGeoTiffWriteOptions, Box<dy
             ("COMPRESS", "DEFLATE") => result.compression = RasterGeoTiffCompression::Deflate,
             ("COMPRESS", "LZW") => result.compression = RasterGeoTiffCompression::Lzw,
             ("COMPRESS", "ZSTD") => result.compression = RasterGeoTiffCompression::Zstd,
+            ("COMPRESS", "JPEG") => result.compression = RasterGeoTiffCompression::Jpeg,
+            ("COMPRESS", "LERC") => result.compression = RasterGeoTiffCompression::Lerc,
             ("BIGTIFF", "NO") => result.tiff_variant = TiffVariant::Classic,
             ("BIGTIFF", "YES") => result.tiff_variant = TiffVariant::BigTiff,
             ("BIGTIFF", "IF_NEEDED") => result.tiff_variant = TiffVariant::Auto,

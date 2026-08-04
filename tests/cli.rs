@@ -37,6 +37,16 @@ fn write_small_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn write_u8_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let samples = Array2::from_shape_vec((2, 2), vec![10_u8, 20, 30, 40])?;
+    GeoTiffBuilder::new(2, 2)
+        .geographic_epsg(4326)
+        .pixel_scale(1.0, 1.0)
+        .origin(-1.0, 1.0)
+        .write_2d(path, samples.view())?;
+    Ok(())
+}
+
 fn write_mercator_world_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let samples = Array2::from_elem((4, 4), 7.0_f64);
     let origin_shift = std::f64::consts::PI * 6_378_137.0;
@@ -343,6 +353,42 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
     let zstd_file = GeoTiffFile::open(zstd_output.join("0/0/0.tif"))?;
     assert_eq!(zstd_file.width(), 256);
     assert_eq!(zstd_file.epsg(), Some(4326));
+
+    let byte_input = directory.join("byte-dem.tif");
+    write_u8_geotiff(&byte_input)?;
+    let jpeg_output = directory.join("jpeg");
+    fs::create_dir(&jpeg_output)?;
+    let jpeg_option = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-f", "GTiff", "-n", "COMPRESS=JPEG", "-o"])
+        .arg(&jpeg_output)
+        .arg(&byte_input)
+        .output()?;
+    assert!(jpeg_option.status.success(), "{:?}", jpeg_option.stderr);
+    let jpeg_file = GeoTiffFile::open(jpeg_output.join("0/0/0.tif"))?;
+    assert_eq!(jpeg_file.width(), 256);
+    let jpeg_samples = jpeg_file.read_band_window::<u8>(0, 0, 0, 1, 1)?;
+    assert_eq!(jpeg_samples.len(), 1);
+
+    let lerc_output = directory.join("lerc");
+    fs::create_dir(&lerc_output)?;
+    let lerc_option = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-f", "GTiff", "-n", "COMPRESS=LERC", "-o"])
+        .arg(&lerc_output)
+        .arg(&input)
+        .output()?;
+    assert!(lerc_option.status.success(), "{:?}", lerc_option.stderr);
+    let lerc_file = GeoTiffFile::open(lerc_output.join("0/0/0.tif"))?;
+    assert_eq!(lerc_file.width(), 256);
+
+    let invalid_jpeg_output = directory.join("invalid-jpeg");
+    fs::create_dir(&invalid_jpeg_output)?;
+    let invalid_jpeg = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-f", "GTiff", "-n", "COMPRESS=JPEG", "-o"])
+        .arg(&invalid_jpeg_output)
+        .arg(&input)
+        .output()?;
+    assert!(!invalid_jpeg.status.success());
+    assert!(!invalid_jpeg_output.join("0/0/0.tif").exists());
 
     let bigtiff_output = directory.join("bigtiff");
     fs::create_dir(&bigtiff_output)?;
