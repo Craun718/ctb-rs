@@ -29,11 +29,11 @@
 | C++ CTB | 当前 Rust 对应 | 当前状态与后续规则 |
 | --- | --- | --- |
 | `Bounds`、`Coordinate`、`TileCoordinate`、`Grid` | `grid` | 基础类型、Global Geodetic、Global Mercator 和 `TileGrid` 已存在；所有 tiler 必须转为通过同一 Grid 契约运行。 |
-| `GlobalGeodetic`、`GlobalMercator` | `grid` | 公式已落地；Mercator 尚未接入 RasterTiler/CLI。 |
+| `GlobalGeodetic`、`GlobalMercator` | `grid` | 公式与两个 profile 的 Raster/Terrain CLI 接入已落地；C++ tile 差分待补。 |
 | `GDALTiler`、`GDALTile`、`gdaloverviewdataset` | `raster`、`geotiff`、`sampling`、`cache` | 用纯 Rust RasterSource、坐标变换、窗口/overview 选择和采样顺序逐项等价；不能以新的“优化型”数据流替换 C++ 行为。 |
-| `RasterTiler`、`RasterIterator` | `raster_sampling`、`raster_tileset` | 已有 geodetic GTiff 子集；改为通用 Grid 后补齐 profile、算法、格式和 creation options。 |
+| `RasterTiler`、`RasterIterator` | `raster_sampling`、`raster_tileset` | 已接入通用 Grid、4326↔3857、12 个采样分支和 GeoTIFF creation options；driver/过程差分待补。 |
 | `TerrainTiler`、`TerrainTile`、`TerrainIterator` | `terrain`、`terrain_sampling`、`tileset` | heightmap-1.0 路径已存在；继续以 `terrainTileBounds`、Float32 读回、`uint16_t((h+1000)*5)` 和 child 逻辑逐项复核。 |
-| `ctb-tile` | `src/bin/ctb-tile.rs` | 参数骨架、Terrain 和 GTiff 子集存在；必须完成完整参数矩阵与原版分支。 |
+| `ctb-tile` | `src/bin/ctb-tile.rs` | Terrain/GTiff 内建路径、12 个采样名和主要 GeoTIFF options 已实现；任意 GDAL driver、ApproxTransformer 和完整错误矩阵待补。 |
 | `ctb-info`、`ctb-export`、`ctb-extents` | 同名 `src/bin` | 基础路径存在；以逐命令 oracle 补齐文本、错误和文件语义。 |
 
 Rust 的 `RasterSource`、缓存和 writer 只能作为 GDAL dataset/VRT 的内部实现替身；它们不得

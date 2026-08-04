@@ -17,11 +17,13 @@
 
 - [x] 为 `RasterTileSamplePlan` 接入 `TileGrid`，不改变现有 Geodetic 结果（`RasterTileSamplePlan::from_grid`；Mercator destination-cell 单元测试）。
 - [x] 将 `RasterTileset` 写入入口和内部 sample-plan 构造改为 `TileGrid`，保持 C++ RasterIterator 顺序与路径布局（`RasterIterator.hpp`/`GridIterator.hpp`；Rust z0 Mercator 过程测试）。
-- [ ] 为 `TilesetPlan` 的通用 Grid 范围计算建立 C++ upper-right 边界 oracle。
+- [ ] 为 `TilesetPlan` 的通用 Grid 范围计算建立 C++ upper-right 边界 oracle（Rust upper-edge
+      回归已覆盖）。
 - [x] RasterTileset 在写入前计算 TileGrid 范围，并支持内建 EPSG:4326↔3857 重投影；未知 CRS
       仍拒绝（`TilesetPlan::from_raster_with_tile_grid`、`raster.rs`；CLI 输出 CRS 测试）。
-- [ ] 让 `ctb-tile -f GTiff -p mercator` 构造 Mercator Grid，并以 C++ 固定 EPSG:3857 direct-source z0/z1 的 paths、metadata 和 samples。
-- [ ] 运行 Geodetic 无回归差分及新的 Mercator direct-source 测试。
+- [x] 让 `ctb-tile -f GTiff -p mercator` 构造 Mercator Grid（Rust z0/z1 路径与 metadata 已覆盖）；
+      C++ 固定 EPSG:3857 direct-source 的 paths/samples 差分仍待补。
+- [ ] 运行 Geodetic 无回归差分及新的 Mercator direct-source C++ oracle 测试。
 
 ## P2：GDAL VRT 等价
 
@@ -57,7 +59,7 @@
       已接入 `TerrainSamplePlan` 和 factory writer，C++ 差分仍待完成。
 - [x] 对 EPSG:4326→3857 正向变换补齐有效纬度裁剪，并用超范围控制点和 tile 边界测试验证
       （Rust 78 tests passed）；C++ GDAL 数值差分仍待补。
-- [ ] 根据 C++ oracle 矩阵登记并实现后续实际需要的 CRS/WKT 表达。
+- [ ] 根据 C++ oracle 矩阵登记并实现后续实际需要的 CRS/WKT 表达；当前内建 EPSG:4326/3857 已实现。
 
 ## P4：格式与 CLI 全量兼容
 

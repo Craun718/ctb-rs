@@ -98,8 +98,8 @@ impl TilesetPlan {
         Ok(Self { max_zoom, levels })
     }
 
-    /// Plan direct-source RasterTiler coverage against any cpp-CTB Grid
-    /// profile. Reprojection is intentionally outside this domain boundary.
+    /// Plan RasterTiler coverage against any built-in CTB Grid profile,
+    /// transforming the source bounds through the supported CRS registry.
     pub fn from_raster_with_tile_grid(
         metadata: &RasterMetadata,
         grid: &dyn TileGrid,
