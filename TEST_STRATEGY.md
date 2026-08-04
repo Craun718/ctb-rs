@@ -113,9 +113,12 @@ NoData fixture 必须包含单个无效 tap、边缘混合窗口和全 NoData fo
 Rust 当前已覆盖混合/全 NoData window 及 12 个 RasterTiler 分支，全套测试 80 项通过；
 GDAL density 差分仍待补。
 
-GTiff creation-option 测试至少覆盖 `COMPRESS=NONE/DEFLATE/LZW` 的写出与 Rust reader 读回，
+GTiff creation-option 测试至少覆盖 `COMPRESS=NONE/DEFLATE/LZW/ZSTD` 的写出与 Rust reader 读回，
 并断言未知选项在创建任何 tile 前失败；压缩编码的字节级差异保留给 C++ oracle。
-当前三种压缩均有 CLI 写出/读回证据；C++ 字节差分尚未执行。
+当前四种压缩均有 CLI 写出/读回证据；C++ 字节差分尚未执行。
+
+压缩矩阵新增 `COMPRESS=ZSTD`：CLI 写出后由 Rust reader 读回样本、CRS、transform 和
+NoData tag；C++ oracle 恢复后再比较压缩字节与 driver metadata。
 
 Overview fixture 使用 `geotiff-writer` 的多级 top-level COG：断言 overview 数量、ratio 在
 1/2/4 附近的选择、overview metadata 的像元尺寸和 `read_sampling_window` 的实际样本；

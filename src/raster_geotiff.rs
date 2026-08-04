@@ -18,6 +18,7 @@ pub enum RasterGeoTiffCompression {
     None,
     Deflate,
     Lzw,
+    Zstd,
 }
 
 pub fn write_raster_tile_as_geotiff(
@@ -80,6 +81,7 @@ pub fn write_raster_tile_as_geotiff_with_compression(
         RasterGeoTiffCompression::None => Compression::None,
         RasterGeoTiffCompression::Deflate => Compression::Deflate,
         RasterGeoTiffCompression::Lzw => Compression::Lzw,
+        RasterGeoTiffCompression::Zstd => Compression::Zstd,
     });
     if let Some(no_data) = metadata.no_data {
         builder = builder.nodata(&no_data.to_string());

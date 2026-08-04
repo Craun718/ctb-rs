@@ -286,6 +286,16 @@ Rust 证据：GeoTIFF 混合 NoData window 现在返回 NaN 标记与有效样�
 分支均过滤无效值，全 NoData footprint 返回 `0.0`，并保留 Terrain 的后续高度编码路径。
 专项测试与全套测试 80 项、clippy 均通过；GDAL density/NaN 数值差分仍待补。
 
+#### P4 实施记录 7：GeoTIFF ZSTD creation option（Rust 接入，C++ 字节差分待补）
+
+当前纯 Rust `geotiff-writer`/`tiff-reader` 已提供无损 ZSTD codec，且不需要新增 GIS FFI
+或依赖。将 C++/GDAL 的 `COMPRESS=ZSTD` 映射为 writer 的 ZSTD 压缩；未知选项继续拒绝，
+JPEG、LERC、PackBits 仍分别受类型/参数或 writer API 约束，不在本单元静默映射。
+
+Rust 证据：`COMPRESS=ZSTD` 已接入 `RasterGeoTiffCompression`，CLI 生成文件可由
+`GeoTiffFile` 打开并读取，未知 creation option 仍拒绝；全套测试 80 项、clippy 通过。
+C++ driver metadata 与压缩字节差分仍待补。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为
