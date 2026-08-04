@@ -77,5 +77,8 @@ RasterTiler footprint 采样。保留 EPSG:4326 Geodetic 现有 tests 作为无�
 当前 Rust 单元覆盖中心与边缘路径，`cargo test` 通过 72 项；缩放因子、NoData/density 和
 C++ 输出差分尚未建立。
 
+oracle 脚本的算法循环必须覆盖 `nearest bilinear cubic cubicspline lanczos average mode
+max min med q1 q3`；若 `CTB_ORACLE_BIN` 未提供，脚本应明确退出而不能被解释为差分通过。
+
 Cargo 命令必须在禁用沙盒的环境执行。生产代码和测试均不得以 `unwrap` 隐藏预期失败；测试中
 若使用 `expect`，消息应说明被验证的不变量。

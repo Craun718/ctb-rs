@@ -151,6 +151,15 @@ Rust 证据：`sampling.rs` 已实现三种核及边界 tap 丢弃/权重归一�
 通过；测试覆盖中心点与边缘有限值。GDAL 版本差异、缩放因子小于 1 和 NoData/density
 仍未由 C++ oracle 证明，因此本记录不关闭 P2 总体任务。
 
+#### P2 实施记录 3：resampling oracle 矩阵扩展（脚本完成，oracle 待执行）
+
+现有 `scripts/verify-ctb-oracle.zsh` 只运行 nearest、bilinear、average、max、min，不能
+证明新接入的七个算法。先将脚本矩阵扩展为 CTB CLI 声明的 12 个名称；执行仍要求外部
+`CTB_ORACLE_BIN`，没有该 binary 时只记录为未验证，不改变 Rust 行为或兼容性结论。
+
+证据：脚本已覆盖 12 个 CLI 名称并通过 `zsh -n`；当前环境只有 Rust `target/debug/ctb-tile`
+和 GDAL utilities，没有 C++ `ctb-tile`，故差分执行仍是待办。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为

@@ -29,6 +29,8 @@
 - [x] 按 GDAL `gdalresamplingkernels.h` 实现 cubic、cubicspline、lanczos 的有限 kernel、
       边缘 tap 丢弃和权重归一化；用非平坦 source fixture 锁定数值（`sampling.rs`，72 tests
       passed）。C++ 差分、缩放和 NoData/density 仍待补。
+- [x] 将 `scripts/verify-ctb-oracle.zsh` 的 resampling 矩阵扩展到 CLI 的全部 12 个算法；
+      脚本通过 `zsh -n`。运行所需的 C++ oracle binary 尚未构建，差分仍待执行。
 - [ ] 固定 `GDALTiler::createRasterTile` 的 GeoTransform、destination 初始化和 band 行为 oracle。
 - [ ] 以 `TerrainTiler::terrainTileBounds` 验证 terrain 重叠坐标和第 66 个边缘样本。
 - [ ] 用 `getOverviewDataset` 的 SuggestedWarp 中间值建立 overview 选择 oracle。
