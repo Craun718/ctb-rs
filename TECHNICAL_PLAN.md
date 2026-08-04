@@ -224,6 +224,21 @@ driver 的 CLI 行为。
 Rust 证据：GTiff 默认 tile size 为 256，Terrain 默认 65；extents 根据 profile 选择 65/256；
 Terrain creation option 在输出前返回错误。CLI 集成测试与 74 项 Rust 测试、clippy 均通过。
 
+#### P4 实施记录 4：ctb-tile warp 执行参数（解析与边界已实现，数值差分待补）
+
+`tools/ctb-tile.cpp` 的 `-z/--error-threshold` 默认值为 `0.125`，`-m/--warp-memory`
+默认值为 `0.0`（交由 GDAL 内部决定）。这两个选项属于 GDAL warp 的近似变换与内存
+预算控制，不改变 CTB 命令行中声明的目标范围；当前 Rust 路径使用显式、精确的纯 Rust
+坐标变换，没有可等价映射的 GDAL ApproxTransformer 或 warp 内存池。
+
+因此 Rust CLI 必须解析并验证这两个参数，默认值可进入现有精确路径；非默认值暂不静默
+忽略，而是在开始写出前以结构化错误报告“该执行控制项尚未实现”。后续获得可运行 C++
+oracle 后，先测量非默认 `-z` 对投影 tile 样本的影响，再决定是否翻译 ApproxTransformer；
+`-m` 仅在确认其没有可观察输出影响后再映射为 Rust worker/cache 控制。
+
+Rust 证据：`ctb-tile` 已解析两个选项；默认值通过校验，负数/非有限值和非默认值均在
+创建 source 与写出 tile 前失败；相关测试和 clippy 均通过（76 项测试）。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为

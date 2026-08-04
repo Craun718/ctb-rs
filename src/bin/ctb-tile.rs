@@ -115,6 +115,14 @@ struct Arguments {
     #[arg(short = 'r', long, value_enum, default_value_t = ResamplingArgument::Average)]
     resampling_method: ResamplingArgument,
 
+    /// GDAL approximate transformer error threshold in pixels.
+    #[arg(short = 'z', long = "error-threshold", default_value_t = 0.125_f32)]
+    error_threshold: f32,
+
+    /// GDAL warp memory limit in bytes; zero uses the GDAL default.
+    #[arg(short = 'm', long = "warp-memory", default_value_t = 0.0_f64)]
+    warp_memory_limit: f64,
+
     /// Input single-band, north-up EPSG:4326 GeoTIFF DEM.
     input: PathBuf,
 }
@@ -135,6 +143,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
+    validate_warp_options(arguments.error_threshold, arguments.warp_memory_limit)?;
     let input = arguments.input.clone();
     let source_factory = move || {
         GeoTiffRasterSource::open(&input).map(|source| {
@@ -228,6 +237,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn validate_warp_options(
+    error_threshold: f32,
+    warp_memory_limit: f64,
+) -> Result<(), Box<dyn Error>> {
+    if !error_threshold.is_finite() || error_threshold < 0.0 {
+        return Err("--error-threshold must be a finite non-negative number".into());
+    }
+    if !warp_memory_limit.is_finite() || warp_memory_limit < 0.0 {
+        return Err("--warp-memory must be a finite non-negative number".into());
+    }
+    if error_threshold != 0.125 {
+        return Err(
+            "--error-threshold is parsed but non-default GDAL approximation is not implemented by the pure-Rust CTB port".into(),
+        );
+    }
+    if warp_memory_limit != 0.0 {
+        return Err(
+            "--warp-memory is parsed but GDAL warp memory control is not implemented by the pure-Rust CTB port".into(),
+        );
+    }
+    Ok(())
+}
+
 fn worker_count(requested: Option<i32>) -> usize {
     match requested {
         Some(count) if count > 0 => count as usize,
@@ -241,7 +273,7 @@ fn worker_count(requested: Option<i32>) -> usize {
 mod tests {
     use clap::Parser;
 
-    use super::{Arguments, worker_count};
+    use super::{Arguments, validate_warp_options, worker_count};
 
     #[test]
     fn parses_output_dir_and_resume() {
@@ -284,6 +316,25 @@ mod tests {
         let arguments =
             Arguments::try_parse_from(["ctb-tile", "-c", "2", "-q", "-v", "-v", "dem.tif"]);
         assert!(arguments.is_ok());
+    }
+
+    #[test]
+    fn parses_warp_execution_options_with_cpp_defaults() {
+        let arguments =
+            Arguments::try_parse_from(["ctb-tile", "-z", "0.25", "-m", "1048576", "dem.tif"])
+                .expect("warp execution options should be accepted by clap");
+        assert_eq!(arguments.error_threshold, 0.25);
+        assert_eq!(arguments.warp_memory_limit, 1_048_576.0);
+    }
+
+    #[test]
+    fn rejects_invalid_or_non_default_warp_execution_options() {
+        assert!(validate_warp_options(0.125, 0.0).is_ok());
+        assert!(validate_warp_options(-1.0, 0.0).is_err());
+        assert!(validate_warp_options(f32::NAN, 0.0).is_err());
+        assert!(validate_warp_options(0.125, -1.0).is_err());
+        assert!(validate_warp_options(0.25, 0.0).is_err());
+        assert!(validate_warp_options(0.125, 1_048_576.0).is_err());
     }
 
     #[test]

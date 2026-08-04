@@ -63,8 +63,11 @@
 - [ ] 逐 driver 以纯 Rust 实现 C++ `CreateCopy` 路径；每个 driver 有独立 oracle。
 - [ ] 覆盖 BigTIFF、常用压缩、strip/tile、内部/外部 overview 与损坏文件。
 - [ ] 对四个 CLI 完成 help、成功、参数错误、I/O 错误、quiet/verbose/thread/resume 差分。
+- [ ] 补齐 `ctb-tile -z/--error-threshold` 与 `-m/--warp-memory`：当前先解析默认值并对
+      非默认值显式报未实现错误；待 C++ oracle 可运行后再验证 ApproxTransformer 和 warp
+      memory 对结果/性能契约的实际影响。
 - [x] 校正 `ctb-tile`/`ctb-extents` 的 profile 默认 tile size（Terrain 65、非 Terrain 256），
-      并拒绝 Terrain 的 `--creation-option`（C++ `ctb-tile.cpp`、`ctb-extents.cpp`；74 tests
+      并拒绝 Terrain 的 `--creation-option`（C++ `ctb-tile.cpp`、`ctb-extents.cpp`；76 tests
       passed）。C++ CLI 差分仍待补。
 
 ## P5：完成门禁
