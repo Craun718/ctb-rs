@@ -24,8 +24,9 @@
       仍拒绝（`TilesetPlan::from_raster_with_tile_grid`、`raster.rs`；CLI 输出 CRS 测试）。
 - [x] 让 `ctb-tile -f GTiff -p mercator` 构造 Mercator Grid（Rust z0/z1 路径与 metadata 已覆盖）；
       C++ 固定 EPSG:3857 direct-source 的 paths/samples 差分仍待补。
-- [ ] 运行 Geodetic 无回归差分及新的 Mercator direct-source C++ oracle 测试；按脚本首个差异
-      逐项补 Rust 实现和回归测试。
+- [ ] 运行 Geodetic 无回归差分及新的 Mercator direct-source C++ oracle 测试；Geodetic
+      direct Terrain 已通过 4 组输入 × 12 算法 × 2 range，带 high-resolution overview 的
+      source window 差异仍待补，随后继续 Mercator。
 
 ## P2：GDAL VRT 等价
 
@@ -49,7 +50,8 @@
       fixture 已覆盖，Rust 83 tests passed；C++ SuggestedWarp ratio 差分仍待补）。
 - [x] 补齐 RasterTiler 的 nearest、bilinear、cubic、cubicspline、lanczos、average、mode、max、
       min、med、q1、q3 Rust 分支；复用现有核函数和离散统计实现，非平坦 Rust fixture 待补。
-- [ ] 对上述 12 个 RasterTiler 算法分别生成非平坦 C++ oracle 并完成数值差分。
+- [ ] 对上述 12 个 RasterTiler 算法分别生成非平坦 C++ oracle 并完成数值差分；当前脚本已
+      证明 Terrain 的 4 组 direct/overview 前置矩阵，RasterTiler GTiff 数值矩阵仍待执行。
 - [ ] 对 integer/float、NoData 和 source 覆盖外的转换顺序逐项差分。
 - [ ] 用含多个 NoData 像元的 fixture 验证逐像元 NaN 标记、12 个采样分支的有效样本过滤、
       全 NoData 时的 destination 初值 0，以及 Terrain 编码结果；与 GDAL density 差分待补。
@@ -84,6 +86,8 @@
 - [ ] 逐 driver 以纯 Rust 实现 C++ `CreateCopy` 路径；每个 driver 有独立 oracle。
 - [ ] 覆盖 BigTIFF、常用压缩、strip/tile、内部/外部 overview 与损坏文件。
 - [ ] 对四个 CLI 完成 help、成功、参数错误、I/O 错误、quiet/verbose/thread/resume 差分。
+- [ ] 完成四个 CLI help 文本和 `--version` 差分；C++ 版本为 `0.4.1`，Rust 版本入口已补齐，
+      clap 的格式化帮助仍待 golden 收敛。
 - [ ] 补齐 `ctb-tile -z/--error-threshold` 与 `-m/--warp-memory`：当前先解析默认值并对
       非默认值显式报未实现错误；待 C++ oracle 可运行后再验证 ApproxTransformer 和 warp
       memory 对结果/性能契约的实际影响。

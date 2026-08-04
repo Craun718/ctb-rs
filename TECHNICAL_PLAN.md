@@ -125,6 +125,20 @@ C++ `TerrainTiler::createRasterTile` 沿用未设置 `TilerOptions` 的 GDAL 默
 解析和 RasterTiler 的 12 个分支。恢复 oracle 后的首个 overview 差异正是该遗漏暴露的证据，
 修复后须重跑 5 输入 × 12 算法 × 2 range 矩阵。
 
+#### P4 实施记录 5：四个 CLI 版本入口（已实现，帮助文本仍待收敛）
+
+C++ oracle 的四个工具均以 `--version` 输出 `0.4.1`；Rust 工具此前将该参数误解析为输入或
+未知选项。四个 clap 入口已固定公开版本字符串 `0.4.1`，与 CTB 0.4.1 oracle 对齐；帮助文本
+的格式、可执行文件路径和参数描述仍作为独立 CLI golden 差分保留。
+
+#### P0 实施记录 3：Terrain resampling oracle 矩阵（部分通过）
+
+使用 C++ CTB 0.4.1/GDAL 3.11.4 与 Rust binary 的现有脚本，plain、float-negative、
+tiled-overview 和无 overview 的 high-resolution 输入共 4 组均完成 12 算法 × automatic/limited
+范围的裸 terrain payload 逐字节比对。剩余首个差异是带 overview 的 high-resolution 输入
+`0/0/0.terrain`；C++ debug 明确显示 Terrain 使用 `GWKAverageOrMode`，差异收敛到 GDAL
+overview warp 的 source window/坐标语义，未将该部分标记为完成。
+
 ### P1：收敛既有 Geodetic 路径
 
 先对 Terrain heightmap 和 `-f GTiff` 的 EPSG:4326 direct-source 路径逐项比对：tile range、

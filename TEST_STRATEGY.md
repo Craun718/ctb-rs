@@ -158,6 +158,14 @@ Overview fixture 使用 `geotiff-writer` 的多级 top-level COG：断言 overvi
 CLI 默认值测试分别覆盖 Terrain 65、GTiff 256、geodetic extents 65、mercator extents 256；
 Terrain 携带 creation option 必须在输出目录写入前失败。
 
+CLI 版本测试固定四个 C++ 工具 `--version` 的 stdout 为 `0.4.1`；帮助测试比较选项集合、
+默认值、参数顺序和退出状态，路径前缀与 clap 自动换行属于需单独归一化的展示差异。
+
+当前 oracle 执行证据：C++ `ctb-tile` 与 Rust Terrain payload 对 plain、float-negative、
+tiled-overview、high-resolution（无 overview）四类输入的 12 算法和 automatic/limited
+范围均逐字节通过；high-resolution-overview 在 `0/0/0.terrain` 首个失败。该失败保留为
+overview source-window 回归，不得用已通过的 direct 矩阵代替。
+
 `ctb-tile` 参数测试还必须覆盖 `-z` 默认 `0.125`、`-m` 默认 `0` 的解析、负数/非有限值
 拒绝，以及非默认值在任何 tile 写出前显式返回未实现错误。待 C++ oracle 恢复后，再比较
 `-z` 对投影结果的影响，并确认 `-m` 是否仅为执行资源提示。
