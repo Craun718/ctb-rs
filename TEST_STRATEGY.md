@@ -127,6 +127,13 @@ Creation-option 测试还需覆盖 `BIGTIFF=NO/YES/IF_NEEDED` 的 TIFF header/re
 Rust 当前已覆盖上述 BigTIFF 变体解析、YES header、浮点 Predictor=3 成功和 Predictor=2
 失败路径；全套测试 82 项通过，整数 Predictor=2 与 C++ driver 差分仍待补。
 
+Tiled layout 测试覆盖默认 256×256、显式 block 尺寸、strip 默认/`TILED=NO`，以及非正数或
+非 16 倍 block 尺寸在写出前失败；用 TIFF tags/layout metadata 与 C++ GTiff CreateCopy 做
+差分，不能只断言文件可打开。
+
+Rust 已覆盖 TILED 默认 block、显式 32×16 block 和 block 尺寸错误路径，全套测试 82 项
+通过；TIFF layout tag 与 C++ 差分仍待补。
+
 Overview fixture 使用 `geotiff-writer` 的多级 top-level COG：断言 overview 数量、ratio 在
 1/2/4 附近的选择、overview metadata 的像元尺寸和 `read_sampling_window` 的实际样本；
 再以 C++ `GDALSuggestedWarpOutput2`/`getOverviewDataset` 输出复核 tie 与边界规则。

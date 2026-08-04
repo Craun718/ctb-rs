@@ -26,6 +26,7 @@ pub struct RasterGeoTiffWriteOptions {
     pub compression: RasterGeoTiffCompression,
     pub tiff_variant: TiffVariant,
     pub predictor: Option<Predictor>,
+    pub tile_size: Option<(u32, u32)>,
 }
 
 impl Default for RasterGeoTiffWriteOptions {
@@ -34,6 +35,7 @@ impl Default for RasterGeoTiffWriteOptions {
             compression: RasterGeoTiffCompression::None,
             tiff_variant: TiffVariant::Auto,
             predictor: None,
+            tile_size: None,
         }
     }
 }
@@ -122,6 +124,9 @@ pub fn write_raster_tile_as_geotiff_with_options(
     .tiff_variant(options.tiff_variant);
     if let Some(predictor) = options.predictor {
         builder = builder.predictor(predictor);
+    }
+    if let Some((tile_width, tile_height)) = options.tile_size {
+        builder = builder.tile_size(tile_width, tile_height);
     }
     if let Some(no_data) = metadata.no_data {
         builder = builder.nodata(&no_data.to_string());

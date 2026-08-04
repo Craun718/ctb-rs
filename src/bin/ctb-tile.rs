@@ -54,6 +54,8 @@ impl From<ResamplingArgument> for ResamplingMethod {
 
 fn gtiff_options(options: &[String]) -> Result<RasterGeoTiffWriteOptions, Box<dyn Error>> {
     let mut result = RasterGeoTiffWriteOptions::default();
+    let mut block_x = None;
+    let mut block_y = None;
     for option in options {
         let (name, value) = option
             .split_once('=')
@@ -69,10 +71,31 @@ fn gtiff_options(options: &[String]) -> Result<RasterGeoTiffWriteOptions, Box<dy
             ("PREDICTOR", "1") => result.predictor = Some(Predictor::None),
             ("PREDICTOR", "2") => result.predictor = Some(Predictor::Horizontal),
             ("PREDICTOR", "3") => result.predictor = Some(Predictor::FloatingPoint),
+            ("TILED", "YES") => result.tile_size = Some((256, 256)),
+            ("TILED", "NO") => result.tile_size = None,
+            ("BLOCKXSIZE", value) => block_x = Some(parse_block_size(option, value)?),
+            ("BLOCKYSIZE", value) => block_y = Some(parse_block_size(option, value)?),
             _ => return Err(format!("GTiff creation option {option} is not implemented").into()),
         }
     }
+    if block_x.is_some() || block_y.is_some() {
+        let tile_width = block_x.map_or(256, |value| value);
+        let tile_height = block_y.map_or(256, |value| value);
+        result.tile_size = Some((tile_width, tile_height));
+    }
     Ok(result)
+}
+
+fn parse_block_size(option: &str, value: &str) -> Result<u32, Box<dyn Error>> {
+    let size = value
+        .parse::<u32>()
+        .map_err(|_| format!("GTiff creation option {option} must be a positive integer"))?;
+    if size == 0 || !size.is_multiple_of(16) {
+        return Err(
+            format!("GTiff creation option {option} must be a positive multiple of 16").into(),
+        );
+    }
+    Ok(size)
 }
 
 #[derive(Debug, Parser)]
@@ -236,6 +259,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     compression: geotiff_options.compression,
                     tiff_variant: geotiff_options.tiff_variant,
                     predictor: geotiff_options.predictor,
+                    block_size: geotiff_options.tile_size,
                     worker_count: worker_count(arguments.thread_count),
                 },
                 progress.as_deref(),
@@ -377,12 +401,24 @@ mod tests {
                 .tiff_variant,
             TiffVariant::Auto
         );
+        assert_eq!(
+            gtiff_options(&[
+                "TILED=YES".to_owned(),
+                "BLOCKXSIZE=32".to_owned(),
+                "BLOCKYSIZE=16".to_owned(),
+            ])
+            .expect("tiled layout options should parse")
+            .tile_size,
+            Some((32, 16))
+        );
     }
 
     #[test]
     fn rejects_malformed_geotiff_creation_options() {
         assert!(gtiff_options(&["COMPRESS".to_owned()]).is_err());
         assert!(gtiff_options(&["PREDICTOR=4".to_owned()]).is_err());
+        assert!(gtiff_options(&["BLOCKXSIZE=17".to_owned()]).is_err());
+        assert!(gtiff_options(&["BLOCKYSIZE=0".to_owned()]).is_err());
     }
 
     #[test]

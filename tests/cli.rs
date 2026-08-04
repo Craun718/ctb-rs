@@ -384,6 +384,26 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
     let predictor_file = GeoTiffFile::open(predictor_output.join("0/0/0.tif"))?;
     assert_eq!(predictor_file.width(), 256);
 
+    let tiled_output = directory.join("tiled");
+    fs::create_dir(&tiled_output)?;
+    let tiled_option = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args([
+            "-f",
+            "GTiff",
+            "-n",
+            "TILED=YES",
+            "-n",
+            "BLOCKXSIZE=32",
+            "-n",
+            "BLOCKYSIZE=16",
+            "-o",
+        ])
+        .arg(&tiled_output)
+        .arg(&input)
+        .output()?;
+    assert!(tiled_option.status.success(), "{:?}", tiled_option.stderr);
+    assert!(tiled_output.join("0/0/0.tif").exists());
+
     let invalid_predictor_output = directory.join("invalid-predictor");
     fs::create_dir(&invalid_predictor_output)?;
     let invalid_predictor = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))

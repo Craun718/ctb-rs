@@ -308,6 +308,17 @@ Horizontal, FloatingPoint}`。将 `BIGTIFF=NO/YES/IF_NEEDED` 分别映射为 Cla
 builder。只接受 C++ GTiff 语义中可确定且与源样本类型相容的值；冲突或未知选项在写出
 前拒绝，`TILED/BLOCKXSIZE/BLOCKYSIZE` 另行处理。
 
+#### P4 实施记录 9：GeoTIFF tiled block options（Rust 接入，GDAL layout 差分待补）
+
+将 `TILED=YES` 映射为 writer 的 tiled layout，默认 block 为 256×256；`BLOCKXSIZE` 和
+`BLOCKYSIZE` 可覆盖对应边长。writer 要求 block 边长为正的 16 倍，因此 Rust 在创建
+任何 tile 前拒绝不满足该约束的值；`TILED=NO` 保持 strip layout。该选项只影响输出
+容器布局，不改变 CTB tile size、样本或 georeferencing。
+
+Rust 证据：`TILED=YES` 默认 256×256、显式 `BLOCKXSIZE=32/BLOCKYSIZE=16` 和 strip
+路径均可写出；非正数或非 16 倍 block 在 parser 阶段失败；全套测试 82 项、clippy 通过。
+TIFF layout tags 与 C++ GTiff CreateCopy 的差分仍待补。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为

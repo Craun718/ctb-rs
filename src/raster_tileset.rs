@@ -29,6 +29,7 @@ pub struct RasterTilesetOptions {
     pub compression: RasterGeoTiffCompression,
     pub tiff_variant: geotiff_writer::TiffVariant,
     pub predictor: Option<geotiff_writer::Predictor>,
+    pub block_size: Option<(u32, u32)>,
     pub worker_count: usize,
 }
 
@@ -42,6 +43,7 @@ impl Default for RasterTilesetOptions {
             compression: RasterGeoTiffCompression::None,
             tiff_variant: geotiff_writer::TiffVariant::Auto,
             predictor: None,
+            block_size: None,
             worker_count: 1,
         }
     }
@@ -113,6 +115,7 @@ pub fn write_raster_geotiff_tileset_with_factory(
                                             compression: options.compression,
                                             tiff_variant: options.tiff_variant,
                                             predictor: options.predictor,
+                                            tile_size: options.block_size,
                                         },
                                         &path,
                                     )
