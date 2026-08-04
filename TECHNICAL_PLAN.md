@@ -251,6 +251,16 @@ Rust 证据：使用 `CogBuilder` 生成 2/4 倍 top-level overview 的真实 Ge
 验证 1.5、2.0、4.0 ratio 的级别选择、overview GeoTransform 和 2×2 窗口样本读回；全套
 测试 77 项、clippy 通过。C++ SuggestedWarp/getOverviewDataset 差分仍待补。
 
+#### P3 实施记录 3：Web Mercator 有效纬度边界（Rust 修正，C++ 数值差分待补）
+
+Global Mercator 的 grid 范围是 `±originShift`，对应 EPSG:3857 的有效纬度约
+`±85.0511287798066°`。纯 Rust 正向变换在输入超出该范围时必须先裁剪纬度，避免把
+EPSG:4326 的极点映射到 grid 外；反向变换保持其数学结果。该修正只收敛既有内建 CRS
+边界，不新增 CRS 或投影接口。
+
+Rust 证据：正向变换已对 ±90° 和超出有效范围的输入裁剪到有效纬度边界，新增边界测试
+通过；全套测试 78 项、clippy 通过。与 GDAL 的精确数值差分仍待可运行 C++ oracle。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为

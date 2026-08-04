@@ -50,6 +50,8 @@
 - [x] 实现纯 Rust 4326↔3857 source/target 坐标变换及反向采样，覆盖 RasterTiler 目标像素
       中心/footprint（`raster.rs`、`raster_sampling.rs`、CLI；74 tests passed）；TerrainTiler
       已接入 `TerrainSamplePlan` 和 factory writer，C++ 差分仍待完成。
+- [x] 对 EPSG:4326→3857 正向变换补齐有效纬度裁剪，并用超范围控制点和 tile 边界测试验证
+      （Rust 78 tests passed）；C++ GDAL 数值差分仍待补。
 - [ ] 根据 C++ oracle 矩阵登记并实现后续实际需要的 CRS/WKT 表达。
 
 ## P4：格式与 CLI 全量兼容

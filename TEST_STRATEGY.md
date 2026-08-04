@@ -94,6 +94,12 @@ destination 初始值；反向路径使用同样控制点。所有转换先做�
 Mercator extents 和 Terrain z0 输出；C++ 输出、反向 RasterTiler tile、Terrain payload、
 overview/NoData 仍待补。
 
+CRS 边界测试还必须覆盖 EPSG:4326 输入 ±90°、±85.0511287798066° 和超出有效范围的
+纬度，断言正向结果落在 Global Mercator grid bounds 内且反向控制点保持一致；之后与 GDAL
+坐标变换输出做数值差分。
+
+Rust 已覆盖 ±90° 到有效边界的裁剪，当前全套测试 78 项通过；GDAL 数值差分仍待补。
+
 GTiff creation-option 测试至少覆盖 `COMPRESS=NONE/DEFLATE/LZW` 的写出与 Rust reader 读回，
 并断言未知选项在创建任何 tile 前失败；压缩编码的字节级差异保留给 C++ oracle。
 当前三种压缩均有 CLI 写出/读回证据；C++ 字节差分尚未执行。

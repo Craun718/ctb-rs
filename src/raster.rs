@@ -7,6 +7,7 @@ pub enum Crs {
 }
 
 const WEB_MERCATOR_RADIUS: f64 = 6_378_137.0;
+const WEB_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_779_806_6;
 
 /// Transform one coordinate between the two CRS representations built into CTB.
 pub fn transform_coordinate(
@@ -24,7 +25,9 @@ pub fn transform_coordinate(
     match (source, target) {
         (Crs::Epsg4326, Crs::Epsg3857) => {
             let longitude = x.to_radians();
-            let latitude = y.to_radians();
+            let latitude = y
+                .clamp(-WEB_MERCATOR_MAX_LATITUDE, WEB_MERCATOR_MAX_LATITUDE)
+                .to_radians();
             Ok((
                 WEB_MERCATOR_RADIUS * longitude,
                 WEB_MERCATOR_RADIUS * (std::f64::consts::FRAC_PI_4 + latitude / 2.0).tan().ln(),
@@ -236,6 +239,29 @@ mod tests {
         let projected = transform_bounds(bounds, &Crs::Epsg4326, &Crs::Epsg3857)?;
         assert!(projected.min_x < 0.0 && projected.max_x > 0.0);
         assert!(projected.min_y < 0.0 && projected.max_y > 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn web_mercator_clamps_latitudes_to_the_global_grid() -> Result<(), CtbError> {
+        let (_, north_pole) = transform_coordinate(0.0, 90.0, &Crs::Epsg4326, &Crs::Epsg3857)?;
+        let (_, north_edge) = transform_coordinate(
+            0.0,
+            WEB_MERCATOR_MAX_LATITUDE,
+            &Crs::Epsg4326,
+            &Crs::Epsg3857,
+        )?;
+        let (_, south_pole) = transform_coordinate(0.0, -90.0, &Crs::Epsg4326, &Crs::Epsg3857)?;
+        let (_, south_edge) = transform_coordinate(
+            0.0,
+            -WEB_MERCATOR_MAX_LATITUDE,
+            &Crs::Epsg4326,
+            &Crs::Epsg3857,
+        )?;
+        assert_eq!(north_pole, north_edge);
+        assert_eq!(south_pole, south_edge);
+        assert!(north_pole.is_finite());
+        assert!(south_pole.is_finite());
         Ok(())
     }
 }
