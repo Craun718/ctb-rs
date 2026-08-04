@@ -106,15 +106,14 @@ impl TilesetPlan {
         start_zoom: Option<u8>,
         end_zoom: Option<u8>,
     ) -> Result<Self, CtbError> {
-        if metadata.crs != grid.crs() {
-            return Err(CtbError::UnsupportedCrs(format!(
-                "source CRS {:?} does not match target grid CRS {:?}",
-                metadata.crs,
-                grid.crs()
-            )));
-        }
-        let bounds = metadata.transform.bounds(metadata.width, metadata.height)?;
-        let available_maximum = grid.zoom_for_resolution(metadata.transform.pixel_width.abs())?;
+        let source_bounds = metadata.transform.bounds(metadata.width, metadata.height)?;
+        let bounds = crate::raster::transform_bounds(source_bounds, &metadata.crs, &grid.crs())?;
+        let source_resolution = if metadata.crs == grid.crs() {
+            metadata.transform.pixel_width.abs()
+        } else {
+            bounds.width() / f64::from(metadata.width)
+        };
+        let available_maximum = grid.zoom_for_resolution(source_resolution)?;
         let max_zoom = start_zoom.unwrap_or(available_maximum);
         let min_zoom = end_zoom.unwrap_or(0);
         if max_zoom > available_maximum || min_zoom > max_zoom {
@@ -503,16 +502,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_direct_plan_when_source_and_target_crs_differ() -> Result<(), CtbError> {
-        assert!(matches!(
-            TilesetPlan::from_raster_with_tile_grid(
-                &metadata()?,
-                &GlobalMercatorGrid::new(256)?,
-                Some(0),
-                Some(0),
-            ),
-            Err(CtbError::UnsupportedCrs(_))
-        ));
+    fn plans_reprojected_source_on_the_mercator_grid() -> Result<(), CtbError> {
+        let plan = TilesetPlan::from_raster_with_tile_grid(
+            &metadata()?,
+            &GlobalMercatorGrid::new(256)?,
+            Some(0),
+            Some(0),
+        )?;
+        assert_eq!(plan.max_zoom, 0);
+        assert!(!plan.levels[0].tiles.is_empty());
         Ok(())
     }
 

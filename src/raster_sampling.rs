@@ -1,7 +1,7 @@
 use crate::{
     CtbError,
     grid::{Bounds, GlobalGeodeticGrid, TileCoord, TileGrid},
-    raster::RasterSource,
+    raster::{Crs, RasterSource, transform_bounds, transform_coordinate},
     sampling::{ResamplingMethod, sample_with_footprint_raster_tiler},
 };
 
@@ -24,6 +24,7 @@ pub struct RasterTileSamplePlan {
     tile: TileCoord,
     bounds: Bounds,
     resolution: f64,
+    target_crs: Crs,
 }
 
 impl RasterTileSamplePlan {
@@ -39,6 +40,7 @@ impl RasterTileSamplePlan {
             tile,
             bounds,
             resolution,
+            target_crs: grid.crs(),
         })
     }
 
@@ -91,12 +93,16 @@ impl RasterTileSamplePlan {
                 let point = self.sample(row, column).expect(
                     "row and column bounded by tile size always identify a destination cell",
                 );
-                values.push(sample_with_footprint_raster_tiler(
-                    source,
+                let (world_x, world_y) = transform_coordinate(
                     point.world_x,
                     point.world_y,
-                    point.footprint,
-                    method,
+                    &self.target_crs,
+                    &source.metadata().crs,
+                )?;
+                let footprint =
+                    transform_bounds(point.footprint, &self.target_crs, &source.metadata().crs)?;
+                values.push(sample_with_footprint_raster_tiler(
+                    source, world_x, world_y, footprint, method,
                 )?);
             }
         }

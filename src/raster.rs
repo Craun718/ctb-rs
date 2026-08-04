@@ -6,6 +6,83 @@ pub enum Crs {
     Epsg3857,
 }
 
+const WEB_MERCATOR_RADIUS: f64 = 6_378_137.0;
+const WEB_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_779_806_6;
+
+/// Transform one coordinate between the two CRS representations built into CTB.
+pub fn transform_coordinate(
+    x: f64,
+    y: f64,
+    source: &Crs,
+    target: &Crs,
+) -> Result<(f64, f64), CtbError> {
+    if !x.is_finite() || !y.is_finite() {
+        return Err(CtbError::InvalidBounds);
+    }
+    if source == target {
+        return Ok((x, y));
+    }
+    match (source, target) {
+        (Crs::Epsg4326, Crs::Epsg3857) => {
+            if !(-WEB_MERCATOR_MAX_LATITUDE..=WEB_MERCATOR_MAX_LATITUDE).contains(&y) {
+                return Err(CtbError::CoordinateOutsideGrid { x, y });
+            }
+            let longitude = x.to_radians();
+            let latitude = y.to_radians();
+            Ok((
+                WEB_MERCATOR_RADIUS * longitude,
+                WEB_MERCATOR_RADIUS * (std::f64::consts::FRAC_PI_4 + latitude / 2.0).tan().ln(),
+            ))
+        }
+        (Crs::Epsg3857, Crs::Epsg4326) => {
+            if x.abs() > std::f64::consts::PI * WEB_MERCATOR_RADIUS
+                || y.abs() > std::f64::consts::PI * WEB_MERCATOR_RADIUS
+            {
+                return Err(CtbError::CoordinateOutsideGrid { x, y });
+            }
+            Ok((
+                (x / WEB_MERCATOR_RADIUS).to_degrees(),
+                (2.0 * (y / WEB_MERCATOR_RADIUS).exp().atan() - std::f64::consts::FRAC_PI_2)
+                    .to_degrees(),
+            ))
+        }
+        _ => Err(CtbError::UnsupportedCrs(format!(
+            "cannot transform {source:?} to {target:?}"
+        ))),
+    }
+}
+
+/// Transform an axis-aligned bounds rectangle by transforming all four corners.
+pub fn transform_bounds(bounds: Bounds, source: &Crs, target: &Crs) -> Result<Bounds, CtbError> {
+    let corners = [
+        (bounds.min_x, bounds.min_y),
+        (bounds.min_x, bounds.max_y),
+        (bounds.max_x, bounds.min_y),
+        (bounds.max_x, bounds.max_y),
+    ];
+    let transformed = corners
+        .into_iter()
+        .map(|(x, y)| transform_coordinate(x, y, source, target))
+        .collect::<Result<Vec<_>, _>>()?;
+    let min_x = transformed
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::INFINITY, f64::min);
+    let min_y = transformed
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = transformed
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let max_y = transformed
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    Bounds::new(min_x, min_y, max_x, max_y)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AffineTransform {
     pub origin_x: f64,
@@ -147,6 +224,33 @@ mod tests {
             transform.bounds(720, 360)?,
             Bounds::new(-180.0, -90.0, 180.0, 90.0)?
         );
+        Ok(())
+    }
+
+    #[test]
+    fn web_mercator_round_trip_uses_ctb_origin_shift() -> Result<(), CtbError> {
+        let (x, y) = transform_coordinate(0.0, 0.0, &Crs::Epsg4326, &Crs::Epsg3857)?;
+        assert!(x.abs() < 1e-12);
+        assert!(y.abs() < 1e-8);
+        let (longitude, latitude) = transform_coordinate(x, y, &Crs::Epsg3857, &Crs::Epsg4326)?;
+        assert!((longitude - 0.0).abs() < 1e-12);
+        assert!((latitude - 0.0).abs() < 1e-12);
+        let (_, north_pole_limit) = transform_coordinate(
+            0.0,
+            WEB_MERCATOR_MAX_LATITUDE,
+            &Crs::Epsg4326,
+            &Crs::Epsg3857,
+        )?;
+        assert!((north_pole_limit - std::f64::consts::PI * WEB_MERCATOR_RADIUS).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn transform_bounds_includes_all_projected_corners() -> Result<(), CtbError> {
+        let bounds = Bounds::new(-10.0, -10.0, 10.0, 10.0)?;
+        let projected = transform_bounds(bounds, &Crs::Epsg4326, &Crs::Epsg3857)?;
+        assert!(projected.min_x < 0.0 && projected.max_x > 0.0);
+        assert!(projected.min_y < 0.0 && projected.max_y > 0.0);
         Ok(())
     }
 }

@@ -80,6 +80,8 @@ pub fn write_raster_geotiff_tileset_with_factory(
                         return;
                     }
                 };
+                let mut output_metadata = source.metadata().clone();
+                output_metadata.crs = grid.crs();
                 loop {
                     if first_error.lock().is_ok_and(|error| error.is_some()) {
                         return;
@@ -98,7 +100,7 @@ pub fn write_raster_geotiff_tileset_with_factory(
                                 .and_then(|values| {
                                     write_raster_geotiff_atomically(
                                         &sample_plan,
-                                        source.metadata(),
+                                        &output_metadata,
                                         values,
                                         options.compression,
                                         &path,

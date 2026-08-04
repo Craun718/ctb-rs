@@ -172,6 +172,19 @@ Rust 证据：`ctb-info -e` CLI golden test 检查 66 行 ASCII 输出、尾部�
 target grid 不一致时返回结构化错误；`cargo test` 72 项及 clippy 通过。C++ 逐字节 CLI
 差分和 EPSG:4326→3857 extents 仍待 P3 oracle。
 
+#### P3 实施记录 1：EPSG:4326↔3857 坐标变换（RasterTiler Rust 实现完成，差分待补）
+
+实现范围固定为 CTB 当前两种内建 Grid 的 EPSG:4326 与 EPSG:3857。正向 Web Mercator
+使用半长轴 6378137、纬度裁剪到 Web Mercator 有效范围；反向变换使用
+`atan(sinh(y/R))`。RasterTiler 将目标像素中心和 footprint 的四角转换到 source CRS，
+再沿 source north-up transform 采样；Tile metadata、GeoTransform 和 CRS 保持 target grid。
+未知 CRS、越过有效纬度或旋转 transform 仍返回结构化错误，不静默当作 4326。
+
+Rust 证据：`raster::transform_coordinate/transform_bounds` 已覆盖双向控制点，
+`RasterTileSamplePlan` 已把目标中心和 footprint 转入 source CRS，tileset 规划和 GTiff
+writer 已保留 target CRS；CLI 覆盖 EPSG:4326 source→EPSG:3857 target，`cargo test` 74
+项、clippy 通过。TerrainTiler、缩放/overview、NoData 和 C++ z0/z1 payload 差分仍未完成。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为

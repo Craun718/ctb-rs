@@ -109,7 +109,11 @@ fn ctb_extents_and_export_work_as_processes() -> Result<(), Box<dyn std::error::
         .arg(&input)
         .output()?;
     assert!(extents_output.status.success());
-    assert!(extents.join("0.geojson").exists());
+    assert!(
+        extents.join("0.geojson").exists(),
+        "generated files: {:?}",
+        fs::read_dir(&extents)?.collect::<Result<Vec<_>, _>>()?
+    );
     assert!(String::from_utf8(extents_output.stdout)?.contains("creating "));
 
     let terrain_path = directory.join("tile.terrain");
@@ -190,10 +194,16 @@ fn ctb_extents_honours_geodetic_zoom_options() -> Result<(), Box<dyn std::error:
     assert!(!extents.join("0.geojson").exists());
 
     let mercator = Command::new(env!("CARGO_BIN_EXE_ctb-extents"))
-        .args(["-p", "mercator"])
+        .args(["-p", "mercator", "-o"])
+        .arg(&extents)
         .arg(&input)
         .output()?;
-    assert!(!mercator.status.success());
+    assert!(mercator.status.success(), "{:?}", mercator.stderr);
+    assert!(
+        extents.join("0.geojson").exists(),
+        "generated files: {:?}",
+        fs::read_dir(&extents)?.collect::<Result<Vec<_>, _>>()?
+    );
 
     let missing_directory = Command::new(env!("CARGO_BIN_EXE_ctb-extents"))
         .args(["-o"])
@@ -295,12 +305,19 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
     let incompatible_profile_output = directory.join("incompatible-mercator");
     fs::create_dir(&incompatible_profile_output)?;
     let incompatible_profile = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
-        .args(["-f", "GTiff", "-p", "mercator", "-o"])
+        .args([
+            "-f", "GTiff", "-p", "mercator", "-t", "4", "-s", "0", "-e", "0", "-o",
+        ])
         .arg(&incompatible_profile_output)
         .arg(&input)
         .output()?;
-    assert!(!incompatible_profile.status.success());
-    assert!(!incompatible_profile_output.join("0/0/0.tif").exists());
+    assert!(
+        incompatible_profile.status.success(),
+        "4326 to 3857 reprojection failed: {:?}",
+        incompatible_profile.stderr
+    );
+    let reprojected = GeoTiffFile::open(incompatible_profile_output.join("0/0/0.tif"))?;
+    assert_eq!(reprojected.epsg(), Some(3857));
 
     fs::remove_dir_all(directory)?;
     Ok(())

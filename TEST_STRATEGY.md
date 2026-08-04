@@ -86,5 +86,12 @@ EPSG:4326 geodetic 与 EPSG:3857 mercator 的 z0/z1 文件、GeoJSON polygon 顺
 当前 Rust 证据为 `tests/cli.rs` 的 info 输出断言和 extents geodetic/unsupported-mercator
 路径测试；Mercator direct-source 及 C++ 逐字节输出差分仍待补。
 
+投影测试固定 EPSG:4326 控制点（0°、±180°、有效纬度边界）与 EPSG:3857 的 origin shift，
+并检查 4326 source→3857 target 的 RasterTiler z0/z1 metadata、样本和 source 覆盖外的
+destination 初始值；反向路径使用同样控制点。所有转换先做纯 Rust 数值测试，再接入 C++
+差分。
+当前 Rust 证据包括 `raster.rs` 的双向控制点、`tests/cli.rs` 的 4326→3857 GTiff 输出以及
+Mercator extents；C++ 输出、反向 RasterTiler tile 和 TerrainTiler 重投影仍待补。
+
 Cargo 命令必须在禁用沙盒的环境执行。生产代码和测试均不得以 `unwrap` 隐藏预期失败；测试中
 若使用 `expect`，消息应说明被验证的不变量。
