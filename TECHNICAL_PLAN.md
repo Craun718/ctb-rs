@@ -193,6 +193,19 @@ overlap 和 child-mask 计算；Terrain 采样中心与 footprint 会从目标 G
 CRS。`ctb-tile -f Terrain -p mercator` 已覆盖 EPSG:4326 source 的 z0 过程测试。C++
 terrain payload、overview 和 NoData 行为仍待 oracle。
 
+#### P4 实施记录 2：GeoTIFF LZW creation option（Rust 实现完成，C++ 差分待补）
+
+依赖审计确认 `geotiff-writer` 0.8.0 的纯 Rust writer 提供 `Compression::Lzw`，因此将
+CTB `-n COMPRESS=LZW` 映射到该实现；未知 creation option 继续在写目录前拒绝。验证包含
+压缩输出可由当前 Rust reader 读回，并检查 CLI 错误/成功路径。
+
+C++ oracle 构建记录：现有 CTB 0.4.1 源码在系统 GDAL 3.x 头文件下因
+`GDALDataset::GetGeoTransform` 与 `GetMetadata` 虚函数签名变化而无法编译；该环境差异
+暂不改变 Rust 兼容矩阵结论。
+
+Rust 证据：`RasterGeoTiffCompression::Lzw` 与 CLI `COMPRESS=LZW` 已接入，CLI 生成文件
+可由 `GeoTiffFile` 读回；74 项测试和 clippy 通过。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为

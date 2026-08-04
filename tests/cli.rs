@@ -310,6 +310,17 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
     );
     assert!(deflate_output.join("0/0/0.tif").exists());
 
+    let lzw_output = directory.join("lzw");
+    fs::create_dir(&lzw_output)?;
+    let lzw_option = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-f", "GTiff", "-n", "COMPRESS=LZW", "-o"])
+        .arg(&lzw_output)
+        .arg(&input)
+        .output()?;
+    assert!(lzw_option.status.success(), "{:?}", lzw_option.stderr);
+    let lzw_file = GeoTiffFile::open(lzw_output.join("0/0/0.tif"))?;
+    assert_eq!(lzw_file.width(), 65);
+
     let incompatible_profile_output = directory.join("incompatible-mercator");
     fs::create_dir(&incompatible_profile_output)?;
     let incompatible_profile = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))

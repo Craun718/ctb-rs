@@ -57,6 +57,7 @@ fn gtiff_compression(options: &[String]) -> Result<RasterGeoTiffCompression, Box
         compression = match option.as_str() {
             "COMPRESS=NONE" => RasterGeoTiffCompression::None,
             "COMPRESS=DEFLATE" => RasterGeoTiffCompression::Deflate,
+            "COMPRESS=LZW" => RasterGeoTiffCompression::Lzw,
             _ => return Err(format!("GTiff creation option {option} is not implemented").into()),
         };
     }

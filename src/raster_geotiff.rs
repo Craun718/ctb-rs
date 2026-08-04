@@ -17,6 +17,7 @@ use crate::{
 pub enum RasterGeoTiffCompression {
     None,
     Deflate,
+    Lzw,
 }
 
 pub fn write_raster_tile_as_geotiff(
@@ -78,6 +79,7 @@ pub fn write_raster_tile_as_geotiff_with_compression(
     .compression(match compression {
         RasterGeoTiffCompression::None => Compression::None,
         RasterGeoTiffCompression::Deflate => Compression::Deflate,
+        RasterGeoTiffCompression::Lzw => Compression::Lzw,
     });
     if let Some(no_data) = metadata.no_data {
         builder = builder.nodata(&no_data.to_string());
