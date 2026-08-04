@@ -163,19 +163,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     match arguments.output_format.as_str() {
         "Terrain" => {
-            if arguments.profile != "geodetic" {
-                return Err(
-                    "only the geodetic profile is supported by the pure-Rust heightmap MVP".into(),
-                );
-            }
             if let Some(tile_size) = arguments.tile_size
                 && tile_size != 65
             {
                 return Err("CTB heightmap-1.0 output requires --tile-size 65".into());
             }
+            let grid: Box<dyn TileGrid> = match arguments.profile.as_str() {
+                "geodetic" => Box::new(GlobalGeodeticGrid::new(65)?),
+                "mercator" => Box::new(GlobalMercatorGrid::new(65)?),
+                profile => return Err(format!("unsupported TMS profile {profile}").into()),
+            };
             write_heightmap_tileset_with_factory(
                 &source_factory,
-                GlobalGeodeticGrid::new(65)?,
+                grid.as_ref(),
                 &arguments.output_dir,
                 HeightmapTilesetOptions {
                     resume: arguments.resume,

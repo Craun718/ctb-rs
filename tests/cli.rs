@@ -252,11 +252,19 @@ fn ctb_tile_honours_zoom_range_and_supported_resampling() -> Result<(), Box<dyn 
         assert!(!output.join("2").exists());
     }
 
+    let mercator_output = directory.join("terrain-mercator");
+    fs::create_dir(&mercator_output)?;
     let unsupported_profile = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
-        .args(["--profile", "mercator"])
+        .args(["--profile", "mercator", "-s", "0", "-e", "0", "-o"])
+        .arg(&mercator_output)
         .arg(&input)
         .output()?;
-    assert!(!unsupported_profile.status.success());
+    assert!(
+        unsupported_profile.status.success(),
+        "{:?}",
+        unsupported_profile.stderr
+    );
+    assert!(mercator_output.join("0/0/0.terrain").exists());
 
     fs::remove_dir_all(directory)?;
     Ok(())

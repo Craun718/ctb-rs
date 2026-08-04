@@ -1,7 +1,7 @@
 use crate::{
     CtbError,
-    grid::{Bounds, GlobalGeodeticGrid, TileCoord},
-    raster::RasterSource,
+    grid::{Bounds, GlobalGeodeticGrid, TileCoord, TileGrid},
+    raster::{RasterSource, transform_bounds, transform_coordinate},
     sampling::{ResamplingMethod, sample_with_footprint_level},
 };
 
@@ -25,10 +25,15 @@ pub struct TerrainSamplePlan {
     tile_size: u32,
     cell_width: f64,
     cell_height: f64,
+    target_crs: crate::raster::Crs,
 }
 
 impl TerrainSamplePlan {
     pub fn new(grid: GlobalGeodeticGrid, coord: TileCoord) -> Result<Self, CtbError> {
+        Self::from_grid(&grid, coord)
+    }
+
+    pub fn from_grid(grid: &dyn TileGrid, coord: TileCoord) -> Result<Self, CtbError> {
         let bounds = grid.tile_bounds(coord)?;
         let tile_size = grid.tile_size();
         let cells_per_edge = f64::from(tile_size - 1);
@@ -37,6 +42,7 @@ impl TerrainSamplePlan {
             tile_size,
             cell_width: bounds.width() / cells_per_edge,
             cell_height: bounds.height() / cells_per_edge,
+            target_crs: grid.crs(),
         })
     }
 
@@ -80,13 +86,16 @@ impl TerrainSamplePlan {
                 let sample = self
                     .sample(row, column)
                     .ok_or(CtbError::InvalidRasterWindow)?;
-                heights.push(sample_with_footprint_level(
-                    source,
-                    &level,
+                let (world_x, world_y) = transform_coordinate(
                     sample.world_x,
                     sample.world_y,
-                    sample.footprint,
-                    method,
+                    &self.target_crs,
+                    &source.metadata().crs,
+                )?;
+                let footprint =
+                    transform_bounds(sample.footprint, &self.target_crs, &source.metadata().crs)?;
+                heights.push(sample_with_footprint_level(
+                    source, &level, world_x, world_y, footprint, method,
                 )?);
             }
         }

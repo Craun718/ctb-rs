@@ -107,7 +107,11 @@ impl TilesetPlan {
         end_zoom: Option<u8>,
     ) -> Result<Self, CtbError> {
         let source_bounds = metadata.transform.bounds(metadata.width, metadata.height)?;
-        let bounds = crate::raster::transform_bounds(source_bounds, &metadata.crs, &grid.crs())?;
+        let transformed_bounds =
+            crate::raster::transform_bounds(source_bounds, &metadata.crs, &grid.crs())?;
+        let bounds = transformed_bounds
+            .intersection(grid_bounds(grid)?)
+            .ok_or(CtbError::RasterOutsideGrid)?;
         let source_resolution = if metadata.crs == grid.crs() {
             metadata.transform.pixel_width.abs()
         } else {
@@ -149,6 +153,27 @@ impl TilesetPlan {
         let children = child_level.tiles.iter().copied().collect::<BTreeSet<_>>();
         child_mask_from_tiles(parent, &children)
     }
+}
+
+fn grid_bounds(grid: &dyn TileGrid) -> Result<crate::grid::Bounds, CtbError> {
+    let last_x = grid.tiles_x(0)?.saturating_sub(1);
+    let last_y = grid.tiles_y(0)?.saturating_sub(1);
+    let lower = grid.tile_bounds(TileCoord {
+        zoom: 0,
+        x: 0,
+        y: 0,
+    })?;
+    let upper = grid.tile_bounds(TileCoord {
+        zoom: 0,
+        x: last_x,
+        y: last_y,
+    })?;
+    crate::grid::Bounds::new(
+        lower.min_x.min(upper.min_x),
+        lower.min_y.min(upper.min_y),
+        lower.max_x.max(upper.max_x),
+        lower.max_y.max(upper.max_y),
+    )
 }
 
 /// Write CTB heightmap terrain tiles, processing child levels before parents.
@@ -277,7 +302,7 @@ pub fn write_heightmap_tileset_with_progress(
 /// original CTB, whose worker threads each call `GDALOpen` for the input.
 pub fn write_heightmap_tileset_with_factory(
     source_factory: &(dyn Fn() -> Result<Box<dyn RasterSource>, CtbError> + Sync),
-    grid: GlobalGeodeticGrid,
+    grid: &dyn TileGrid,
     output_directory: impl AsRef<Path>,
     options: HeightmapTilesetOptions,
     progress: Option<&(dyn Fn(TileWriteProgress) + Sync)>,
@@ -288,13 +313,14 @@ pub fn write_heightmap_tileset_with_factory(
         )));
     }
     let metadata_source = source_factory()?;
-    let plan = TilesetPlan::from_raster_with_zoom_range(
+    let plan = TilesetPlan::from_raster_with_tile_grid(
         metadata_source.metadata(),
         grid,
         options.start_zoom,
         options.end_zoom,
     )?;
-    let coverage_plan = TilesetPlan::from_raster(metadata_source.metadata(), grid)?;
+    let coverage_plan =
+        TilesetPlan::from_raster_with_tile_grid(metadata_source.metadata(), grid, None, None)?;
     drop(metadata_source);
 
     let output_directory = output_directory.as_ref();
@@ -336,9 +362,10 @@ pub fn write_heightmap_tileset_with_factory(
                     let outcome = if options.resume && path.exists() {
                         Ok(())
                     } else {
-                        let heights = TerrainSamplePlan::new(grid, tile).and_then(|sample_plan| {
-                            sample_plan.sample_heights(source.as_ref(), options.resampling)
-                        });
+                        let heights =
+                            TerrainSamplePlan::from_grid(grid, tile).and_then(|sample_plan| {
+                                sample_plan.sample_heights(source.as_ref(), options.resampling)
+                            });
                         heights
                             .and_then(|heights| {
                                 HeightmapTerrain::from_sampled_meters(
@@ -699,9 +726,10 @@ mod tests {
             factory_opens.fetch_add(1, Ordering::Relaxed);
             FlatRaster::world().map(|source| Box::new(source) as Box<dyn RasterSource>)
         };
+        let grid = GlobalGeodeticGrid::new(65)?;
         write_heightmap_tileset_with_factory(
             &factory,
-            GlobalGeodeticGrid::new(65)?,
+            &grid,
             &directory,
             HeightmapTilesetOptions {
                 worker_count: 2,

@@ -183,7 +183,15 @@ target grid 不一致时返回结构化错误；`cargo test` 72 项及 clippy �
 Rust 证据：`raster::transform_coordinate/transform_bounds` 已覆盖双向控制点，
 `RasterTileSamplePlan` 已把目标中心和 footprint 转入 source CRS，tileset 规划和 GTiff
 writer 已保留 target CRS；CLI 覆盖 EPSG:4326 source→EPSG:3857 target，`cargo test` 74
-项、clippy 通过。TerrainTiler、缩放/overview、NoData 和 C++ z0/z1 payload 差分仍未完成。
+项、clippy 通过。TerrainTiler 接入和 upper-edge 行为已覆盖 Rust CLI；缩放/overview、
+NoData 和 C++ z0/z1 payload 差分仍未完成。
+
+#### P3 实施记录 2：TerrainTiler Grid/重投影接入（Rust 实现完成，差分待补）
+
+`TerrainSamplePlan` 与 factory tileset writer 已改为接受 `TileGrid`，保留 65×65、东/北
+overlap 和 child-mask 计算；Terrain 采样中心与 footprint 会从目标 Grid CRS 转换到 source
+CRS。`ctb-tile -f Terrain -p mercator` 已覆盖 EPSG:4326 source 的 z0 过程测试。C++
+terrain payload、overview 和 NoData 行为仍待 oracle。
 
 ### P3：完成 Global Mercator 与投影
 

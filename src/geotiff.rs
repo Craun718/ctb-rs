@@ -240,7 +240,7 @@ impl RasterSource for GeoTiffRasterSource {
             width,
             height,
             band_count: self.metadata.band_count,
-            crs: self.metadata.crs.clone(),
+            crs: self.metadata.crs,
             transform: AffineTransform::north_up(
                 self.metadata.transform.origin_x,
                 self.metadata.transform.origin_y,

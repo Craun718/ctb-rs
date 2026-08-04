@@ -1,13 +1,12 @@
 use crate::{CtbError, grid::Bounds};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Crs {
     Epsg4326,
     Epsg3857,
 }
 
 const WEB_MERCATOR_RADIUS: f64 = 6_378_137.0;
-const WEB_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_779_806_6;
 
 /// Transform one coordinate between the two CRS representations built into CTB.
 pub fn transform_coordinate(
@@ -24,9 +23,6 @@ pub fn transform_coordinate(
     }
     match (source, target) {
         (Crs::Epsg4326, Crs::Epsg3857) => {
-            if !(-WEB_MERCATOR_MAX_LATITUDE..=WEB_MERCATOR_MAX_LATITUDE).contains(&y) {
-                return Err(CtbError::CoordinateOutsideGrid { x, y });
-            }
             let longitude = x.to_radians();
             let latitude = y.to_radians();
             Ok((
@@ -34,18 +30,11 @@ pub fn transform_coordinate(
                 WEB_MERCATOR_RADIUS * (std::f64::consts::FRAC_PI_4 + latitude / 2.0).tan().ln(),
             ))
         }
-        (Crs::Epsg3857, Crs::Epsg4326) => {
-            if x.abs() > std::f64::consts::PI * WEB_MERCATOR_RADIUS
-                || y.abs() > std::f64::consts::PI * WEB_MERCATOR_RADIUS
-            {
-                return Err(CtbError::CoordinateOutsideGrid { x, y });
-            }
-            Ok((
-                (x / WEB_MERCATOR_RADIUS).to_degrees(),
-                (2.0 * (y / WEB_MERCATOR_RADIUS).exp().atan() - std::f64::consts::FRAC_PI_2)
-                    .to_degrees(),
-            ))
-        }
+        (Crs::Epsg3857, Crs::Epsg4326) => Ok((
+            (x / WEB_MERCATOR_RADIUS).to_degrees(),
+            (2.0 * (y / WEB_MERCATOR_RADIUS).exp().atan() - std::f64::consts::FRAC_PI_2)
+                .to_degrees(),
+        )),
         _ => Err(CtbError::UnsupportedCrs(format!(
             "cannot transform {source:?} to {target:?}"
         ))),
@@ -235,12 +224,8 @@ mod tests {
         let (longitude, latitude) = transform_coordinate(x, y, &Crs::Epsg3857, &Crs::Epsg4326)?;
         assert!((longitude - 0.0).abs() < 1e-12);
         assert!((latitude - 0.0).abs() < 1e-12);
-        let (_, north_pole_limit) = transform_coordinate(
-            0.0,
-            WEB_MERCATOR_MAX_LATITUDE,
-            &Crs::Epsg4326,
-            &Crs::Epsg3857,
-        )?;
+        let (_, north_pole_limit) =
+            transform_coordinate(0.0, 85.051_128_779_806_6, &Crs::Epsg4326, &Crs::Epsg3857)?;
         assert!((north_pole_limit - std::f64::consts::PI * WEB_MERCATOR_RADIUS).abs() < 1e-6);
         Ok(())
     }

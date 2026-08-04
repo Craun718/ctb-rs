@@ -40,13 +40,13 @@
 
 ## P3：Mercator 与重投影
 
-- [ ] 将 GlobalMercator 接入 `ctb-tile` 的 Terrain 与 RasterTiler 分支（Raster direct-source
-      已完成；Terrain 与重投影仍待补）。
+- [x] 将 GlobalMercator 接入 `ctb-tile` 的 Terrain 与 RasterTiler 分支（Raster/Terrain Rust
+      CLI 已覆盖；C++ payload 差分待补）。
 - [ ] 固定 EPSG:4326↔3857 的控制点、轴顺序、纬度范围和 C++ tile oracle（Rust 控制点已
       覆盖，C++ 差分待补）。
 - [x] 实现纯 Rust 4326↔3857 source/target 坐标变换及反向采样，覆盖 RasterTiler 目标像素
       中心/footprint（`raster.rs`、`raster_sampling.rs`、CLI；74 tests passed）；TerrainTiler
-      接入仍待完成。
+      已接入 `TerrainSamplePlan` 和 factory writer，C++ 差分仍待完成。
 - [ ] 根据 C++ oracle 矩阵登记并实现后续实际需要的 CRS/WKT 表达。
 
 ## P4：格式与 CLI 全量兼容
