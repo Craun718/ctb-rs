@@ -90,6 +90,9 @@ fn sample_at_level_with_nearest_support(
             read_sample(source, level, column, row)
         }
         ResamplingMethod::Bilinear => bilinear(source, level, pixel_x - 0.5, pixel_y - 0.5),
+        ResamplingMethod::Cubic | ResamplingMethod::CubicSpline | ResamplingMethod::Lanczos => {
+            filtered_sample(source, level, pixel_x - 0.5, pixel_y - 0.5, method)
+        }
         ResamplingMethod::Average => Err(CtbError::UnsupportedRaster(
             "average resampling requires an output-pixel footprint".to_owned(),
         )),
@@ -393,6 +396,90 @@ fn bilinear(
     Ok(interpolate(top_value, bottom_value, vertical))
 }
 
+fn filtered_sample(
+    source: &dyn RasterSource,
+    level: &SamplingLevel,
+    centre_x: f64,
+    centre_y: f64,
+    method: ResamplingMethod,
+) -> Result<f64, CtbError> {
+    let radius = match method {
+        ResamplingMethod::Cubic | ResamplingMethod::CubicSpline => 2,
+        ResamplingMethod::Lanczos => 3,
+        _ => {
+            return Err(CtbError::UnsupportedRaster(
+                "invalid filtered kernel".to_owned(),
+            ));
+        }
+    };
+    let start_offset = if radius == 2 { -1 } else { -2 };
+    let x_base = centre_x.floor() as i32;
+    let y_base = centre_y.floor() as i32;
+    let mut weighted_sum = 0.0;
+    let mut weight_sum = 0.0;
+    for y_offset in start_offset..=radius - 1 {
+        let y = y_base + y_offset;
+        if y < 0 || y >= level.metadata.height as i32 {
+            continue;
+        }
+        let y_weight = kernel_weight(centre_y - f64::from(y), method);
+        for x_offset in start_offset..=radius - 1 {
+            let x = x_base + x_offset;
+            if x < 0 || x >= level.metadata.width as i32 {
+                continue;
+            }
+            let x_weight = kernel_weight(centre_x - f64::from(x), method);
+            let weight = x_weight * y_weight;
+            if weight == 0.0 {
+                continue;
+            }
+            weighted_sum += read_sample(source, level, x as u32, y as u32)? * weight;
+            weight_sum += weight;
+        }
+    }
+    if weight_sum.abs() < f64::EPSILON {
+        Ok(0.0)
+    } else {
+        Ok(weighted_sum / weight_sum)
+    }
+}
+
+fn kernel_weight(distance: f64, method: ResamplingMethod) -> f64 {
+    let absolute = distance.abs();
+    match method {
+        ResamplingMethod::Cubic => {
+            if absolute <= 1.0 {
+                distance * distance * (1.5 * absolute - 2.5) + 1.0
+            } else if absolute <= 2.0 {
+                distance * distance * (-0.5 * absolute + 2.5) - 4.0 * absolute + 2.0
+            } else {
+                0.0
+            }
+        }
+        ResamplingMethod::CubicSpline => {
+            if absolute < 1.0 {
+                (4.0 - 6.0 * absolute * absolute + 3.0 * absolute.powi(3)) / 6.0
+            } else if absolute < 2.0 {
+                (2.0 - absolute).powi(3) / 6.0
+            } else {
+                0.0
+            }
+        }
+        ResamplingMethod::Lanczos => {
+            if absolute >= 3.0 {
+                0.0
+            } else if absolute == 0.0 {
+                1.0
+            } else {
+                let pi_distance = std::f64::consts::PI * distance;
+                (pi_distance.sin() / pi_distance)
+                    * ((pi_distance / 3.0).sin() / (pi_distance / 3.0))
+            }
+        }
+        _ => 0.0,
+    }
+}
+
 fn interpolate(first: f64, second: f64, proportion: f64) -> f64 {
     first + (second - first) * proportion
 }
@@ -526,6 +613,24 @@ mod tests {
             sample_at(&source, 0.0, 2.0, ResamplingMethod::Bilinear)?,
             0.0
         );
+        Ok(())
+    }
+
+    #[test]
+    fn continuous_kernels_sample_pixel_centres_and_edges() -> Result<(), CtbError> {
+        let source = TestRaster::new()?;
+        for method in [
+            ResamplingMethod::Cubic,
+            ResamplingMethod::CubicSpline,
+            ResamplingMethod::Lanczos,
+        ] {
+            let centre = sample_at(&source, 1.0, 1.0, method)?;
+            assert!(
+                (centre - 15.0).abs() < 1e-12,
+                "{method:?} preserves the bilinear centre value: {centre}"
+            );
+            assert!(sample_at(&source, 0.0, 2.0, method)?.is_finite());
+        }
         Ok(())
     }
 

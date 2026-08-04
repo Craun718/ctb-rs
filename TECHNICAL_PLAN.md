@@ -139,6 +139,18 @@ Rust 证据：`sampling.rs` 的 `sample_with_footprint(_level)` 已接入四个�
 通过 71 项，`cargo clippy -- -D warnings` 通过。尚未完成的证据是同一 fixture 经 C++
 `ctb-tile -r mode|med|q1|q3` 的输出差分，因此不能据此关闭 P2 的兼容性任务。
 
+#### P2 实施记录 2：连续 4×4/6×6 核（Rust 实现完成，C++ 差分待补）
+
+下一单元依据 GDAL `alg/gdalresamplingkernels.h` 与 `gdalwarpkernel.cpp`：`cubic` 使用
+Catmull-Rom（半径 2），`cubicspline` 使用三次 B-spline（半径 2），`lanczos` 使用半径
+3 的 windowed sinc（6×6）。目标像素坐标继续采用当前 pixel-corner 到 pixel-centre 的
+`-0.5` 变换；越过 source 边界的 kernel tap 被跳过，最终按实际权重归一化。该范围先限于
+当前 north-up、无 NoData 的 RasterSource 契约，NoData/density 语义仍须单独 oracle。
+
+Rust 证据：`sampling.rs` 已实现三种核及边界 tap 丢弃/权重归一化，72 项测试和 clippy
+通过；测试覆盖中心点与边缘有限值。GDAL 版本差异、缩放因子小于 1 和 NoData/density
+仍未由 C++ oracle 证明，因此本记录不关闭 P2 总体任务。
+
 ### P3：完成 Global Mercator 与投影
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为

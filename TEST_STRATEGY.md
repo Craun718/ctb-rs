@@ -70,5 +70,12 @@ RasterTiler footprint 采样。保留 EPSG:4326 Geodetic 现有 tests 作为无�
 窗口与排序行为，随后用同一 fixture 的 C++ `-r mode/med/q1/q3` 输出补充差分证据。
 当前 Rust 单元覆盖 2×2 非平坦窗口和完全越界窗口；C++ 差分尚未建立。
 
+连续核测试使用至少 6×6 非平坦 source，并分别检查中心点、四边角边界点和非整数坐标；
+断言 cubic/cubicspline 的 4×4 tap、lanczos 的 6×6 tap、越界 tap 跳过及权重归一化。核
+系数以仓库内 GDAL `gdalresamplingkernels.h` 为实现依据，之后以 C++ `ctb-tile -r` 输出
+补充差分记录。
+当前 Rust 单元覆盖中心与边缘路径，`cargo test` 通过 72 项；缩放因子、NoData/density 和
+C++ 输出差分尚未建立。
+
 Cargo 命令必须在禁用沙盒的环境执行。生产代码和测试均不得以 `unwrap` 隐藏预期失败；测试中
 若使用 `expect`，消息应说明被验证的不变量。
