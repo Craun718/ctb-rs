@@ -4,7 +4,7 @@ use clap::{ArgAction, Parser, ValueEnum};
 use ctb_rs::{
     cache::CachedRasterSource,
     geotiff::GeoTiffRasterSource,
-    grid::GlobalGeodeticGrid,
+    grid::{GlobalGeodeticGrid, GlobalMercatorGrid, TileGrid},
     raster_geotiff::RasterGeoTiffCompression,
     raster_tileset::{
         RasterTilesetOptions, raster_geotiff_path, write_raster_geotiff_tileset_with_factory,
@@ -94,7 +94,7 @@ struct Arguments {
     #[arg(short = 'v', long, action = ArgAction::Count)]
     verbose: u8,
 
-    /// TMS profile. The pure-Rust heightmap MVP supports geodetic only.
+    /// TMS profile. GTiff direct-source supports geodetic and mercator.
     #[arg(short, long, default_value = "geodetic")]
     profile: String,
 
@@ -120,9 +120,6 @@ struct Arguments {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments = Arguments::parse();
-    if arguments.profile != "geodetic" {
-        return Err("only the geodetic profile is supported by the pure-Rust heightmap MVP".into());
-    }
     if !arguments.output_dir.exists() {
         return Err(format!(
             "The output directory does not exist: {}",
@@ -166,6 +163,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     match arguments.output_format.as_str() {
         "Terrain" => {
+            if arguments.profile != "geodetic" {
+                return Err(
+                    "only the geodetic profile is supported by the pure-Rust heightmap MVP".into(),
+                );
+            }
             if let Some(tile_size) = arguments.tile_size
                 && tile_size != 65
             {
@@ -188,9 +190,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             )?;
         }
         "GTiff" => {
+            let grid: Box<dyn TileGrid> = match arguments.profile.as_str() {
+                "geodetic" => Box::new(GlobalGeodeticGrid::new(arguments.tile_size.unwrap_or(65))?),
+                "mercator" => {
+                    Box::new(GlobalMercatorGrid::new(arguments.tile_size.unwrap_or(256))?)
+                }
+                profile => return Err(format!("unsupported TMS profile {profile}").into()),
+            };
             write_raster_geotiff_tileset_with_factory(
                 &source_factory,
-                GlobalGeodeticGrid::new(arguments.tile_size.unwrap_or(65))?,
+                grid.as_ref(),
                 &arguments.output_dir,
                 RasterTilesetOptions {
                     resume: arguments.resume,

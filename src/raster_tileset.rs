@@ -9,7 +9,7 @@ use std::{
 
 use crate::{
     CtbError,
-    grid::{GlobalGeodeticGrid, TileCoord},
+    grid::{TileCoord, TileGrid},
     raster::RasterSource,
     raster_geotiff::{RasterGeoTiffCompression, write_raster_tile_as_geotiff_with_compression},
     raster_sampling::RasterTileSamplePlan,
@@ -44,13 +44,13 @@ impl Default for RasterTilesetOptions {
 /// sources, matching CTB's worker ownership model.
 pub fn write_raster_geotiff_tileset_with_factory(
     source_factory: &(dyn Fn() -> Result<Box<dyn RasterSource>, CtbError> + Sync),
-    grid: GlobalGeodeticGrid,
+    grid: &dyn TileGrid,
     output_directory: impl AsRef<Path>,
     options: RasterTilesetOptions,
     progress: Option<&(dyn Fn(TileWriteProgress) + Sync)>,
 ) -> Result<TilesetPlan, CtbError> {
     let metadata_source = source_factory()?;
-    let plan = TilesetPlan::from_raster_with_zoom_range(
+    let plan = TilesetPlan::from_raster_with_tile_grid(
         metadata_source.metadata(),
         grid,
         options.start_zoom,
@@ -92,7 +92,7 @@ pub fn write_raster_geotiff_tileset_with_factory(
                     let outcome = if options.resume && path.exists() {
                         Ok(())
                     } else {
-                        RasterTileSamplePlan::new(grid, tile).and_then(|sample_plan| {
+                        RasterTileSamplePlan::from_grid(grid, tile).and_then(|sample_plan| {
                             sample_plan
                                 .sample_values(source.as_ref(), options.resampling)
                                 .and_then(|values| {

@@ -4,9 +4,15 @@
 
 开始任何工作前，先更新技术方案，然后根据技术方案的优先级生成新的todo，接着按照todo开展工作。
 
+当实施顺序这一章节记录的步骤全部完成后应当直接在这一章节续写。
+
+每完成一部分阶段性的工作后应该将workspacee中的修改内容提交到stage，然后运行 $commit-staged
+
+对技术文档或者todo文件的章节或步骤进行排序编号时，必须顺序编号，不得复用已有的编号。
+
 ## 技术分歧
 
-如果出现技术方案中没有详细解释的边界情况，可以参考这个项目 `/Users/sander/coding/cesium-terrain-builder`，使用了 GDAL 默认行为和默认参数的地方，请参考 `/Users/sander/coding/cesium-terrain-builder`。
+如果出现技术方案中没有详细解释的边界情况，可以参考这个项目 `/Users/sander/coding/cesium-terrain-builder`，使用了 GDAL 默认行为和默认参数的地方，请参考 `/Users/sander/coding/gdal`。
 
 如果当前已经实现的内容与技术方案有区别，要以cpp版ctb的实现为准对技术文档进行更新。不要擅自添加原来没有的内容、算法和接口，也不要用rust的语法糖或其他特性替代原有的技术路线，必须遵照原本的实现方式进行重写。
 

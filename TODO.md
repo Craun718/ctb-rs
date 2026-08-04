@@ -1,177 +1,52 @@
 # ctb-rs 实施 TODO
 
-本文件由 `TECHNICAL_PLAN.md` 的实施状态派生；完成后更新状态，不改变既定技术决策。
+本清单从 `TECHNICAL_PLAN.md` 派生。每个任务完成时必须同时更新技术方案、测试策略和本清单，
+并附上 C++ 源码位置或 oracle 证据。
 
-## P0：领域边界与测试策略
+## P0：规格和现状审计（最高优先级）
 
-- [x] 定义 crate 内模块边界和公开领域类型：`Crs`、`AffineTransform`、`Bounds`、`TileCoord`、`RasterMetadata`。
-- [x] 定义 `RasterSource`、窗口读取和 NoData 错误契约；不引入具体 GeoTIFF I/O。
-- [x] 实现并测试 TMS Global Geodetic 格网、zoom/resolution、坐标到瓦片及瓦片范围。
-- [x] 定义并测试 CTB heightmap-1.0 的无压缩二进制 reader/writer、child bitfield 和 all-land mask。
-- [x] 写出 fixture 清单、oracle 生成方法、语义兼容断言及误差规则。
+- [ ] 建立 C++ CTB commit、构建环境和 GDAL 版本的 oracle 记录。
+- [ ] 完整盘点 `ctb-tile`、`ctb-info`、`ctb-export`、`ctb-extents` 的参数、默认值、输出与错误路径。
+- [ ] 建立 `src/*` 到 C++ 类/函数的逐项映射，标记“已实现”“已 oracle 验证”“未实现”。
+- [ ] 审计现有 Geodetic Terrain 和 GTiff 路径，消除与 C++ 不符的现有行为后才扩展功能。
+- [ ] 将所有 fixture/oracle 元数据补入 `tests/fixtures/MANIFEST.md`。
 
-## P0：依赖 spike
+## P1：通用 Grid 接入
 
-- [x] 通过 `cargo` 添加候选纯 Rust TIFF/GeoTIFF 依赖；确认依赖树不含 GDAL/PROJ/FFI GIS 库。
-- [x] 用最小样本验证 GeoTIFF 元数据、第一波段、NoData、tiled/striped 和内部 overview 的实际可读性。
-- [x] 将选型结论、已验证功能和缺口回写 `TECHNICAL_PLAN.md`。
+- [x] 为 `RasterTileSamplePlan` 接入 `TileGrid`，不改变现有 Geodetic 结果（`RasterTileSamplePlan::from_grid`；Mercator destination-cell 单元测试）。
+- [x] 将 `RasterTileset` 写入入口和内部 sample-plan 构造改为 `TileGrid`，保持 C++ RasterIterator 顺序与路径布局（`RasterIterator.hpp`/`GridIterator.hpp`；Rust z0 Mercator 过程测试）。
+- [ ] 为 `TilesetPlan` 的通用 Grid 范围计算建立 C++ upper-right 边界 oracle。
+- [x] 在 RasterTileset 写入前仅支持 source CRS 等于 target grid CRS，明确拒绝任何尚未实现的重投影（`TilesetPlan::from_raster_with_tile_grid`；CLI 无输出错误测试）。
+- [ ] 让 `ctb-tile -f GTiff -p mercator` 构造 Mercator Grid，并以 C++ 固定 EPSG:3857 direct-source z0/z1 的 paths、metadata 和 samples。
+- [ ] 运行 Geodetic 无回归差分及新的 Mercator direct-source 测试。
 
-## 当前：GeoTIFF 受限适配器
+## P2：GDAL VRT 等价
 
-- [x] 通过 Cargo 添加纯 Rust GeoTIFF writer 作为开发期 fixture 工具，并复查依赖树。
-- [x] 生成可复现的小型 EPSG:4326 fixture 及其元数据断言。
-- [x] 实现 `GeoTiffRasterSource`：元数据校验、首波段窗口读取与 `f64` 样本转换。
-- [x] 用 fixture 覆盖有效路径、错误 CRS、NoData 和窗口边界。
+- [ ] 固定 `GDALTiler::createRasterTile` 的 GeoTransform、destination 初始化和 band 行为 oracle。
+- [ ] 以 `TerrainTiler::terrainTileBounds` 验证 terrain 重叠坐标和第 66 个边缘样本。
+- [ ] 用 `getOverviewDataset` 的 SuggestedWarp 中间值建立 overview 选择 oracle。
+- [ ] 实现并验证内部 overview 的 level-aware 读取与有界缓存。
+- [ ] 补齐 RasterTiler 的 nearest、bilinear、cubic、cubicspline、lanczos、average、mode、max、min、med、q1、q3；每种算法先有非平坦 C++ oracle。
+- [ ] 对 integer/float、NoData 和 source 覆盖外的转换顺序逐项差分。
 
-## P1：heightmap MVP
+## P3：Mercator 与重投影
 
-- [x] 实现 EPSG:4326 GeoTIFF `RasterSource`。
-- [x] 实现窗口化采样与 nearest/bilinear/average。
-- [x] 实现 `ctb-tile`、`ctb-info`、`ctb-export`、`ctb-extents`。
-- [x] 与原 CTB golden fixtures 做语义兼容测试（最小 EPSG:4326 fixture 的裸 payload 逐字节一致）。
+- [ ] 将 GlobalMercator 接入 `ctb-tile` 的 Terrain 与 RasterTiler 分支。
+- [ ] 固定 EPSG:4326↔3857 的控制点、轴顺序、纬度范围和 C++ tile oracle。
+- [ ] 实现纯 Rust 4326↔3857 source/target 坐标变换及反向采样。
+- [ ] 根据 C++ oracle 矩阵登记并实现后续实际需要的 CRS/WKT 表达。
 
-## 当前：CLI（tile 与 info）
+## P4：格式与 CLI 全量兼容
 
-- [x] 通过 Cargo 添加 CLI 解析依赖，并保留四个原 CTB 可执行文件名。
-- [x] 实现 `ctb-tile` 的 GeoTIFF → heightmap tileset 调用、输出目录和 resume。
-- [x] 实现 `ctb-info` 的 terrain 解码、child/type/height 输出。
-- [x] 以进程级测试覆盖帮助、无效参数和最小成功路径。
+- [ ] 按 C++ 可用 driver 建立输入格式、输出 format、extension 和 creation option 矩阵。
+- [ ] 完成 GTiff creation options、样本类型和 metadata 的全部已登记组合。
+- [ ] 逐 driver 以纯 Rust 实现 C++ `CreateCopy` 路径；每个 driver 有独立 oracle。
+- [ ] 覆盖 BigTIFF、常用压缩、strip/tile、内部/外部 overview 与损坏文件。
+- [ ] 对四个 CLI 完成 help、成功、参数错误、I/O 错误、quiet/verbose/thread/resume 差分。
 
-## 当前：CLI（extents）
+## P5：完成门禁
 
-- [x] 从 `TilesetPlan` 生成每个 zoom 的 GeoJSON FeatureCollection。
-- [x] 实现 `ctb-extents` 的 GeoTIFF 输入和输出目录 CLI。
-- [x] 用 fixture 验证 GeoJSON 坐标、tile properties 与每层文件布局。
-
-## 当前：CLI（export）
-
-- [x] 通过 Cargo 将纯 Rust GeoTIFF writer 提升为生产依赖。
-- [x] 实现 terrain `u16` bit pattern 到 signed GeoTIFF band 的导出器。
-- [x] 实现 `ctb-export -i -z -x -y -o` CLI，并测试 transform、CRS 和 signed sample 行为。
-
-## 当前：世界坐标采样器
-
-- [x] 定义重采样算法与 world-coordinate sampling 接口。
-- [x] 实现并测试 north-up EPSG:4326 下 nearest 采样。
-- [x] 实现并测试边缘钳制的 bilinear 采样。
-
-## 当前：terrain 目标瓦片采样规划
-
-- [x] 定义并测试 heightmap 的 65×65 世界坐标样点与相邻瓦片边缘重合规则。
-- [x] 为重采样接口加入目标 cell footprint。
-- [x] 实现并测试确定性的 Average 样本聚合。
-- [x] 生成一个 `TileCoord` 的 `Vec<f64>` terrain 高程栅格，暂不量化或写文件。
-
-## 当前：heightmap 量化
-
-- [x] 定义高程 `f64 -> i16` 的舍入、有限性与范围错误契约。
-- [x] 实现由 sampled heights 构建 all-land `HeightmapTerrain`。
-- [x] 测试负数半值、边界值、NaN、无穷大、溢出及高度数量错误。
-
-## 当前：heightmap gzip 容器
-
-- [x] 通过 Cargo 添加纯 Rust gzip 依赖，并检查 feature 与依赖树。
-- [x] 实现并测试 compact/detailed heightmap 的 gzip 内存编解码。
-- [x] 实现文件读写 API，并测试损坏或过大 gzip payload 的拒绝路径。
-
-## 当前：tileset 规划与写入
-
-- [x] 定义 max zoom、数据集 bounds 到 TMS tile range 的规划规则。
-- [x] 生成每层被覆盖的 `TileCoord`，并测试层级与边界。
-- [x] 在生成完成后按实际子 tile 回填 `ChildMask`。
-- [x] 实现 `{z}/{x}/{y}.terrain` 原子 gzip 写入与 resume 行为。
-
-## 当前：CTB 高程与空间外兼容性
-
-- [x] 从 CTB 与本地 GDAL 源码确定 heightmap 高程的精确截断/溢出行为。
-- [x] 从 GDAL warp 默认路径确定 destination 未被 source 覆盖时的初始化值。
-- [x] 用最小 DEM fixture 运行 CTB，记录原始 terrain payload oracle。
-- [x] 将量化器与空间外采样策略改为已验证的 CTB 行为。
-- [x] 使 GeoTIFF adapter 按常见原生数值类型解码后转换到 `RasterSource` 的 `f64` 样本契约。
-- [x] 为 CTB VRT 的像元中心与 Average 边缘覆盖行为建立最小 oracle 单元测试。
-- [x] 将 Average 改为源/目标 PixelIsArea footprint 的面积加权，并使最小 fixture 的裸 payload 字节一致。
-
-## 当前：原版 CLI 可兼容子集
-
-- [x] 在 tileset 领域计划中定义并验证受限 zoom 范围，并按下一层源覆盖推导 child mask。
-- [x] 将 `Resampling::{Nearest,Bilinear,Average}` 从 CLI 传入采样与写入路径，并为三者建立回归测试。
-- [x] 为 `ctb-tile` 接入原版同名的 `-s/-e/-r/-t/-p` 参数；不在首期范围的值必须明确拒绝。
-- [x] 补进程级 CLI 覆盖：参数契约、缩放范围、算法选择和生成文件布局。
-- [x] 执行格式化、测试、clippy，并用原 CTB 对受支持参数组合复核高度 payload。
-- [x] 决定受限 zoom 输出的 child mask：使用原 CTB 的“可覆盖子瓦片”规则，保证限定 zoom 的字节级兼容性。
-
-## 下一阶段：P1b — 兼容性矩阵与输入可靠性
-
-- [x] 编写 fixture manifest：来源/许可证、生成命令、checksum、元数据和预期行为。
-- [x] 编写 `oracle-source-v1` 的可复现 CTB oracle 脚本，覆盖三种算法、完整与受限 zoom。
-- [x] 按原版 `TerrainTiler` 行为使 Terrain CLI 接受 `-r` 但固定采用 average，并更新兼容回归。
-- [x] 在无 GDAL 的 runtime fixture 中覆盖整数、浮点、负高程、NoData、损坏 TIFF 与世界边界契约。
-- [x] 扩展 GDAL oracle 覆盖 tiled、DEFLATE 与内部 overview，并与 plain source 交叉比较。
-- [x] 扩展 GDAL oracle 覆盖 Float32 的负/正高程量化路径。
-- [x] 核对 `ctb-tile -r`：Terrain 路径按原版固定 Average，三个列举值只保留解析兼容。
-- [x] 以原版为基准实现并测试 `ctb-extents` 的 GeoJSON 文本、遍历顺序与既有输出目录契约；记录跨编译器零边界 ULP 文本差异。
-- [x] 为 `ctb-info`、`ctb-export` 补原版 CLI 成功 stdout、参数缺失和无效 terrain 输入路径兼容测试。
-- [x] 记录 BigTIFF 与多 block LZW 的原版 payload 验证状态；JPEG、LERC、ZSTD、外部 overview 和更大 BigTIFF 维持未验证状态。
-
-## 全量原版 CTB 复刻跟踪
-
-- [ ] 建立原版每个 CLI 参数、profile、输出格式与错误路径的兼容性矩阵。
-- [ ] 实现并验证 `ctb-tile` 的并发、进度和所有已登记输出格式接口。
-- [x] 核对 Quantized-Mesh 与 `layer.json`：原版 CTB 0.4.1 不具备该功能，非复刻范围。
-- [ ] 实现 EPSG:3857、Global Mercator 与 Mercator profile。
-- [ ] 按登记式驱动矩阵扩展原版可用输入/输出格式，保持纯 Rust。
-- [ ] 完成全量兼容审计并消除矩阵中的未支持项。
-
-## 后续：P2 — 性能、大文件与可恢复写入
-
-- [x] 为 `ctb-tile` 实现原版 `-c/-q/-v`、每 worker 独立打开 GeoTIFF 与受控 worker 分派；保持 payload、`--resume` 和原子写入语义。
-- [x] 移除 `ctb-tile` 对根 `--output-dir` 的隐式创建，复刻原版存在性/目录校验。
-- [x] 设计并实现内部块 cache（含 halo、LRU、容量边界与并发安全），不新增 CLI 参数；NoData source 保持精确读取。
-- [ ] 建立单线程/双线程/default、quiet/verbose 与 resume 的进程级回归，并与原 CTB 对照可观察输出。
-- [ ] 设计 `RasterSource` 块读取/halo 与有界缓存接口，并先建立无 I/O 的测试。
-- [ ] 实现 `SamplingLevel` 与 level-aware 采样/缓存接口；按 CTB ratio 规则选择内部 overview，并以原版 internal overview fixture 验证 payload。
-  - [ ] 建立 GDAL SuggestedWarp/overview GeoTransform 临时 oracle，消除 target ratio 等价式的不确定性。
-  - [ ] 将 oracle 结论固化为 Rust 领域测试，并完成高分辨率 internal overview 的 CTB payload 对照。
-- [ ] 按原版 `Grid::crsToTile` 修复 dataset upper-right 边界的范围包含语义，并复核 child mask 与路径集。
-- [ ] 以 `TerrainTiler::terrainTileBounds` 的 VRT overlap corner 语义修正 terrain sampling 坐标与 footprint；用高分辨率 base/overview oracle 验证。
-- [ ] 以实际 `TerrainSamplePlan → GeoTiffRasterSource → writer` 路径断言 selected level 和第 66 个 sample 的传递值，再继续 overview 数值核对。
-- [x] 核对 `ctb-tile -r` 的固定 Average：Terrain 分支忽略该参数，全部算法留待 RasterTiler formats。
-  - [x] 将原版全部 12 个名称纳入 CLI 枚举；Terrain path 固定 Average，复刻原版分支。
-  - [ ] 实现原版 RasterTiler output formats 后，为每个算法建立非平坦 GeoTIFF payload oracle 并逐项接入。
-
-## 下一阶段：RasterTiler 输出格式
-
-- [ ] 建立原版 `ctb-tile --output-format` 的 driver/creation option/输出布局兼容矩阵。
-- [ ] 选择并实现第一个可由现有纯 Rust writer 复刻的 RasterTiler format，建立原版文件 oracle。
-  - [ ] 记录原版 `GTiff` RasterTiler 的文件/元数据/creation option oracle。
-    - [x] 准备可运行的原版 `ctb-tile` oracle：以临时 GDAL 3.13 API 适配副本构建，原始 CTB 未修改。
-    - [x] 固定 GTiff baseline：geodetic 默认 65、`-t 4`、单 band Int32/NoData/EPSG:4326/GeoTransform/路径集。
-    - [x] 记录 GTiff 非整数 sample conversion oracle；creation option 矩阵仍持续扩展。
-  - [x] 在 RasterMetadata 增加 storage sample type，供 GTiff CreateCopy 等价 writer 保留 source/VRT data type。
-  - [x] 定义并测试 RasterTiler 的 destination pixel-centre/footprint sampling plan；不得复用 heightmap edge-overlap plan。
-  - [x] 实现不带 CLI 副作用的 typed GTiff 文件 writer，并对 Signed32 的路径、样本、NoData 与 GeoTransform 建立 unit oracle。
-  - [x] 定义 RasterTileset writer：复用 worker/resume/progress，按 RasterTileSamplePlan 原子写 `{z}/{x}/{y}.tif`。
-  - [ ] 实现纯 Rust `-f GTiff` 并进行原版 TIFF 语义对照。
-    - [x] 默认 GTiff 的路径集、z0 metadata 与解码样本矩阵对照。
-    - [x] 接入并对照 `COMPRESS=DEFLATE`；`TILED=YES` 等 options 维持明确拒绝。
-    - [x] 拆分 RasterTiler 与 Terrain 的 nearest/bilinear 边界 support，并固化 plain z0 GTiff oracle。
-    - [ ] 扩展 GTiff `nearest/bilinear` 对照至其他 zoom、source storage type 和 internal overview。
-    - [ ] 复刻 GDAL 在 unsigned storage type 写入范围外 NoData tag（如 UInt16 的 `-9999`）的 metadata 行为。
-- [ ] 建立大 DEM 基准、内存上限、失败恢复和单/多线程一致性测试。
-- [x] 编写不依赖 overview 的可复现大 DEM benchmark 脚本，记录单/多 worker wall-clock、tile 数和 payload 一致性。
-
-## 后续：P3 — CRS 与 Global Mercator
-
-- [ ] 定义纯 Rust CRS 转换边界与 EPSG:4326 <-> 3857 控制点测试。
-- [ ] 实现 Global Mercator 与 `--profile mercator`。
-  - [x] 定义并测试与原版 `Grid` 同公式的 `GlobalMercatorGrid`，暂不接入 I/O。
-  - [ ] 扩展 GeoTIFF direct-source 至 EPSG:3857，并为 GTiff RasterTiler 接入同 CRS Mercator grid。
-    - [x] 固定原版 EPSG:3857 direct-source 的 Mercator GTiff z0/z1 路径、type、NoData、CRS 与 GeoTransform oracle。
-    - [ ] 定义通用 target-grid/target-CRS 边界，并在不改变 geodetic 语义的前提下重构 RasterTiler plan。
-      - [x] 增加 cpp `Grid` 等价的 `TileGrid` trait，并让 GlobalGeodetic/Mercator 实现；不接入 I/O。
-
-## 后续：P4 — 格式生态与产品化
-
-- [ ] 按需求选定下一个 `RasterSource` 格式驱动并完成 compatibility spike。
-- [ ] 规划受限 mosaic、COG HTTP Range 与外部 overview adapter。
-- [ ] 建立 CI、依赖树/许可证/SBOM 及性能/兼容性报告。
+- [ ] 无 GDAL/PROJ/FFI GIS 依赖的 `cargo tree` 审计通过。
+- [ ] Rust 单元、集成、CLI、多线程和差分测试全绿。
+- [ ] C++ 全量兼容矩阵没有未解释条目。
+- [ ] 生成并提交版本化兼容性报告；任何未实现 C++ 路径不得标记为完成。

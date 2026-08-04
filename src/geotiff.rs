@@ -10,9 +10,9 @@ use crate::{
     },
 };
 
-/// A restricted, pure-Rust GeoTIFF source for the Phase 1 input contract.
+/// A restricted, pure-Rust GeoTIFF source for the direct-source input contract.
 ///
-/// It deliberately accepts only a single north-up EPSG:4326 band. Reprojection,
+/// It accepts one north-up band in either CTB built-in grid CRS. Reprojection,
 /// overview selection, and multi-band interpretation belong to later phases.
 pub struct GeoTiffRasterSource {
     file: GeoTiffFile,
@@ -24,9 +24,11 @@ impl GeoTiffRasterSource {
         let file =
             GeoTiffFile::open(path).map_err(|error| CtbError::RasterRead(error.to_string()))?;
         let epsg = file.epsg().ok_or(CtbError::MissingCrs)?;
-        if epsg != 4326 {
-            return Err(CtbError::UnsupportedCrs(format!("EPSG:{epsg}")));
-        }
+        let crs = match epsg {
+            4326 => Crs::Epsg4326,
+            3857 => Crs::Epsg3857,
+            _ => return Err(CtbError::UnsupportedCrs(format!("EPSG:{epsg}"))),
+        };
         if file.band_count() != 1 {
             return Err(CtbError::UnsupportedRaster(format!(
                 "expected one elevation band, found {} bands",
@@ -65,7 +67,7 @@ impl GeoTiffRasterSource {
             width: file.width(),
             height: file.height(),
             band_count: 1,
-            crs: Crs::Epsg4326,
+            crs,
             transform: AffineTransform::north_up(
                 transform.origin_x,
                 transform.origin_y,
@@ -320,7 +322,7 @@ mod tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let samples = array![[10.0_f64, 11.0], [12.0, 13.0]];
         let mut builder = GeoTiffBuilder::new(2, 2)
-            .geographic_epsg(epsg)
+            .epsg(epsg)
             .pixel_scale(0.5, 0.5)
             .origin(-180.0, 90.0);
         if let Some(value) = nodata {
@@ -386,13 +388,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_non_4326_geotiff() -> Result<(), Box<dyn std::error::Error>> {
+    fn opens_an_epsg_3857_geotiff() -> Result<(), Box<dyn std::error::Error>> {
         let path = fixture_path("epsg3857");
         write_fixture(&path, 3857, None)?;
-        assert!(matches!(
-            GeoTiffRasterSource::open(&path),
-            Err(CtbError::UnsupportedCrs(value)) if value == "EPSG:3857"
-        ));
+        let source = GeoTiffRasterSource::open(&path)?;
+        assert_eq!(source.metadata().crs, Crs::Epsg3857);
         fs::remove_file(path)?;
         Ok(())
     }

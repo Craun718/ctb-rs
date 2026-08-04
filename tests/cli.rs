@@ -37,6 +37,17 @@ fn write_small_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn write_mercator_world_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let samples = Array2::from_elem((4, 4), 7.0_f64);
+    let origin_shift = std::f64::consts::PI * 6_378_137.0;
+    GeoTiffBuilder::new(4, 4)
+        .projected_epsg(3857)
+        .pixel_scale(origin_shift / 2.0, origin_shift / 2.0)
+        .origin(-origin_shift, origin_shift)
+        .write_2d(path, samples.view())?;
+    Ok(())
+}
+
 #[test]
 fn ctb_tile_and_info_work_as_processes() -> Result<(), Box<dyn std::error::Error>> {
     let directory = temporary_directory("tile-info")?;
@@ -270,6 +281,47 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         deflate_option.stderr
     );
     assert!(deflate_output.join("0/0/0.tif").exists());
+
+    let incompatible_profile_output = directory.join("incompatible-mercator");
+    fs::create_dir(&incompatible_profile_output)?;
+    let incompatible_profile = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-f", "GTiff", "-p", "mercator", "-o"])
+        .arg(&incompatible_profile_output)
+        .arg(&input)
+        .output()?;
+    assert!(!incompatible_profile.status.success());
+    assert!(!incompatible_profile_output.join("0/0/0.tif").exists());
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
+fn ctb_tile_writes_mercator_direct_source_gtiff() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = temporary_directory("tile-gtiff-mercator")?;
+    let input = directory.join("dem-3857.tif");
+    let output = directory.join("tiles");
+    write_mercator_world_geotiff(&input)?;
+    fs::create_dir(&output)?;
+
+    let result = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args([
+            "-f", "GTiff", "-p", "mercator", "-t", "4", "-s", "0", "-e", "0", "-o",
+        ])
+        .arg(&output)
+        .arg(&input)
+        .output()?;
+    assert!(result.status.success(), "{:?}", result.stderr);
+    let file = GeoTiffFile::open(output.join("0/0/0.tif"))?;
+    assert_eq!(file.epsg(), Some(3857));
+    let transform = file.transform().ok_or("missing GeoTIFF transform")?;
+    let origin_shift = std::f64::consts::PI * 6_378_137.0;
+    assert_eq!(transform.origin_x, -origin_shift);
+    assert_eq!(transform.origin_y, origin_shift);
+    assert_eq!(transform.pixel_width, origin_shift / 2.0);
+    assert_eq!(transform.pixel_height, -origin_shift / 2.0);
+    let values = file.read_band_window::<f64>(0, 0, 0, 4, 4)?;
+    assert!(values.iter().all(|value| *value == 7.0));
 
     fs::remove_dir_all(directory)?;
     Ok(())

@@ -5,7 +5,7 @@ use ndarray::Array2;
 
 use crate::{
     CtbError,
-    raster::{RasterMetadata, RasterSampleType},
+    raster::{Crs, RasterMetadata, RasterSampleType},
     raster_sampling::RasterTileSamplePlan,
 };
 
@@ -68,8 +68,11 @@ pub fn write_raster_tile_as_geotiff_with_compression(
             width: metadata.width,
             height: metadata.height,
         })?,
-    )
-    .geographic_epsg(4326)
+    );
+    builder = match metadata.crs {
+        Crs::Epsg4326 => builder.geographic_epsg(4326),
+        Crs::Epsg3857 => builder.projected_epsg(3857),
+    }
     .pixel_scale(plan.resolution(), plan.resolution())
     .origin(bounds.min_x, bounds.max_y)
     .compression(match compression {
