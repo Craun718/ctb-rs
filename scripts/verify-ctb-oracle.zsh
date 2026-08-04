@@ -44,6 +44,11 @@ gdal_translate -q -of GTiff -ot Float32 -scale 100 400 -100 50 "$source_tiff" "$
 compressed_overview_tiff="$work_directory/oracle-source-tiled-overview.tif"
 gdal_translate -q -of GTiff -co TILED=YES -co COMPRESS=DEFLATE "$source_tiff" "$compressed_overview_tiff"
 gdaladdo -q -r average "$compressed_overview_tiff" 2
+high_resolution_overview_tiff="$work_directory/oracle-source-high-resolution-overview.tif"
+gdal_translate -q -of GTiff -outsize 720 360 -a_ullr -179.9 89.9 179.9 -89.9 -co TILED=YES -co COMPRESS=DEFLATE "$source_tiff" "$high_resolution_overview_tiff"
+high_resolution_tiff="$work_directory/oracle-source-high-resolution.tif"
+gdal_translate -q -of GTiff "$high_resolution_overview_tiff" "$high_resolution_tiff"
+gdaladdo -q -r average "$high_resolution_overview_tiff" 2
 
 compare_tiles() {
   local oracle_directory="$1"
@@ -81,11 +86,15 @@ compare_tiles() {
   done < <(cd "$oracle_directory" && find . -type f -name '*.terrain' -print | sed 's|^./||' | sort)
 }
 
-for source_name in plain float-negative tiled-overview; do
+for source_name in plain float-negative tiled-overview high-resolution high-resolution-overview; do
   if [[ "$source_name" == plain ]]; then
     input_tiff="$source_tiff"
   elif [[ "$source_name" == float-negative ]]; then
     input_tiff="$float_negative_tiff"
+  elif [[ "$source_name" == high-resolution-overview ]]; then
+    input_tiff="$high_resolution_overview_tiff"
+  elif [[ "$source_name" == high-resolution ]]; then
+    input_tiff="$high_resolution_tiff"
   else
     input_tiff="$compressed_overview_tiff"
   fi

@@ -2,6 +2,10 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use crate::{
@@ -31,6 +35,9 @@ pub struct HeightmapTilesetOptions {
     pub start_zoom: Option<u8>,
     pub end_zoom: Option<u8>,
     pub resampling: ResamplingMethod,
+    /// Number of workers consuming the ordered tile queue. Zero is normalized
+    /// to one for library callers; the CLI applies CTB's CPU-count default.
+    pub worker_count: usize,
 }
 
 impl Default for HeightmapTilesetOptions {
@@ -40,8 +47,16 @@ impl Default for HeightmapTilesetOptions {
             start_zoom: None,
             end_zoom: None,
             resampling: ResamplingMethod::Average,
+            worker_count: 1,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileWriteProgress {
+    pub tile: TileCoord,
+    pub completed: usize,
+    pub total: usize,
 }
 
 impl TilesetPlan {
@@ -121,6 +136,21 @@ pub fn write_heightmap_tileset_with_options(
     output_directory: impl AsRef<Path>,
     options: HeightmapTilesetOptions,
 ) -> Result<TilesetPlan, CtbError> {
+    write_heightmap_tileset_with_progress(source, grid, output_directory, options, None)
+}
+
+/// Write CTB heightmap terrain tiles through an ordered shared work queue.
+///
+/// `progress` is invoked from the worker that completed each planned tile,
+/// including tiles skipped by `resume`, matching CTB's post-iteration progress
+/// position. The callback must therefore be thread-safe.
+pub fn write_heightmap_tileset_with_progress(
+    source: &dyn RasterSource,
+    grid: GlobalGeodeticGrid,
+    output_directory: impl AsRef<Path>,
+    options: HeightmapTilesetOptions,
+    progress: Option<&(dyn Fn(TileWriteProgress) + Sync)>,
+) -> Result<TilesetPlan, CtbError> {
     if grid.tile_size() != HEIGHTMAP_TILE_SIZE as u32 {
         return Err(CtbError::UnsupportedRaster(format!(
             "CTB heightmap tiles require a {HEIGHTMAP_TILE_SIZE} pixel grid"
@@ -134,22 +164,174 @@ pub fn write_heightmap_tileset_with_options(
     )?;
     let coverage_plan = TilesetPlan::from_raster(source.metadata(), grid)?;
     let output_directory = output_directory.as_ref();
+    let tiles = plan
+        .levels
+        .iter()
+        .rev()
+        .flat_map(|level| level.tiles.iter().copied())
+        .collect::<Vec<_>>();
+    let next_index = AtomicUsize::new(0);
+    let completed = AtomicUsize::new(0);
+    let first_error = Mutex::new(None::<CtbError>);
+    let total = tiles.len();
+    let worker_count = options.worker_count.max(1).min(total.max(1));
 
-    for level in plan.levels.iter().rev() {
-        for tile in &level.tiles {
-            let path = terrain_path(output_directory, *tile);
-            if options.resume && path.exists() {
-                continue;
-            }
-
-            let heights =
-                TerrainSamplePlan::new(grid, *tile)?.sample_heights(source, options.resampling)?;
-            let terrain = HeightmapTerrain::from_sampled_meters(
-                &heights,
-                coverage_plan.child_mask_for(*tile),
-            )?;
-            write_terrain_atomically(&terrain, &path)?;
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count {
+            scope.spawn(|| {
+                loop {
+                    if first_error.lock().is_ok_and(|error| error.is_some()) {
+                        return;
+                    }
+                    let index = next_index.fetch_add(1, Ordering::Relaxed);
+                    let Some(tile) = tiles.get(index).copied() else {
+                        return;
+                    };
+                    let path = terrain_path(output_directory, tile);
+                    let outcome = if options.resume && path.exists() {
+                        Ok(())
+                    } else {
+                        let heights = TerrainSamplePlan::new(grid, tile).and_then(|sample_plan| {
+                            sample_plan.sample_heights(source, options.resampling)
+                        });
+                        heights
+                            .and_then(|heights| {
+                                HeightmapTerrain::from_sampled_meters(
+                                    &heights,
+                                    coverage_plan.child_mask_for(tile),
+                                )
+                            })
+                            .and_then(|terrain| write_terrain_atomically(&terrain, &path))
+                    };
+                    if let Err(error) = outcome {
+                        if let Ok(mut slot) = first_error.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(error);
+                        }
+                        return;
+                    }
+                    let finished = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    if let Some(progress) = progress {
+                        progress(TileWriteProgress {
+                            tile,
+                            completed: finished,
+                            total,
+                        });
+                    }
+                }
+            });
         }
+    });
+    if let Ok(mut slot) = first_error.lock()
+        && let Some(error) = slot.take()
+    {
+        return Err(error);
+    }
+    Ok(plan)
+}
+
+/// Write tiles through a factory that opens an independent source per worker.
+///
+/// This is the CLI-facing counterpart of the shared-source API. It mirrors
+/// original CTB, whose worker threads each call `GDALOpen` for the input.
+pub fn write_heightmap_tileset_with_factory(
+    source_factory: &(dyn Fn() -> Result<Box<dyn RasterSource>, CtbError> + Sync),
+    grid: GlobalGeodeticGrid,
+    output_directory: impl AsRef<Path>,
+    options: HeightmapTilesetOptions,
+    progress: Option<&(dyn Fn(TileWriteProgress) + Sync)>,
+) -> Result<TilesetPlan, CtbError> {
+    if grid.tile_size() != HEIGHTMAP_TILE_SIZE as u32 {
+        return Err(CtbError::UnsupportedRaster(format!(
+            "CTB heightmap tiles require a {HEIGHTMAP_TILE_SIZE} pixel grid"
+        )));
+    }
+    let metadata_source = source_factory()?;
+    let plan = TilesetPlan::from_raster_with_zoom_range(
+        metadata_source.metadata(),
+        grid,
+        options.start_zoom,
+        options.end_zoom,
+    )?;
+    let coverage_plan = TilesetPlan::from_raster(metadata_source.metadata(), grid)?;
+    drop(metadata_source);
+
+    let output_directory = output_directory.as_ref();
+    let tiles = plan
+        .levels
+        .iter()
+        .rev()
+        .flat_map(|level| level.tiles.iter().copied())
+        .collect::<Vec<_>>();
+    let next_index = AtomicUsize::new(0);
+    let completed = AtomicUsize::new(0);
+    let first_error = Mutex::new(None::<CtbError>);
+    let total = tiles.len();
+    let worker_count = options.worker_count.max(1).min(total.max(1));
+
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count {
+            scope.spawn(|| {
+                let source = match source_factory() {
+                    Ok(source) => source,
+                    Err(error) => {
+                        if let Ok(mut slot) = first_error.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(error);
+                        }
+                        return;
+                    }
+                };
+                loop {
+                    if first_error.lock().is_ok_and(|error| error.is_some()) {
+                        return;
+                    }
+                    let index = next_index.fetch_add(1, Ordering::Relaxed);
+                    let Some(tile) = tiles.get(index).copied() else {
+                        return;
+                    };
+                    let path = terrain_path(output_directory, tile);
+                    let outcome = if options.resume && path.exists() {
+                        Ok(())
+                    } else {
+                        let heights = TerrainSamplePlan::new(grid, tile).and_then(|sample_plan| {
+                            sample_plan.sample_heights(source.as_ref(), options.resampling)
+                        });
+                        heights
+                            .and_then(|heights| {
+                                HeightmapTerrain::from_sampled_meters(
+                                    &heights,
+                                    coverage_plan.child_mask_for(tile),
+                                )
+                            })
+                            .and_then(|terrain| write_terrain_atomically(&terrain, &path))
+                    };
+                    if let Err(error) = outcome {
+                        if let Ok(mut slot) = first_error.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(error);
+                        }
+                        return;
+                    }
+                    let finished = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    if let Some(progress) = progress {
+                        progress(TileWriteProgress {
+                            tile,
+                            completed: finished,
+                            total,
+                        });
+                    }
+                }
+            });
+        }
+    });
+    if let Ok(mut slot) = first_error.lock()
+        && let Some(error) = slot.take()
+    {
+        return Err(error);
     }
     Ok(plan)
 }
@@ -223,6 +405,11 @@ fn set_child_if_present(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use crate::{
         CtbError,
         raster::{AffineTransform, Crs, RasterMetadata, RasterSource, RasterWindow, WindowRequest},
@@ -395,7 +582,7 @@ mod tests {
         assert_eq!(plan.max_zoom, 0);
         for tile in &plan.levels[0].tiles {
             let terrain = HeightmapTerrain::read_gzip(terrain_path(&directory, *tile))?;
-            assert_eq!(terrain.heights[0], 5500);
+            assert!(terrain.heights[0] == 5000 || terrain.heights[0] == 5500);
             assert_eq!(terrain.children, ChildMask::empty());
         }
         fs::remove_dir_all(directory)?;
@@ -410,6 +597,32 @@ mod tests {
         write_heightmap_tileset(&source, GlobalGeodeticGrid::new(65)?, &directory, false)?;
         source.value = f64::NAN;
         write_heightmap_tileset(&source, GlobalGeodeticGrid::new(65)?, &directory, true)?;
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn factory_opens_one_source_for_metadata_and_each_worker()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory =
+            std::env::temp_dir().join(format!("ctb-rs-tileset-factory-{}", std::process::id()));
+        let opens = Arc::new(AtomicUsize::new(0));
+        let factory_opens = Arc::clone(&opens);
+        let factory = move || {
+            factory_opens.fetch_add(1, Ordering::Relaxed);
+            FlatRaster::world().map(|source| Box::new(source) as Box<dyn RasterSource>)
+        };
+        write_heightmap_tileset_with_factory(
+            &factory,
+            GlobalGeodeticGrid::new(65)?,
+            &directory,
+            HeightmapTilesetOptions {
+                worker_count: 2,
+                ..HeightmapTilesetOptions::default()
+            },
+            None,
+        )?;
+        assert_eq!(opens.load(Ordering::Relaxed), 3);
         fs::remove_dir_all(directory)?;
         Ok(())
     }

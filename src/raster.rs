@@ -84,10 +84,40 @@ pub struct RasterWindow {
     pub samples: Vec<f64>,
 }
 
+/// The raster resolution used for sampling one terrain tile.
+///
+/// `metadata()` on a source always describes its base dataset for tile
+/// planning. A sampling level may instead describe one internal overview.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SamplingLevel {
+    pub level: u16,
+    pub metadata: RasterMetadata,
+}
+
 pub trait RasterSource: Send + Sync {
     fn metadata(&self) -> &RasterMetadata;
     fn overview_count(&self) -> u16;
     fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError>;
+
+    fn sampling_level_for_ratio(&self, _target_ratio: f64) -> Result<SamplingLevel, CtbError> {
+        Ok(SamplingLevel {
+            level: 0,
+            metadata: self.metadata().clone(),
+        })
+    }
+
+    fn read_sampling_window(
+        &self,
+        level: &SamplingLevel,
+        request: WindowRequest,
+    ) -> Result<RasterWindow, CtbError> {
+        if level.level != 0 {
+            return Err(CtbError::UnsupportedRaster(
+                "the raster source does not expose overview sampling".to_owned(),
+            ));
+        }
+        self.read_window(request)
+    }
 }
 
 #[cfg(test)]

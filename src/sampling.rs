@@ -1,7 +1,7 @@
 use crate::{
     CtbError,
     grid::Bounds,
-    raster::{RasterSource, WindowRequest},
+    raster::{RasterSource, SamplingLevel, WindowRequest},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,10 +21,21 @@ pub fn sample_at(
     world_y: f64,
     method: ResamplingMethod,
 ) -> Result<f64, CtbError> {
+    let level = source.sampling_level_for_ratio(1.0)?;
+    sample_at_level(source, &level, world_x, world_y, method)
+}
+
+pub fn sample_at_level(
+    source: &dyn RasterSource,
+    level: &SamplingLevel,
+    world_x: f64,
+    world_y: f64,
+    method: ResamplingMethod,
+) -> Result<f64, CtbError> {
     if !world_x.is_finite() || !world_y.is_finite() {
         return Err(CtbError::InvalidBounds);
     }
-    let metadata = source.metadata();
+    let metadata = &level.metadata;
     if metadata.width == 0 || metadata.height == 0 {
         return Err(CtbError::InvalidRasterDimensions {
             width: metadata.width,
@@ -46,9 +57,9 @@ pub fn sample_at(
         ResamplingMethod::Nearest => {
             let column = clamped_pixel(pixel_x.floor(), metadata.width);
             let row = clamped_pixel(pixel_y.floor(), metadata.height);
-            read_sample(source, column, row)
+            read_sample(source, level, column, row)
         }
-        ResamplingMethod::Bilinear => bilinear(source, pixel_x - 0.5, pixel_y - 0.5),
+        ResamplingMethod::Bilinear => bilinear(source, level, pixel_x - 0.5, pixel_y - 0.5),
         ResamplingMethod::Average => Err(CtbError::UnsupportedRaster(
             "average resampling requires an output-pixel footprint".to_owned(),
         )),
@@ -63,21 +74,34 @@ pub fn sample_with_footprint(
     footprint: Bounds,
     method: ResamplingMethod,
 ) -> Result<f64, CtbError> {
+    let level = source.sampling_level_for_ratio(1.0)?;
+    sample_with_footprint_level(source, &level, world_x, world_y, footprint, method)
+}
+
+pub fn sample_with_footprint_level(
+    source: &dyn RasterSource,
+    level: &SamplingLevel,
+    world_x: f64,
+    world_y: f64,
+    footprint: Bounds,
+    method: ResamplingMethod,
+) -> Result<f64, CtbError> {
     match method {
-        ResamplingMethod::Average => average_at(source, footprint, world_x, world_y),
+        ResamplingMethod::Average => average_at(source, level, footprint, world_x, world_y),
         ResamplingMethod::Nearest | ResamplingMethod::Bilinear => {
-            sample_at(source, world_x, world_y, method)
+            sample_at_level(source, level, world_x, world_y, method)
         }
     }
 }
 
 fn average_at(
     source: &dyn RasterSource,
+    level: &SamplingLevel,
     footprint: Bounds,
     _fallback_x: f64,
     _fallback_y: f64,
 ) -> Result<f64, CtbError> {
-    let metadata = source.metadata();
+    let metadata = &level.metadata;
     let columns = indices_overlapping_footprint(
         footprint.min_x,
         footprint.max_x,
@@ -114,7 +138,7 @@ fn average_at(
                 overlap_length(footprint.min_x, footprint.max_x, pixel_x.0, pixel_x.1)
                     * overlap_length(footprint.min_y, footprint.max_y, pixel_y.0, pixel_y.1);
             if overlap_area > 0.0 {
-                sum += read_sample(source, column, row)? * overlap_area;
+                sum += read_sample(source, level, column, row)? * overlap_area;
                 total_area += overlap_area;
             }
         }
@@ -162,8 +186,13 @@ fn overlap_length(first_min: f64, first_max: f64, second_min: f64, second_max: f
     first_max.min(second_max) - first_min.max(second_min)
 }
 
-fn bilinear(source: &dyn RasterSource, centre_x: f64, centre_y: f64) -> Result<f64, CtbError> {
-    let metadata = source.metadata();
+fn bilinear(
+    source: &dyn RasterSource,
+    level: &SamplingLevel,
+    centre_x: f64,
+    centre_y: f64,
+) -> Result<f64, CtbError> {
+    let metadata = &level.metadata;
     let left = centre_x.floor();
     let top = centre_y.floor();
     let horizontal = centre_x - left;
@@ -174,13 +203,13 @@ fn bilinear(source: &dyn RasterSource, centre_x: f64, centre_y: f64) -> Result<f
     let y1 = clamped_pixel(top + 1.0, metadata.height);
 
     let top_value = interpolate(
-        read_sample(source, x0, y0)?,
-        read_sample(source, x1, y0)?,
+        read_sample(source, level, x0, y0)?,
+        read_sample(source, level, x1, y0)?,
         horizontal,
     );
     let bottom_value = interpolate(
-        read_sample(source, x0, y1)?,
-        read_sample(source, x1, y1)?,
+        read_sample(source, level, x0, y1)?,
+        read_sample(source, level, x1, y1)?,
         horizontal,
     );
     Ok(interpolate(top_value, bottom_value, vertical))
@@ -194,14 +223,22 @@ fn clamped_pixel(value: f64, limit: u32) -> u32 {
     value.clamp(0.0, f64::from(limit.saturating_sub(1))) as u32
 }
 
-fn read_sample(source: &dyn RasterSource, x: u32, y: u32) -> Result<f64, CtbError> {
-    let window = source.read_window(WindowRequest {
-        x,
-        y,
-        width: 1,
-        height: 1,
-        overview: 0,
-    })?;
+fn read_sample(
+    source: &dyn RasterSource,
+    level: &SamplingLevel,
+    x: u32,
+    y: u32,
+) -> Result<f64, CtbError> {
+    let window = source.read_sampling_window(
+        level,
+        WindowRequest {
+            x,
+            y,
+            width: 1,
+            height: 1,
+            overview: level.level,
+        },
+    )?;
     match window.samples.as_slice() {
         [sample] => Ok(*sample),
         _ => Err(CtbError::RasterRead(

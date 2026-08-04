@@ -110,21 +110,7 @@ impl GlobalGeodeticGrid {
             .ok_or(CtbError::RasterOutsideGrid)?;
         Ok(TileRange {
             lower_left: self.coordinate_to_tile(clipped.min_x, clipped.min_y, zoom)?,
-            upper_right: TileCoord {
-                zoom,
-                x: Self::strict_upper_index(
-                    clipped.max_x,
-                    Self::WORLD_BOUNDS.min_x,
-                    Self::WORLD_BOUNDS.width(),
-                    self.tiles_x(zoom)?,
-                ),
-                y: Self::strict_upper_index(
-                    clipped.max_y,
-                    Self::WORLD_BOUNDS.min_y,
-                    Self::WORLD_BOUNDS.height(),
-                    self.tiles_y(zoom)?,
-                ),
-            },
+            upper_right: self.coordinate_to_tile(clipped.max_x, clipped.max_y, zoom)?,
         })
     }
 
@@ -205,7 +191,7 @@ impl GlobalGeodeticGrid {
     }
 
     fn validate_tile(self, tile: TileCoord) -> Result<(), CtbError> {
-        if tile.x >= self.tiles_x(tile.zoom)? || tile.y >= self.tiles_y(tile.zoom)? {
+        if tile.x > self.tiles_x(tile.zoom)? || tile.y > self.tiles_y(tile.zoom)? {
             return Err(CtbError::CoordinateOutsideGrid {
                 x: f64::from(tile.x),
                 y: f64::from(tile.y),
@@ -216,19 +202,7 @@ impl GlobalGeodeticGrid {
 
     fn index_at(value: f64, min: f64, span: f64, count: u32) -> u32 {
         let raw = ((value - min) / span * f64::from(count)).floor();
-        let max_index = f64::from(count - 1);
-        raw.clamp(0.0, max_index) as u32
-    }
-
-    fn strict_upper_index(value: f64, min: f64, span: f64, count: u32) -> u32 {
-        let raw = (value - min) / span * f64::from(count);
-        let whole = raw.floor();
-        let index = if raw == whole && whole > 0.0 {
-            whole - 1.0
-        } else {
-            whole
-        };
-        index.clamp(0.0, f64::from(count - 1)) as u32
+        raw as u32
     }
 }
 
@@ -262,14 +236,14 @@ mod tests {
     }
 
     #[test]
-    fn maximum_world_edge_maps_to_last_tile() -> Result<(), CtbError> {
+    fn maximum_world_edge_maps_to_the_ctb_outer_tile() -> Result<(), CtbError> {
         let grid = GlobalGeodeticGrid::new(65)?;
         assert_eq!(
             grid.coordinate_to_tile(180.0, 90.0, 3)?,
             TileCoord {
                 zoom: 3,
-                x: 15,
-                y: 7
+                x: 16,
+                y: 8
             }
         );
         Ok(())
@@ -288,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn area_ranges_exclude_tiles_only_touched_at_the_upper_edge() -> Result<(), CtbError> {
+    fn area_ranges_include_tiles_touched_at_the_upper_edge() -> Result<(), CtbError> {
         let grid = GlobalGeodeticGrid::new(65)?;
         let range = grid.tile_range_for_area(Bounds::new(-180.0, -90.0, 0.0, 90.0)?, 0)?;
         assert_eq!(
@@ -303,8 +277,8 @@ mod tests {
             range.upper_right,
             TileCoord {
                 zoom: 0,
-                x: 0,
-                y: 0
+                x: 1,
+                y: 1
             }
         );
         Ok(())

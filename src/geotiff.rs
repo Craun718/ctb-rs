@@ -64,12 +64,11 @@ impl GeoTiffRasterSource {
         Ok(Self { file, metadata })
     }
 
-    fn validate_window(&self, request: WindowRequest) -> Result<(), CtbError> {
-        if request.overview != 0 {
-            return Err(CtbError::UnsupportedRaster(
-                "overview reads are scheduled for the performance milestone".to_owned(),
-            ));
-        }
+    fn validate_window(
+        &self,
+        metadata: &RasterMetadata,
+        request: WindowRequest,
+    ) -> Result<(), CtbError> {
         let end_x = request
             .x
             .checked_add(request.width)
@@ -80,32 +79,42 @@ impl GeoTiffRasterSource {
             .ok_or(CtbError::InvalidRasterWindow)?;
         if request.width == 0
             || request.height == 0
-            || end_x > self.metadata.width
-            || end_y > self.metadata.height
+            || end_x > metadata.width
+            || end_y > metadata.height
         {
             return Err(CtbError::InvalidRasterWindow);
         }
         Ok(())
     }
 
-    fn read_samples(&self, request: WindowRequest) -> Result<Vec<f64>, CtbError> {
+    fn read_samples(&self, level: u16, request: WindowRequest) -> Result<Vec<f64>, CtbError> {
         macro_rules! decode_as {
             ($sample_type:ty) => {
-                self.file
-                    .read_band_window::<$sample_type>(
+                (if level == 0 {
+                    self.file.read_band_window::<$sample_type>(
                         0,
                         request.y as usize,
                         request.x as usize,
                         request.height as usize,
                         request.width as usize,
                     )
-                    .ok()
-                    .map(|samples| {
-                        samples
-                            .iter()
-                            .map(|sample| *sample as f64)
-                            .collect::<Vec<_>>()
-                    })
+                } else {
+                    self.file.read_overview_band_window::<$sample_type>(
+                        usize::from(level - 1),
+                        0,
+                        request.y as usize,
+                        request.x as usize,
+                        request.height as usize,
+                        request.width as usize,
+                    )
+                })
+                .ok()
+                .map(|samples| {
+                    samples
+                        .iter()
+                        .map(|sample| *sample as f64)
+                        .collect::<Vec<_>>()
+                })
             };
         }
 
@@ -141,8 +150,8 @@ impl RasterSource for GeoTiffRasterSource {
     }
 
     fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError> {
-        self.validate_window(request)?;
-        let samples = self.read_samples(request)?;
+        self.validate_window(&self.metadata, request)?;
+        let samples = self.read_samples(0, request)?;
 
         if let Some(no_data) = self.metadata.no_data
             && samples.iter().any(|sample| {
@@ -152,6 +161,98 @@ impl RasterSource for GeoTiffRasterSource {
             return Err(CtbError::NoDataEncountered);
         }
 
+        Ok(RasterWindow { request, samples })
+    }
+
+    fn sampling_level_for_ratio(
+        &self,
+        target_ratio: f64,
+    ) -> Result<crate::raster::SamplingLevel, CtbError> {
+        let overview_count = self.overview_count();
+        if !target_ratio.is_finite() || target_ratio <= 1.0 || overview_count == 0 {
+            return Ok(crate::raster::SamplingLevel {
+                level: 0,
+                metadata: self.metadata.clone(),
+            });
+        }
+
+        let mut selected: i32 = -1;
+        for overview in -1..i32::from(overview_count - 1) {
+            let ratio = if overview < 0 {
+                1.0
+            } else {
+                f64::from(self.metadata.width)
+                    / f64::from(
+                        self.file
+                            .overview_ifd(overview as usize)
+                            .map_err(|error| CtbError::RasterRead(error.to_string()))?
+                            .width(),
+                    )
+            };
+            let next_ratio = f64::from(self.metadata.width)
+                / f64::from(
+                    self.file
+                        .overview_ifd((overview + 1) as usize)
+                        .map_err(|error| CtbError::RasterRead(error.to_string()))?
+                        .width(),
+                );
+            if (ratio < target_ratio && next_ratio > target_ratio)
+                || (ratio - target_ratio).abs() < 0.1
+            {
+                selected = overview;
+                break;
+            }
+            selected = overview + 1;
+        }
+        if selected < 0 {
+            return Ok(crate::raster::SamplingLevel {
+                level: 0,
+                metadata: self.metadata.clone(),
+            });
+        }
+
+        let index = selected as usize;
+        let overview = self
+            .file
+            .overview_ifd(index)
+            .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+        let width = overview.width();
+        let height = overview.height();
+        let metadata = RasterMetadata {
+            width,
+            height,
+            band_count: self.metadata.band_count,
+            crs: self.metadata.crs.clone(),
+            transform: AffineTransform::north_up(
+                self.metadata.transform.origin_x,
+                self.metadata.transform.origin_y,
+                self.metadata.transform.pixel_width * f64::from(self.metadata.width)
+                    / f64::from(width),
+                self.metadata.transform.pixel_height * f64::from(self.metadata.height)
+                    / f64::from(height),
+            )?,
+            no_data: self.metadata.no_data,
+        };
+        Ok(crate::raster::SamplingLevel {
+            level: selected as u16 + 1,
+            metadata,
+        })
+    }
+
+    fn read_sampling_window(
+        &self,
+        level: &crate::raster::SamplingLevel,
+        request: WindowRequest,
+    ) -> Result<RasterWindow, CtbError> {
+        self.validate_window(&level.metadata, request)?;
+        let samples = self.read_samples(level.level, request)?;
+        if let Some(no_data) = level.metadata.no_data
+            && samples.iter().any(|sample| {
+                (no_data.is_nan() && sample.is_nan()) || (!no_data.is_nan() && *sample == no_data)
+            })
+        {
+            return Err(CtbError::NoDataEncountered);
+        }
         Ok(RasterWindow { request, samples })
     }
 }

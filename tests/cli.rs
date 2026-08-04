@@ -43,6 +43,7 @@ fn ctb_tile_and_info_work_as_processes() -> Result<(), Box<dyn std::error::Error
     let input = directory.join("dem.tif");
     let output = directory.join("tiles");
     write_world_geotiff(&input)?;
+    fs::create_dir(&output)?;
 
     let tile = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
         .args([
@@ -194,6 +195,7 @@ fn ctb_tile_honours_zoom_range_and_supported_resampling() -> Result<(), Box<dyn 
 
     for method in ["nearest", "bilinear", "average"] {
         let output = directory.join(method);
+        fs::create_dir(&output)?;
         let result = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
             .args(["-s", "1", "-e", "1", "-r", method, "-t", "65"])
             .arg("--output-dir")
@@ -217,6 +219,85 @@ fn ctb_tile_honours_zoom_range_and_supported_resampling() -> Result<(), Box<dyn 
         .arg(&input)
         .output()?;
     assert!(!unsupported_profile.status.success());
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
+fn ctb_tile_matches_worker_progress_and_resume_contracts() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = temporary_directory("tile-workers")?;
+    let input = directory.join("dem.tif");
+    write_small_geotiff(&input)?;
+    let sequential = directory.join("sequential");
+    let parallel = directory.join("parallel");
+    let quiet = directory.join("quiet");
+    let verbose = directory.join("verbose");
+    for output in [&sequential, &parallel, &quiet, &verbose] {
+        fs::create_dir(output)?;
+    }
+
+    let one_worker = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-c", "1", "-s", "1", "-e", "1", "-o"])
+        .arg(&sequential)
+        .arg(&input)
+        .output()?;
+    assert!(one_worker.status.success());
+    assert!(one_worker.stdout.is_empty());
+
+    let two_workers = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-c", "2", "-s", "1", "-e", "1", "-o"])
+        .arg(&parallel)
+        .arg(&input)
+        .output()?;
+    assert!(two_workers.status.success());
+    assert!(two_workers.stdout.is_empty());
+
+    for x in 1..=2 {
+        for y in 0..=1 {
+            let tile = format!("1/{x}/{y}.terrain");
+            let left = HeightmapTerrain::read_gzip(sequential.join(&tile))?;
+            let right = HeightmapTerrain::read_gzip(parallel.join(&tile))?;
+            assert_eq!(left, right);
+        }
+    }
+
+    let quiet_output = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-q", "-s", "1", "-e", "1", "-o"])
+        .arg(&quiet)
+        .arg(&input)
+        .output()?;
+    assert!(quiet_output.status.success());
+    assert!(quiet_output.stdout.is_empty());
+
+    let verbose_output = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-v", "-c", "2", "-s", "1", "-e", "1", "-o"])
+        .arg(&verbose)
+        .arg(&input)
+        .output()?;
+    assert!(verbose_output.status.success());
+    let verbose_stdout = String::from_utf8(verbose_output.stdout)?;
+    assert!(verbose_stdout.contains("created "));
+    assert!(verbose_stdout.contains(" in thread "));
+
+    let sentinel = sequential.join("1/1/0.terrain");
+    fs::write(&sentinel, b"preserve-existing-tile")?;
+    let resumed = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-R", "-s", "1", "-e", "1", "-o"])
+        .arg(&sequential)
+        .arg(&input)
+        .output()?;
+    assert!(resumed.status.success());
+    assert_eq!(fs::read(&sentinel)?, b"preserve-existing-tile");
+
+    let absent_directory = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-o"])
+        .arg(directory.join("absent"))
+        .arg(&input)
+        .output()?;
+    assert!(!absent_directory.status.success());
+    assert!(String::from_utf8(absent_directory.stderr)?.contains("does not exist"));
 
     fs::remove_dir_all(directory)?;
     Ok(())

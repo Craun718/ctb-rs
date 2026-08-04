@@ -2,7 +2,7 @@ use crate::{
     CtbError,
     grid::{Bounds, GlobalGeodeticGrid, TileCoord},
     raster::RasterSource,
-    sampling::{ResamplingMethod, sample_with_footprint},
+    sampling::{ResamplingMethod, sample_with_footprint_level},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,14 +70,19 @@ impl TerrainSamplePlan {
         source: &dyn RasterSource,
         method: ResamplingMethod,
     ) -> Result<Vec<f64>, CtbError> {
+        // In the restricted EPSG:4326, no-reprojection path this is the
+        // `GDALSuggestedWarpOutput2` ratio used by CTB's overview chooser.
+        let target_ratio = 1.0 / source.metadata().transform.pixel_width;
+        let level = source.sampling_level_for_ratio(target_ratio)?;
         let mut heights = Vec::new();
         for row in 0..self.tile_size {
             for column in 0..self.tile_size {
                 let sample = self
                     .sample(row, column)
                     .ok_or(CtbError::InvalidRasterWindow)?;
-                heights.push(sample_with_footprint(
+                heights.push(sample_with_footprint_level(
                     source,
+                    &level,
                     sample.world_x,
                     sample.world_y,
                     sample.footprint,
@@ -97,6 +102,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::sampling::sample_with_footprint;
 
     struct TestRaster {
         metadata: RasterMetadata,

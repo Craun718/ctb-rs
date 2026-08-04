@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod cache;
 pub mod error;
 pub mod export;
 pub mod extents;

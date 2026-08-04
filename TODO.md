@@ -124,9 +124,17 @@
 
 ## 后续：P2 — 性能、大文件与可恢复写入
 
+- [x] 为 `ctb-tile` 实现原版 `-c/-q/-v`、每 worker 独立打开 GeoTIFF 与受控 worker 分派；保持 payload、`--resume` 和原子写入语义。
+- [x] 移除 `ctb-tile` 对根 `--output-dir` 的隐式创建，复刻原版存在性/目录校验。
+- [x] 设计并实现内部块 cache（含 halo、LRU、容量边界与并发安全），不新增 CLI 参数；NoData source 保持精确读取。
+- [ ] 建立单线程/双线程/default、quiet/verbose 与 resume 的进程级回归，并与原 CTB 对照可观察输出。
 - [ ] 设计 `RasterSource` 块读取/halo 与有界缓存接口，并先建立无 I/O 的测试。
-- [ ] 实现 overview 选择与确定性并行写入，保持 P1 payload 不变。
+- [ ] 实现 `SamplingLevel` 与 level-aware 采样/缓存接口；按 CTB ratio 规则选择内部 overview，并以原版 internal overview fixture 验证 payload。
+  - [ ] 建立 GDAL SuggestedWarp/overview GeoTransform 临时 oracle，消除 target ratio 等价式的不确定性。
+  - [ ] 将 oracle 结论固化为 Rust 领域测试，并完成高分辨率 internal overview 的 CTB payload 对照。
+- [ ] 按原版 `Grid::crsToTile` 修复 dataset upper-right 边界的范围包含语义，并复核 child mask 与路径集。
 - [ ] 建立大 DEM 基准、内存上限、失败恢复和单/多线程一致性测试。
+- [x] 编写不依赖 overview 的可复现大 DEM benchmark 脚本，记录单/多 worker wall-clock、tile 数和 payload 一致性。
 
 ## 后续：P3 — Quantized-Mesh 1.0
 

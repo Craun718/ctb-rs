@@ -414,3 +414,53 @@ P1b Float32 验收：脚本以 `gdal_translate -ot Float32 -scale 100 400 -100 5
 P1b 阶段验收（2026-08-04）：常规 Rust 验收为 46 tests、`cargo clippy --all-targets -- -D warnings` 无告警。原版 CTB oracle 脚本共比较 plain、Float32 负/正高程、tiled/DEFLATE/internal overview 三种输入，三种原版列举 `-r` 值及自动/受限 zoom 共 18 组，所有 terrain 路径与 gzip 解压 payload 一致。额外以 GDAL 临时生成的 BigTIFF 和 512×512、128×128 block、LZW GeoTIFF 在 z=0 与原版逐 payload 一致；它们现列为已验证读取路径。JPEG、LERC、ZSTD、外部 overview 和更大 BigTIFF 仍未验证，不能宣称支持。
 
 P1b 后原版功能审计：本阶段没有保留原版不存在的用户可见 CLI 参数或输出格式；移除了 Rust 自动创建 extents 输出目录这一额外行为。当前仍缺失且已按原版归入后续阶段的能力为：`ctb-tile` 的 `mercator` profile、并发/进度参数和任意 GDAL 输出格式；`ctb-extents` 的 mercator profile；以及原版 GDAL 可读取的非 GeoTIFF datasource。Quantized-Mesh 不是原版 CTB 功能，保留为独立产品扩展，不计入原版复刻完成度。下一大阶段转入 P2，首先复刻原版 `ctb-tile` 的并发、进度与 resume 可观察行为；不得提前接入未登记格式或 CRS。
+
+## 13. P2 当前实施单元：`ctb-tile` 并发与进度契约
+
+原版 `ctb-tile` 将 `-c/--thread-count` 的正值作为 worker 数，非正值取 CPU 数；每个 worker 独立打开 GDAL 数据集，并通过受 mutex 保护的全局 iterator 领取下一个 tile。`-q` 使用 GDAL dummy progress，不输出正常进度；`-v` 在每个 tile 完成时向 stdout 写 `[NN%] created PATH in thread ID`。默认 GDAL progress meter 不是稳定的文本接口，Rust 不模拟其控制字符，但默认模式不得额外输出 tile 行；最终汇总行保留现有 Rust CLI 契约。
+
+Rust 需保持 tile payload、child mask、临时文件 rename 与 `--resume` 语义不变。`RasterSource` 的共享写入 API 可用于库调用；但 CLI 必须接收 source factory，并在每个 worker 内重新打开 `GeoTiffRasterSource`，复刻原版独立 dataset 的资源边界。任务分派使用单一有序队列，结果写入顺序可并发但 payload 必须与单线程相同。线程数为零或负数时 CLI 保持原版“使用 CPU 数”语义；不新增用户可见的 Rust 专有并行参数，也移除当前 Rust 额外的完成汇总行。
+
+补充审计：原版在启动 worker 前验证 `--output-dir` 已存在且为目录；Rust 现有 writer 的 `create_dir_all` 仅能创建 `{z}/{x}` 子目录，CLI 不得借此自动创建根输出目录。P2 将在 CLI 入口拒绝不存在或非目录的根路径，并让进程测试显式建目录。
+
+P2.1 验收：`ctb-tile` 现接受原版 `-c/-q/-v`；worker 的 source factory 先打开一次读取元数据，再为每个 worker 独立打开 GeoTIFF。单元测试确认双 worker 会执行三次 factory 调用（元数据 + 两 worker）。本地原版 CTB 与 Rust 对 `-c 1/-c 2` 的 z=1 输出逐 gzip 解压 payload 一致；quiet stdout 均为空，verbose 共享 `[NN%] created PATH in thread ID` 结构。原版 C++ 指针式 thread ID 与 Rust `ThreadId` 的具体表示不同，属于运行时标识而非格式契约。根输出目录不存在时 Rust 已改为拒绝，删除此前额外的自动创建行为。
+
+### P2 当前实施单元：窗口块读取与有界缓存
+
+原版 CTB 通过 GDAL warp/VRT 按 tile 读取，不会为每个目标样点执行一次独立文件窗口请求。Rust 的 `sample_at` 目前以 1×1 `read_window` 取样，虽结果正确但 I/O 粒度不符合原版路径。该单元在既有 `RasterSource::read_window` 契约上增加内部窗口块 cache：键为 source identity、overview、窗口块坐标；缺块时读取一个固定边长的 source window，双线性/average 所需 halo 必须被包含。缓存容量可配置且严格有界；它是实现细节，不能新增 CLI 参数。
+
+NoData 边界：当前公开契约要求“参与输出的 NoData”报错，而 `read_window` 会在窗口中任意 NoData 时失败。为不扩大失败范围，声明 `RasterMetadata::no_data` 的 source 不执行宽窗口预取，保持精确 1×1 读取；无 NoData source 才使用块 cache。将来只有在 `RasterWindow` 增加逐像元 validity mask 并完成独立兼容测试后，才允许对 NoData source 预取。
+
+完成标准：缓存开启/关闭的 heightmap payload 完全一致；对内存 test source 可断言读窗口次数下降；capacity 达到上限时按 LRU 驱逐；并发调用不返回错误或 panic。真实 GeoTIFF oracle 必须继续逐 payload 一致。
+
+P2.2 验收：`CachedRasterSource` 已以固定 64×64 block、64 项 LRU 容量接入 CLI factory；相邻像元命中同一块、容量一项时正确驱逐、声明 NoData 时保留精确读取，均由单元测试覆盖。`cargo test` 通过 53 项，Clippy 无告警；启用缓存后再次运行 18 组原版 CTB oracle，所有解压 terrain payload 仍逐字节一致。
+
+### P2 技术分歧：overview 几何层级（等待确认）
+
+原版 `GDALTiler::createRasterTile` 在保持 base dataset 的 tiling 元数据后，对每个 tile 调用 `getOverviewDataset`；它以 `GDALSuggestedWarpOutput2` 的 target ratio 选择内部 overview，再重建 image-to-image transform。因此 base 分辨率继续决定 max zoom、tile range 与 child mask，而 overview 只决定该 tile 的 sampling source transform 和像素尺寸。
+
+当前 Rust `RasterSource` 只有 `metadata()`，同时承担 tileset 规划与采样坐标映射，无法无损表达上述两层几何。将 metadata 替换为 overview 会错误改变 max zoom；在 adapter 内把 base window 隐式缩放为 overview window 则会让 nearest/bilinear/average 使用错误的像元中心与 footprint。该问题不能通过局部条件分支正确解决。
+
+待确认的最小接口演进：保留 `RasterSource::metadata()` 作为 base planning metadata，并新增按 overview 返回的 `SamplingLevel { metadata, level }` 与 `read_sampling_window(level, request)`；`TerrainSamplePlan`/采样器在每个 tile 先请求原版 ratio 规则选定的 level，再只在该 level 的 metadata 中计算坐标。这样不改变 CLI 或输出格式，并直接对应原版 base dataset + overview dataset 双对象模型。确认前不实现 overview 自动选择，也不宣称 P2 完成。
+
+产品确认（2026-08-04）：采用上述最小接口演进。实现必须让 base planning metadata、tile range、max zoom 和 child mask 保持 base dataset 语义；overview 只能作为每 tile 的 sampling source。先以不重投影的 EPSG:4326 north-up 情形复刻 `getOverviewDataset` 的 ratio 选择，再以原 CTB 的内部 overview fixture 比较 payload。
+
+落地顺序：先将 `SamplingLevel` 加入领域接口，默认实现只暴露 base level，以避免改变既有内存 source 的行为；随后 GeoTIFF adapter 为内部 overview 构造保持同一左上原点、按宽高缩放像元尺寸的采样 metadata。`TerrainSamplePlan` 每 tile 使用 base GeoTransform 的 `1 / pixel_width` 作为无重投影时 `GDALSuggestedWarpOutput2` ratio 的等价输入，并按原版的相邻 overview 阈值循环选择 level；nearest、bilinear 与 average 都只能使用被选 level 的 metadata 和窗口。缓存键继续含 level，block 尺寸从该 level 的 metadata 取得。最后以现有 internal overview oracle fixture 检查 terrain 解压 payload。
+
+实施诊断（2026-08-04）：接口与 adapter/read path 已能编译，原有 18 组 oracle 继续通过；但为强制触发 overview 选择而生成的高分辨率输入，暴露出既有 Rust `Grid` 对数据集精确边界的 tile range 与原版 CTB 不同，且在避开全球边界的输入中仍未完成三种 resampling 的全量 payload 对照。因此“`1 / base pixel_width` 等价于 GDALSuggestedWarpOutput2”的假设尚未被 oracle 证实；不得将 overview 单元标记完成或暂存。下一步必须先从 GDAL 的 `GDALSuggestedWarpOutput2` / GenImgProj transformer 提取可复现的 target ratio 和 overview VRT GeoTransform oracle，再据该 oracle 修正或否定该纯 Rust 等价式。
+
+恢复执行（2026-08-04）：先用最小独立 C++ oracle 对同一 GeoTIFF 调用 CTB 所用的 `GDALCreateGenImgProjTransformer2`、`GDALSuggestedWarpOutput2` 与 `GDALCreateOverviewDataset`，记录 suggested GeoTransform、ratio、selected overview 和 overview dataset GeoTransform；该程序仅写入临时目录，不进入产品依赖。随后把已验证的数值关系转成 Rust 领域测试，再运行原版 CTB 的高分辨率内部 overview payload 对照。仅当路径集合与 payload 都一致，才关闭 P2 overview todo 并执行暂存/`$commit-staged`。
+
+GDAL oracle 结论：720×360、bounds `[-179.9,-89.9,179.9,89.9]`、单层 2× internal overview 的 `GDALSuggestedWarpOutput2` 输出 pixel width 为 `0.49972222222222223`，故 target ratio 为 `2.0011117287381879`，CTB 选 overview 0；其 overview GeoTransform 的像元尺寸正好按 base 宽高同比放大。此前路径集合差异不是 ratio 假设失效，而是 Rust `tile_range_for_area` 额外使用 `strict_upper_index` 排除了上/右边界；原版 `Grid::crsToTile` 对 lower-left 与 upper-right 都直接经 `i_pixel` 截断再除 tile size。先移除该额外排除规则并添加边界回归，然后继续 overview payload oracle。
+
+边界补充：CTB 的 `crsToPixels` / `pixelsToTile` 不把世界上/右边界 clamp 到名义 extent 内；精确 `180` 或 `90` 可形成 z=0 的 `x=2` 或 `y=1`，并由 iterator 生成其 tile。Rust 的 `index_at` clamp 和 `validate_tile` 的 `< count` 同样是原版不存在的限制，必须改为直接 `floor` / 整数截断及允许 `index == count`。这是一项原版兼容修复，不改变 Grid 算法或产品接口。
+
+核对状态：修正 Grid 后，既有 18 组 oracle 以及高分辨率输入的 tile 路径集合均与 CTB 相同；GDAL oracle 也确认 Rust 选择了 CTB 所选的 overview 0。高分辨率 overview 的首个 terrain payload 仍不一致，故问题已收敛为 sampling/warp 数值，而非规划、ratio 或 overview GeoTransform。下一轮必须把同一高分辨率 DEM 的无 overview 与有 overview 分开完成 nearest/bilinear/average 逐 tile 比较；若无 overview 已不一致，先为高采样倍率补齐 CTB VRT sampling oracle；若只在 overview 不一致，则记录 GDAL overview band 的实际样值和 VRT 采样坐标后修正 level-aware sampler。
+
+### P2 当前实施单元：可复现大 DEM 基准（不依赖 overview）
+
+在 overview 接口确认前，补充一个开发者 benchmark 脚本：用本地 GDAL 从版本控制的最小 ASCII fixture 派生固定尺寸 EPSG:4326、tiled/DEFLATE GeoTIFF，运行 Rust `ctb-tile` 的 `-c 1` 与指定 worker 数，记录 wall-clock 时间、输出 tile 数和解压 payload 一致性。脚本不进入常规 `cargo test`、不提交大二进制 fixture、不以基准数值作为跨机器阈值；它只提供后续 P2 的可复现测量入口。
+
+基准入口验收：`scripts/benchmark-ctb-tile.zsh 512 2` 已在本机完成；它从 `oracle-source.asc` 派生临时 tiled/DEFLATE GeoTIFF，运行单 worker 与双 worker，并在清理前比较每个解压 payload。耗时仅在脚本 stdout 中按本机记录，不作为版本控制的性能承诺。
+
+完成标准：`-c 1`、`-c 2` 与默认模式的 tile 路径及解压 payload 一致；`-R` 不重写既有最终文件；`-q` 无正常 stdout，`-v` 有原版形状的创建日志；worker 的输入失败与写入失败能传播而不 panic。
