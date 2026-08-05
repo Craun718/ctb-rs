@@ -1137,3 +1137,17 @@ GlobalGeodetic、GlobalMercator、GDALTiler、GDALTile、RasterTiler、TerrainTi
 TerrainTile、GridIterator、RasterIterator、TerrainIterator、TilerIterator、
 gdaloverviewdataset）和全部 CLI 工具（ctb-tile、ctb-info、ctb-export、ctb-extents）
 均已翻译为对应的 Rust 模块。
+#### P5 实施记录 4：恢复 clippy 门禁（已实现）
+
+P5 实施记录 2/3 声称 `cargo clippy` 全绿，但实际 `cargo clippy --all-targets -- -D warnings`
+在 `src/terrain_sampling.rs` 测试模块报 dead code：`TestRaster::new()`（约第 131 行）从未被
+调用——该测试 helper 仅通过第 251 行的结构体字面量 `TestRaster { metadata: ... }` 构造，
+`new()` 构造器在测试重写后变为死代码。clippy 的 `-D dead_code` 使该门禁失败，与 P5 完成
+标准“clippy clean”矛盾。
+
+修复：删除 `TestRaster::new()` 构造器，保留 `impl RasterSource for TestRaster` 与结构体
+字面量构造方式不变（测试行为不受影响）。此外 `cargo fmt --check` 确认工作区已有的 7 个
+源文件改动为纯 rustfmt 格式化（缩进、import 排序、尾随逗号），无行为差异，作为独立 style
+提交。
+
+证据：删除后 `cargo clippy --all-targets -- -D warnings` 全绿，85 项测试仍通过。

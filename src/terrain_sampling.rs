@@ -1,9 +1,9 @@
 use crate::{
-    grid::{Bounds, GlobalGeodeticGrid, TileCoord, TileGrid},
-    raster::{transform_bounds, transform_coordinate, RasterSource},
-    sampling::{sample_with_footprint_level, ResamplingMethod},
-    terrain::HEIGHTMAP_TILE_SIZE,
     CtbError,
+    grid::{Bounds, GlobalGeodeticGrid, TileCoord, TileGrid},
+    raster::{RasterSource, transform_bounds, transform_coordinate},
+    sampling::{ResamplingMethod, sample_with_footprint_level},
+    terrain::HEIGHTMAP_TILE_SIZE,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -115,10 +115,10 @@ impl TerrainSamplePlan {
 #[cfg(test)]
 mod tests {
     use crate::{
+        CtbError,
         raster::{
             AffineTransform, Crs, RasterMetadata, RasterSampleType, RasterWindow, WindowRequest,
         },
-        CtbError,
     };
 
     use super::*;
@@ -126,22 +126,6 @@ mod tests {
 
     struct TestRaster {
         metadata: RasterMetadata,
-    }
-
-    impl TestRaster {
-        fn new() -> Result<Self, CtbError> {
-            Ok(Self {
-                metadata: RasterMetadata {
-                    width: 2,
-                    height: 2,
-                    band_count: 1,
-                    crs: Crs::Epsg4326,
-                    transform: AffineTransform::north_up(-360.0, 270.0, 180.0, -180.0)?,
-                    no_data: None,
-                    sample_type: RasterSampleType::Float64,
-                },
-            })
-        }
     }
 
     impl RasterSource for TestRaster {

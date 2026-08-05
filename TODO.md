@@ -211,3 +211,7 @@
 - [x] 生成并提交版本化兼容性报告（TECHNICAL_PLAN P5 记录 2）；Terrain 120/120、
       GTiff 572/572、ctb-info/extents/export 像素级通过。
 - [x] Full compat matrix: 874/874 oracle pass. All differences explained (GTiff container serialization, ctb-export WKT/GeoKey, CLI help format).
+- [x] 修正 P5 clippy 门禁回归：`src/terrain_sampling.rs` 测试模块的 `TestRaster::new()`
+      为死代码，使 `cargo clippy --all-targets -- -D warnings` 失败（与 P5 记录 2/3 声称的
+      “clippy clean”矛盾）。删除该构造器后门禁恢复全绿，85 项测试仍通过
+      （TECHNICAL_PLAN P5 记录 4）。
