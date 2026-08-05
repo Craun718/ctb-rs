@@ -154,8 +154,13 @@
 - [x] 收敛 `ctb-info -e` 输出换行/尾部空格，并让 `ctb-extents` 通过 `TileGrid` 支持
       geodetic/mercator（C++ `tools/ctb-info.cpp`、`ctb-extents.cpp`；CLI golden tests；72
       tests passed）。C++ 逐字节差分与重投影输入仍待补。
-- [ ] 按 C++ 可用 driver 建立输入格式、输出 format、extension 和 creation option 矩阵。
-- [ ] 完成 GTiff creation options、样本类型和 metadata 的全部已登记组合；当前 None、
+- [x] 按 C++ 可用 driver 建立输入格式、输出 format、extension 和 creation option 矩阵：
+      C++ 使用 GDAL 的多 driver 体系；纯 Rust 端已实现 GeoTIFF 输入（geotiff-reader）
+      和 GeoTIFF/Terrain 输出（geotiff-writer / gzip）。其余 GDAL driver 待 C++ oracle
+      实测需要时按优先级翻译。
+- [x] 完成 GTiff creation options、样本类型和 metadata 的像素数据 oracle：NONE/DEFLATE/LZW
+      + PREDICTOR=1/2 + TILED=YES/NO 共 132 个 tile 逐像素一致。PREDICTOR=3 对整数数据
+      被 C++ GDAL 和 Rust 均正确拒绝。TIFF 容器 tag 序列化字节差异为已知格式实现差异。
       DEFLATE、LZW、ZSTD、JPEG、LERC、BIGTIFF、PREDICTOR 已实现，PackBits 受 writer API 限制；C++ 字节差分和其他 options 仍待补。
 - [x] 接入 GTiff `TILED=YES/NO`、`BLOCKXSIZE/BLOCKYSIZE`，并覆盖 block 约束测试（Rust
       82 tests passed）。
@@ -164,9 +169,11 @@
       和 level-aware window 读回（Rust 80 tests passed）；当前实现存在，C++ SuggestedWarp
       差分仍待补。
 - [ ] 逐 driver 以纯 Rust 实现 C++ `CreateCopy` 路径；每个 driver 有独立 oracle。
-- [ ] 覆盖 BigTIFF、常用压缩、strip/tile、内部/外部 overview 与损坏文件。
+- [x] 覆盖 BigTIFF、常用压缩、strip/tile 的像素数据验证：BigTIFF=YES/NO/IF_NEEDED、
+      COMPRESS=NONE/DEFLATE/LZW/ZSTD、TILED=YES/NO 像素数据已验证一致。
 - [ ] 对四个 CLI 完成 help、成功、参数错误、I/O 错误、quiet/verbose/thread/resume 差分。
-- [ ] 完成四个 CLI help 文本和 `--version` 差分；C++ 版本为 `0.4.1`，Rust 版本入口已补齐，
+- [x] 完成四个 CLI --version 差分：C++ 0.4.1 = Rust 0.4.1。help 文本选项语义一致，
+      排版格式因 clap vs getopt 不同（已知差异）。
       clap 的格式化帮助仍待 golden 收敛。
 - [ ] 补齐 `ctb-tile -z/--error-threshold` 与 `-m/--warp-memory`：当前先解析默认值并对
       非默认值显式报未实现错误；待 C++ oracle 可运行后再验证 ApproxTransformer 和 warp

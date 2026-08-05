@@ -82,6 +82,12 @@ RasterTiler footprint 采样。保留 EPSG:4326 Geodetic 现有 tests 作为无�
 | Terrain + Mercator | `/tmp/ctb-oracle-terrain-mercator.py` (10 method x 5 tile, decompressed compare) | 50/50 |
 | GTiff 16x16 | `/tmp/ctb-oracle-16x16.py` (4 type x 12 method x 3 zoom) | 144/144 |
 | GTiff Mercator | `/tmp/ctb-oracle-mercator.py` (same-CRS 90 + cross-CRS 50) | 90/90 |
+| GTiff creation options | `/tmp/ctb-oracle-gtiff-options.py` (NONE/DEFLATE/LZW + PREDICTOR + TILED) | 132/132 |
+| ctb-info | stdout 逐行比较 | 完全一致 |
+| ctb-extents | GeoJSON 逐字节比较 | 完全一致 |
+| ctb-export | ENVI raw 像素数据比较 | 完全一致 |
+| 四 CLI --version | 版本号 | 0.4.1 = 0.4.1 |
+| 总计 | | **874/874** |
 
 Terrain 比较使用解压后 payload（gzip 压缩字节因 flate2/zlib 差异不同，但解压内容一致）。
 Terrain child mask 通过 `terrain_child_mask` 以 source bounds 与 tile 四分之一象限的 strict overlaps 判定，

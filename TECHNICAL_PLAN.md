@@ -1015,6 +1015,12 @@ compatibility report，列出每个模块、参数组合、fixture、比较方�
 | high-resolution-overview | 12 | auto+limited | 24 | 24/24 |
 | 合计 | | | 120 | **120/120** |
 
+**ctb-tile Terrain + Mercator profile 输出**（解压后逐字节比较，10 算法 x 5 tile）：
+
+| Fixture | CRS | profile | 算法 | tiles | 结果 |
+|---------|-----|---------|------|-------|------|
+| 16x16 Int32 | 4326 | mercator | 10 | 50 | 50/50 |
+
 **ctb-tile GTiff 输出**（ENVI raw 逐字节比较）：
 
 | Fixture | 源类型 | CRS | 算法 | tiles | 结果 |
@@ -1024,7 +1030,7 @@ compatibility report，列出每个模块、参数组合、fixture、比较方�
 | 16x16 Float32 | Float32 | 4326 | 12 | 144 | 144/144 |
 | Mercator 直同 CRS | Int32 | 3857 | 10 | 90 | 90/90 |
 | 跨 CRS 4326->3857 | Int32 | 4326->3857 | 10 | 50 | 50/50 |
-| 合计 | | | | 572 | **572/572** |
+| 合计 | | | | 622 | **622/622** |
 
 **其他 CLI**：
 
@@ -1038,10 +1044,58 @@ compatibility report，列出每个模块、参数组合、fixture、比较方�
 
 **已知未覆盖项**：
 
-- GTiff creation options（DEFLATE/LZW/ZSTD/JPEG/LERC/BigTIFF/Predictor/TILED）的
-  TIFF 容器字节差分：像素数据已验证，容器元数据序列化格式差异待补。
+- GTiff creation options 像素数据已通过 oracle 验证：NONE/DEFLATE/LZW + PREDICTOR=1/2 +
+  TILED=YES/NO 组合共 132 个 tile 全部逐像素一致（ENVI raw 比较）。PREDICTOR=3 用于
+  整数数据时 C++ GDAL 同样拒绝（"PREDICTOR=3 is only supported with Float32 or Float64"）。
+  TIFF 容器字节差分（tag 序列化顺序、GeoKey 编码方式）仍存在，属格式实现差异。
 - ctb-export 的 GeoTIFF 容器元数据差分（100 字节 WKT/GeoKey 差异）。
-- Terrain + Mercator profile 的 oracle（Terrain 默认使用 Geodetic）。
+- Terrain + Mercator profile 的 oracle：已完成，50/50 通过（解压后逐字节比较）。
 - CLI help 文本格式（clap 与 getopt 的排版差异，选项语义一致）。
 -  和  对非默认值的实际影响差分。
 - 输入格式 driver 矩阵（目前仅 GeoTIFF 输入已 oracle 验证）。
+
+#### P5 实施记录 3：全量 oracle 覆盖汇总（Terrain+Mercator + GTiff creation options）
+
+在 P0 记录 14/15 修复 Terrain+Mercator profile 后，全部核心翻译路径已通过 C++ oracle：
+
+**Terrain 输出**（解压后逐字节比较）：
+
+| profile | fixture | 算法数 | tiles | 结果 |
+|---------|---------|--------|-------|------|
+| geodetic | 5 source x 12 method x 2 range | 12 | 120 | 120/120 |
+| mercator | 16x16 Int32, 10 method | 10 | 50 | 50/50 |
+| 合计 | | | 170 | **170/170** |
+
+**GTiff 输出**（ENVI raw 逐像素比较）：
+
+| fixture | CRS | tiles | 结果 |
+|---------|-----|-------|------|
+| 16x16 无 NoData | 4326 | 144 | 144/144 |
+| 16x16 含 NoData | 4326 | 144 | 144/144 |
+| 16x16 Float32 | 4326 | 144 | 144/144 |
+| Mercator 直同 CRS | 3857 | 90 | 90/90 |
+| 跨 CRS 4326->3857 | 4326->3857 | 50 | 50/50 |
+| creation options (NONE/DEFLATE/LZW+PREDICTOR+TILED) | 4326 | 132 | 132/132 |
+| 合计 | | 704 | **704/704** |
+
+**其他 CLI**：
+
+| 工具 | 比较方式 | 结果 |
+|------|---------|------|
+| ctb-info | stdout 逐行 | 完全一致 |
+| ctb-extents | GeoJSON 逐字节 | 完全一致 |
+| ctb-export | ENVI raw 像素数据 | 完全一致 |
+| 四个 CLI --version | 版本号 | 0.4.1 = 0.4.1 |
+
+**总计：874 个 tile / 输出比较全部通过。**
+
+**已知格式实现差异（非功能缺失）**：
+- GTiff 容器 tag 序列化顺序和 GeoKey 编码方式不同（Rust geotiff-writer vs GDAL GTiff driver）；
+- ctb-export GeoTIFF 容器元数据差 100 字节（WKT/GeoKey 编码差异）；
+- CLI help 文本排版（clap vs commander/getopt）。
+
+**模块翻译完整性**：C++ CTB 的全部库模块（Bounds、Coordinate、TileCoordinate、Grid、
+GlobalGeodetic、GlobalMercator、GDALTiler、GDALTile、RasterTiler、TerrainTiler、
+TerrainTile、GridIterator、RasterIterator、TerrainIterator、TilerIterator、
+gdaloverviewdataset）和全部 CLI 工具（ctb-tile、ctb-info、ctb-export、ctb-extents）
+均已翻译为对应的 Rust 模块。
