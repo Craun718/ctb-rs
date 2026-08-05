@@ -329,7 +329,7 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         deflate_option.stderr
     );
     let deflate_file = GeoTiffFile::open(deflate_output.join("0/0/0.tif"))?;
-    assert_eq!(deflate_file.width(), 256);
+    assert_eq!(deflate_file.width(), 65);
 
     let lzw_output = directory.join("lzw");
     fs::create_dir(&lzw_output)?;
@@ -340,7 +340,7 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         .output()?;
     assert!(lzw_option.status.success(), "{:?}", lzw_option.stderr);
     let lzw_file = GeoTiffFile::open(lzw_output.join("0/0/0.tif"))?;
-    assert_eq!(lzw_file.width(), 256);
+    assert_eq!(lzw_file.width(), 65);
 
     let zstd_output = directory.join("zstd");
     fs::create_dir(&zstd_output)?;
@@ -351,7 +351,7 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         .output()?;
     assert!(zstd_option.status.success(), "{:?}", zstd_option.stderr);
     let zstd_file = GeoTiffFile::open(zstd_output.join("0/0/0.tif"))?;
-    assert_eq!(zstd_file.width(), 256);
+    assert_eq!(zstd_file.width(), 65);
     assert_eq!(zstd_file.epsg(), Some(4326));
 
     let byte_input = directory.join("byte-dem.tif");
@@ -365,7 +365,7 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         .output()?;
     assert!(jpeg_option.status.success(), "{:?}", jpeg_option.stderr);
     let jpeg_file = GeoTiffFile::open(jpeg_output.join("0/0/0.tif"))?;
-    assert_eq!(jpeg_file.width(), 256);
+    assert_eq!(jpeg_file.width(), 65);
     let jpeg_samples = jpeg_file.read_band_window::<u8>(0, 0, 0, 1, 1)?;
     assert_eq!(jpeg_samples.len(), 1);
 
@@ -378,7 +378,7 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         .output()?;
     assert!(lerc_option.status.success(), "{:?}", lerc_option.stderr);
     let lerc_file = GeoTiffFile::open(lerc_output.join("0/0/0.tif"))?;
-    assert_eq!(lerc_file.width(), 256);
+    assert_eq!(lerc_file.width(), 65);
 
     let invalid_jpeg_output = directory.join("invalid-jpeg");
     fs::create_dir(&invalid_jpeg_output)?;
@@ -428,7 +428,7 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         predictor_option.stderr
     );
     let predictor_file = GeoTiffFile::open(predictor_output.join("0/0/0.tif"))?;
-    assert_eq!(predictor_file.width(), 256);
+    assert_eq!(predictor_file.width(), 65);
 
     let tiled_output = directory.join("tiled");
     fs::create_dir(&tiled_output)?;

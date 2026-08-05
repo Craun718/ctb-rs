@@ -67,6 +67,10 @@
 - [x] 完成 RasterTiler footprint 核的 source-outside destination 初始化差分；plain z0 GTiff
       tile-size-16 的 12 算法均通过 C++，7 个统计核通过中心 bounds 门禁修复；NoData 和
       overview 仍单独验证。
+- [x] 将 center-bounds 门禁从全部算法收窄到 center-based 算法（nearest/bilinear/cubic/
+      cubicspline/lanczos），footprint 算法（average/mode/max/min/med/q1/q3）不再受门禁约束，
+      匹配 GDAL `GWKGeneralCase` vs `GWKAverageOrMode` 差异（TECHNICAL_PLAN P0 记录 7；
+      `sampling.rs`；12/12 RasterTiler GTiff oracle 像素匹配）。
 - [ ] 用含多个 NoData 像元的 fixture 验证逐像元 NaN 标记、12 个采样分支的有效样本过滤、
       全 NoData 时的 destination 初值 0，以及 Terrain 编码结果；当前 2×2 单 NoData 的
       Raster average/Terrain z0 最小 oracle 已通过，完整矩阵仍待补。
@@ -110,6 +114,10 @@
 - [x] 校正 `ctb-tile`/`ctb-extents` 的 profile 默认 tile size（Terrain 65、非 Terrain 256），
       并拒绝 Terrain 的 `--creation-option`（C++ `ctb-tile.cpp`、`ctb-extents.cpp`；76 tests
       passed）。C++ CLI 差分仍待补。
+- [x] 将 RasterTiler 默认 tile size 改为 profile-based（geodetic=65、mercator=256），匹配 C++
+      `ctb-tile.cpp:503-507` 按 profile 而非输出格式设默认值的逻辑（TECHNICAL_PLAN P0 记录 6；
+      `profile_default_tile_size()`；Terrain 仍固定 65 且拒绝显式非 65，待 P3 mercator terrain
+      grid 路径完成后统一处理）。
 
 ## P5：完成门禁
 

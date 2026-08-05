@@ -275,6 +275,61 @@ GDAL `ClampRoundAndAvoidNoData` 等价舍入：Float 类型保持原值；整数
 `(value + 0.5).floor()`，匹配 GDAL 有符号 `floor(dfReal + 0.5)` 和无符号
 `static_cast<T>(dfReal + 0.5)`。
 
+#### P0 实施记录 6：CLI 默认 tile size 与 C++ profile 逻辑对齐（RasterTiler 已修复，Terrain 显式 tile-size 待 P3）
+
+##### C++ 根因
+
+C++ `ctb-tile.cpp` 第 503-507 行根据 profile 设置默认 tile size，而非输出格式：
+
+```cpp
+if (profile == "geodetic") tileSize = (command.tileSize < 1) ? 65 : command.tileSize;
+if (profile == "mercator") tileSize = (command.tileSize < 1) ? 256 : command.tileSize;
+```
+
+这个 `grid` 对象同时用于 Terrain 和 RasterTiler（第 441/444 行）。因此：
+- Geodetic Terrain: tileSize=65 ✅（Rust 已正确）
+- Geodetic RasterTiler: tileSize=65 ❌（Rust 用 256）
+- Mercator Terrain: tileSize=256 ❌（Rust 用 65，但 C++ TerrainTile 的 TILE_SIZE 编译时常量为 65，TerrainTiler 从 256x256 VRT 读取 65x65）
+- Mercator RasterTiler: tileSize=256 ✅（Rust 已正确）
+
+注意：C++ 的 TerrainTile 类用 `#define TILE_SIZE 65`（CMake `TERRAIN_TILE_SIZE`）
+作为编译时常量，TerrainTiler::createTile 从 VRT 读取 TILE_SIZE×TILE_SIZE（65×65）个像元。
+即使 Mercator grid 的 tileSize 为 256，terrain 高程数组始终是 65×65。
+
+##### 等价 Rust 修复（已实施第 1、3 点；第 2 点待 P3）
+
+1. ✅ RasterTiler geodetic 默认 tile_size 从 256 改为 65（新增
+   `profile_default_tile_size()` 辅助函数，geodetic=65、mercator=256）。
+2. ⏳ Terrain 显式非 65 tile_size：暂保留拒绝。C++ `TerrainTiler` 从
+   `mGrid.tileSize()`×`mGrid.tileSize()` 的 VRT 读取 `TILE_SIZE=65`×65
+   （`GDALTiler.cpp:376` `GDALCreateWarpedVRT` 用 `mGrid.tileSize()`；
+   `TerrainTiler.cpp:36` `RasterIO` 读 65×65）。Geodetic 默认时 VRT=65×65、
+   读取 1:1，已由 120/120 oracle 验证。Mercator 默认时 C++ 用 VRT=256×256 但
+   `RasterIO` 仅读左上 65×65；Rust 当前硬编码 `GlobalMercatorGrid::new(65)`，
+   两者 VRT 维度和 GeoTransform 不同，需在 P3 实现 mercator terrain grid=256
+   VRT 路径后才能安全移除拒绝并按 profile 设置 terrain grid tile_size。
+3. ✅ RasterTiler 使用 profile-based 默认值（geodetic=65、mercator=256）。
+
+#### P0 实施记录 7：RasterTiler center-bounds 门禁仅限 center-based 算法（已实现）
+
+##### C++ 根因
+
+GDAL warp 核 `GWKGeneralCase`（nearest/bilinear/cubic/cubicspline/lanczos）在
+`gdalwarpkernel.cpp` 中对每个目标像元执行坐标变换后，若变换中心落在 source 像元索引范围
+之外，则跳过该像元（destination 保持初值 0）。`GWKAverageOrModeThread`
+（average/mode/max/min/med/q1/q3）没有此门禁，而是用 source window 的 footprint 覆盖权重
+计算。
+
+Rust 之前对全部 12 个算法统一施加 center-bounds 门禁（source extent 外的目标像元返回 0），
+导致 footprint 算法在 source 边界处错误丢弃部分覆盖像元。
+
+##### 等价 Rust 修复
+
+将 center-bounds 门禁从 `sample_with_footprint_raster_tiler_level` 的入口移入
+nearest/bilinear 和 cubic/cubicspline/lanczos 分支内部，仅对 center-based 查找算法生效。
+footprint 算法（average/mode/max/min/med/q1/q3）不再受门禁约束，与 GDAL
+`GWKAverageOrMode` 行为一致。
+
 ### P2：补齐 GDAL VRT 等价层
 
 按 `GDALTiler` 的执行顺序完成 source/grid CRS 比较、四角 bounds 变换、目标 GeoTransform、

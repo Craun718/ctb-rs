@@ -219,6 +219,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             if !arguments.creation_options.is_empty() {
                 return Err("creation options are not valid for Terrain output".into());
             }
+            // C++ TerrainTile uses a compile-time TILE_SIZE=65 constant
+            // (CMake TERRAIN_TILE_SIZE). The TerrainTiler always reads
+            // TILE_SIZE x TILE_SIZE heights from the VRT regardless of the
+            // grid tile size, so terrain output is always 65x65 heights.
             if let Some(tile_size) = arguments.tile_size
                 && tile_size != 65
             {
@@ -247,13 +251,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         "GTiff" => {
             let geotiff_options = gtiff_options(&arguments.creation_options)?;
+            let raster_tile_size = arguments
+                .tile_size
+                .unwrap_or(profile_default_tile_size(&arguments.profile)?);
             let grid: Box<dyn TileGrid> = match arguments.profile.as_str() {
-                "geodetic" => {
-                    Box::new(GlobalGeodeticGrid::new(arguments.tile_size.unwrap_or(256))?)
-                }
-                "mercator" => {
-                    Box::new(GlobalMercatorGrid::new(arguments.tile_size.unwrap_or(256))?)
-                }
+                "geodetic" => Box::new(GlobalGeodeticGrid::new(raster_tile_size)?),
+                "mercator" => Box::new(GlobalMercatorGrid::new(raster_tile_size)?),
                 profile => return Err(format!("unsupported TMS profile {profile}").into()),
             };
             write_raster_geotiff_tileset_with_factory(
@@ -313,6 +316,18 @@ fn worker_count(requested: Option<i32>) -> usize {
         _ => std::thread::available_parallelism()
             .map(|count| count.get())
             .unwrap_or(1),
+    }
+}
+
+/// Resolve the profile-based default tile size.
+///
+/// Matches CTB `ctb-tile.cpp` lines 503-507: geodetic defaults to 65,
+/// mercator to 256, regardless of output format.
+fn profile_default_tile_size(profile: &str) -> Result<u32, String> {
+    match profile {
+        "geodetic" => Ok(65),
+        "mercator" => Ok(256),
+        other => Err(format!("unsupported TMS profile {other}")),
     }
 }
 

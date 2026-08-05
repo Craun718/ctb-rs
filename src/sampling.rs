@@ -270,17 +270,6 @@ pub fn sample_with_footprint_raster_tiler_level(
     footprint: Bounds,
     method: ResamplingMethod,
 ) -> Result<f64, CtbError> {
-    let source_bounds = level
-        .metadata
-        .transform
-        .bounds(level.metadata.width, level.metadata.height)?;
-    if world_x < source_bounds.min_x
-        || world_x > source_bounds.max_x
-        || world_y < source_bounds.min_y
-        || world_y > source_bounds.max_y
-    {
-        return Ok(0.0);
-    }
     let value = match method {
         ResamplingMethod::Average => average_at(source, level, footprint, world_x, world_y),
         ResamplingMethod::Max => extrema_at(source, level, footprint, true),
@@ -290,9 +279,35 @@ pub fn sample_with_footprint_raster_tiler_level(
         ResamplingMethod::Q1 => quantile_at(source, level, footprint, 0.25),
         ResamplingMethod::Q3 => quantile_at(source, level, footprint, 0.75),
         ResamplingMethod::Nearest | ResamplingMethod::Bilinear => {
+            // GDAL's GWKGeneralCase rejects destination pixels whose
+            // transformed centre maps outside the source pixel index range.
+            // For direct-source (same CRS) this is equivalent to a centre-
+            // bounds test against the source extent.
+            let source_bounds = level
+                .metadata
+                .transform
+                .bounds(level.metadata.width, level.metadata.height)?;
+            if world_x < source_bounds.min_x
+                || world_x > source_bounds.max_x
+                || world_y < source_bounds.min_y
+                || world_y > source_bounds.max_y
+            {
+                return Ok(0.0);
+            }
             sample_at_level_with_nearest_support(source, level, world_x, world_y, method, false)
         }
         ResamplingMethod::Cubic | ResamplingMethod::CubicSpline | ResamplingMethod::Lanczos => {
+            let source_bounds = level
+                .metadata
+                .transform
+                .bounds(level.metadata.width, level.metadata.height)?;
+            if world_x < source_bounds.min_x
+                || world_x > source_bounds.max_x
+                || world_y < source_bounds.min_y
+                || world_y > source_bounds.max_y
+            {
+                return Ok(0.0);
+            }
             sample_at_level_with_nearest_support(source, level, world_x, world_y, method, false)
         }
     }?;
