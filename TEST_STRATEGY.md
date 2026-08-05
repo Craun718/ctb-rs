@@ -73,6 +73,20 @@ status。首次差异先登记失败证据，再增加最小 Rust 回归测试�
 affine transform 必须等于 `GlobalMercatorGrid::tile_bounds` 与 `resolution`，像素值必须按既有
 RasterTiler footprint 采样。保留 EPSG:4326 Geodetic 现有 tests 作为无回归门禁。
 
+
+## 6b. Oracle 覆盖状态（P0 记录 14/15 后）
+
+| Oracle | 命令 | 结果 |
+|--------|------|------|
+| Terrain geodetic | `scripts/verify-ctb-oracle.zsh` (5 source x 12 method x 2 range) | 120/120 |
+| Terrain + Mercator | `/tmp/ctb-oracle-terrain-mercator.py` (10 method x 5 tile, decompressed compare) | 50/50 |
+| GTiff 16x16 | `/tmp/ctb-oracle-16x16.py` (4 type x 12 method x 3 zoom) | 144/144 |
+| GTiff Mercator | `/tmp/ctb-oracle-mercator.py` (same-CRS 90 + cross-CRS 50) | 90/90 |
+
+Terrain 比较使用解压后 payload（gzip 压缩字节因 flate2/zlib 差异不同，但解压内容一致）。
+Terrain child mask 通过 `terrain_child_mask` 以 source bounds 与 tile 四分之一象限的 strict overlaps 判定，
+精确复刻 C++ `TerrainTiler::createTile`。
+
 ## 7. P2 离散统计核追加策略
 
 使用至少 2×3 的非平坦 source window，覆盖偶数/奇数样本数量、重复值和并列 mode；断言

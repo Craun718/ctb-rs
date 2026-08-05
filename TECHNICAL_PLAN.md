@@ -680,6 +680,80 @@ Rust 旧实现通过 `geotiff.rs::mark_nodata` 将 NoData 转为 NaN，再由采
 Float32 写出路径和 warp working data type 不做整数舍入的行为；跨 CRS 验证了纯 Rust
 4326 to 3857 重投影路径。
 
+#### P0 实施记录 14：Terrain + Mercator profile 使用 profile 级 tile_size（根因 J）
+
+Terrain + Mercator profile 的 oracle 测试 0/50 全部失败，所有差异为路径集合不同：
+C++ 生成 zoom 0-2（5 tiles），Rust 生成 zoom 0-4（13 tiles）。
+
+##### 根因 J：C++ profile tile_size 与 terrain TILE_SIZE 分离
+
+C++ `ctb-tile.cpp`（第 499-507 行）的 grid 构造逻辑按 profile 决定 tile_size：
+geodetic 默认 65，mercator 默认 256，**与输出格式无关**。
+
+terrain heightmap 的 TILE_SIZE=65 是 `config.hpp` 的编译期常量
+（`TerrainTile::TILE_CELL_SIZE = TILE_SIZE * TILE_SIZE`），与 grid tile_size 独立。
+`TerrainTiler::createTile` 从 `mGrid.tileSize() x mGrid.tileSize()` 的 VRT 读取
+`TILE_SIZE x TILE_SIZE` 像元（`TerrainTiler.cpp` 第 36-42 行）：
+mercator 时 VRT 为 256x256，但仅读取左上 65x65 像元。
+
+Rust 旧实现为 Terrain + Mercator 硬编码 `GlobalMercatorGrid::new(65)`，导致：
+- initial_resolution = 2*pi*6378137/65 而非 /256
+- max_zoom = 4 而非 2
+- terrainTileBounds 的 cells_per_edge = 64 而非 255
+- 65 个采样点覆盖整个 tile 宽度，而非 C++ 的 65/255 约 25.5%
+
+**修复**：
+1. CLI Terrain 分支使用 profile 级 tile_size（geodetic=65, mercator=256），移除
+   tile_size!=65 拒绝；
+2. 移除 terrain tileset writer 的 `grid.tile_size() != HEIGHTMAP_TILE_SIZE` 门禁；
+3. `TerrainSamplePlan` 增加 `heightmap_size` 字段（固定 HEIGHTMAP_TILE_SIZE=65），
+   cells_per_edge 仍由 grid tile_size - 1 决定，采样循环使用 heightmap_size。
+
+C++ 参考：`ctb-tile.cpp:499-507`（profile tile_size）、`config.hpp::TILE_SIZE=65`
+（terrain 常量）、`TerrainTiler.cpp:36-42`（65x65 读取）、`TerrainTiler.hpp::terrainTileBounds`
+（`mGrid.tileSize() - 1` cells_per_edge）。
+
+#### P0 实施记录 15：Terrain child mask 使用 strict bounds overlap（根因 K）
+
+根因 J 修复后 tile 路径集合与高度值均匹配，但 child mask 字节仍不一致：
+tile `0/0/0` C++ child=`0b1000`（仅 NE），Rust=`0b1100`（NW+NE）；tile `1/1/1`
+C++ child=0，Rust=`0b0001`（SW）。
+
+##### 根因 K：tile-coordinate child mask vs strict bounds overlap
+
+C++ `TerrainTiler::createTile`（`TerrainTiler.cpp:55-73`）以数据集 bounds 与
+tile 四分之一象限的 **strict `<` overlaps 判定 child flag：
+
+```cpp
+if (coord.zoom != maxZoomLevel()) {
+    CRSBounds tileBounds = mGrid.tileBounds(coord);
+    if (!bounds().overlaps(tileBounds)) {
+        terrainTile->setAllChildren(false);
+    } else {
+        if (bounds().overlaps(tileBounds.getSW())) terrainTile->setChildSW();
+        if (bounds().overlaps(tileBounds.getNW())) terrainTile->setChildNW();
+        if (bounds().overlaps(tileBounds.getNE())) terrainTile->setChildNE();
+        if (bounds().overlaps(tileBounds.getSE())) terrainTile->setChildSE();
+    }
+}
+```
+
+`bounds()` 返回 source bounds 经过 CRS 变换到 grid CRS（`GDALTiler.cpp:56-127`），
+`Bounds::overlaps` 使用 strict `<`（`Bounds.hpp:222-227`），`getSW/getNW/getNE/getSE`
+返回 tile bounds 的四分之一子矩形（`Bounds.hpp:180-212`）。
+
+Rust 旧实现用 `TilesetPlan::child_mask_for(tile)`，通过子 tile 坐标是否存在于 plan
+来判定，该方式对边界相切的 tile 会错误地包含。
+
+##### 修复
+
+1. 新增 `terrain_child_mask(source_bounds, grid, tile, max_zoom)` 和 `strict_overlaps`
+   辅助函数，精确复刻 C++ 四分之一象限 + strict `<` 判定；
+2. 两个 terrain writer 均改为 `terrain_child_mask(...)`，移除 `coverage_plan`；
+3. `max_zoom` 参数使用数据集自然 max（`grid.zoom_for_resolution(resolution)`），
+   而非 `plan.max_zoom`，因为 C++ `maxZoomLevel()` 始终返回自然最大 zoom，
+   与用户指定的 zoom range 无关。
+
 ### P2：补齐 GDAL VRT 等价层
 
 按 `GDALTiler` 的执行顺序完成 source/grid CRS 比较、四角 bounds 变换、目标 GeoTransform、

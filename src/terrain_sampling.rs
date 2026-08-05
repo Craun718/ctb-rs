@@ -1,8 +1,9 @@
 use crate::{
-    CtbError,
     grid::{Bounds, GlobalGeodeticGrid, TileCoord, TileGrid},
-    raster::{RasterSource, transform_bounds, transform_coordinate},
-    sampling::{ResamplingMethod, sample_with_footprint_level},
+    raster::{transform_bounds, transform_coordinate, RasterSource},
+    sampling::{sample_with_footprint_level, ResamplingMethod},
+    terrain::HEIGHTMAP_TILE_SIZE,
+    CtbError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -19,10 +20,17 @@ pub struct TerrainSample {
 /// the warp transformer keeps the overlapped source-space pixels.  Therefore
 /// a heightmap value represents the centre of that VRT pixel, not a node on
 /// the nominal tile bounds.
+///
+/// The grid tile size and the heightmap tile size are independent: C++ uses
+/// the profile default (65 for geodetic, 256 for mercator) for the grid, but
+/// always reads `TILE_SIZE` (65) heights from the VRT (`config.hpp`).  For
+/// mercator terrain the VRT is 256x256 but only the upper-left 65x65 pixels
+/// are read.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerrainSamplePlan {
     bounds: Bounds,
-    tile_size: u32,
+    grid_tile_size: u32,
+    heightmap_size: u32,
     cell_width: f64,
     cell_height: f64,
     target_crs: crate::raster::Crs,
@@ -35,23 +43,24 @@ impl TerrainSamplePlan {
 
     pub fn from_grid(grid: &dyn TileGrid, coord: TileCoord) -> Result<Self, CtbError> {
         let bounds = grid.tile_bounds(coord)?;
-        let tile_size = grid.tile_size();
-        let cells_per_edge = f64::from(tile_size - 1);
+        let grid_tile_size = grid.tile_size();
+        let cells_per_edge = f64::from(grid_tile_size - 1);
         Ok(Self {
             bounds,
-            tile_size,
+            grid_tile_size,
+            heightmap_size: HEIGHTMAP_TILE_SIZE as u32,
             cell_width: bounds.width() / cells_per_edge,
             cell_height: bounds.height() / cells_per_edge,
             target_crs: grid.crs(),
         })
     }
 
-    pub fn tile_size(self) -> u32 {
-        self.tile_size
+    pub fn heightmap_size(self) -> u32 {
+        self.heightmap_size
     }
 
     pub fn sample(self, row: u32, column: u32) -> Option<TerrainSample> {
-        if row >= self.tile_size || column >= self.tile_size {
+        if row >= self.heightmap_size || column >= self.heightmap_size {
             return None;
         }
         let world_x = self.bounds.min_x + self.cell_width * (f64::from(column) - 0.5);
@@ -81,8 +90,8 @@ impl TerrainSamplePlan {
         let target_ratio = 1.0 / source.metadata().transform.pixel_width;
         let level = source.sampling_level_for_ratio(target_ratio)?;
         let mut heights = Vec::new();
-        for row in 0..self.tile_size {
-            for column in 0..self.tile_size {
+        for row in 0..self.heightmap_size {
+            for column in 0..self.heightmap_size {
                 let sample = self
                     .sample(row, column)
                     .ok_or(CtbError::InvalidRasterWindow)?;
@@ -106,10 +115,10 @@ impl TerrainSamplePlan {
 #[cfg(test)]
 mod tests {
     use crate::{
-        CtbError,
         raster::{
             AffineTransform, Crs, RasterMetadata, RasterSampleType, RasterWindow, WindowRequest,
         },
+        CtbError,
     };
 
     use super::*;
@@ -173,8 +182,14 @@ mod tests {
             },
         )?;
         // FMA-contracted tile_bounds means adjacent edges differ by ~4.4e-15.
-        let wx_west = west.sample(0, 64).ok_or(CtbError::InvalidRasterWindow)?.world_x;
-        let wx_east = east.sample(0, 0).ok_or(CtbError::InvalidRasterWindow)?.world_x;
+        let wx_west = west
+            .sample(0, 64)
+            .ok_or(CtbError::InvalidRasterWindow)?
+            .world_x;
+        let wx_east = east
+            .sample(0, 0)
+            .ok_or(CtbError::InvalidRasterWindow)?
+            .world_x;
         assert!((wx_west - wx_east).abs() < 1e-10);
 
         let south = TerrainSamplePlan::new(
@@ -193,25 +208,41 @@ mod tests {
                 y: 1,
             },
         )?;
-        let wy_south = south.sample(0, 0).ok_or(CtbError::InvalidRasterWindow)?.world_y;
-        let wy_north = north.sample(64, 0).ok_or(CtbError::InvalidRasterWindow)?.world_y;
+        let wy_south = south
+            .sample(0, 0)
+            .ok_or(CtbError::InvalidRasterWindow)?
+            .world_y;
+        let wy_north = north
+            .sample(64, 0)
+            .ok_or(CtbError::InvalidRasterWindow)?
+            .world_y;
         assert!((wy_south - wy_north).abs() < 1e-10);
         Ok(())
     }
 
     #[test]
-    fn produces_a_row_major_height_grid() -> Result<(), CtbError> {
-        let grid = GlobalGeodeticGrid::new(2)?;
-        let plan = TerrainSamplePlan::new(
-            grid,
+    fn heightmap_size_is_always_65_regardless_of_grid_tile_size() -> Result<(), CtbError> {
+        let geodetic = GlobalGeodeticGrid::new(65)?;
+        let plan_geo = TerrainSamplePlan::new(
+            geodetic,
             TileCoord {
                 zoom: 0,
                 x: 0,
                 y: 0,
             },
         )?;
-        let heights = plan.sample_heights(&TestRaster::new()?, ResamplingMethod::Nearest)?;
-        assert_eq!(heights, vec![0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(plan_geo.heightmap_size(), HEIGHTMAP_TILE_SIZE as u32);
+
+        let mercator = crate::grid::GlobalMercatorGrid::new(256)?;
+        let plan_merc = TerrainSamplePlan::from_grid(
+            &mercator,
+            TileCoord {
+                zoom: 0,
+                x: 0,
+                y: 0,
+            },
+        )?;
+        assert_eq!(plan_merc.heightmap_size(), HEIGHTMAP_TILE_SIZE as u32);
         Ok(())
     }
 

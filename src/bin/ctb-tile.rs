@@ -7,12 +7,12 @@ use ctb_rs::{
     grid::{GlobalGeodeticGrid, GlobalMercatorGrid, TileGrid},
     raster_geotiff::{RasterGeoTiffCompression, RasterGeoTiffWriteOptions},
     raster_tileset::{
-        RasterTilesetOptions, raster_geotiff_path, write_raster_geotiff_tileset_with_factory,
+        raster_geotiff_path, write_raster_geotiff_tileset_with_factory, RasterTilesetOptions,
     },
     sampling::ResamplingMethod::{self, Average},
     tileset::{
-        HeightmapTilesetOptions, TileWriteProgress, terrain_path,
-        write_heightmap_tileset_with_factory,
+        terrain_path, write_heightmap_tileset_with_factory, HeightmapTilesetOptions,
+        TileWriteProgress,
     },
 };
 use geotiff_writer::{Predictor, TiffVariant};
@@ -219,18 +219,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             if !arguments.creation_options.is_empty() {
                 return Err("creation options are not valid for Terrain output".into());
             }
-            // C++ TerrainTile uses a compile-time TILE_SIZE=65 constant
-            // (CMake TERRAIN_TILE_SIZE). The TerrainTiler always reads
-            // TILE_SIZE x TILE_SIZE heights from the VRT regardless of the
-            // grid tile size, so terrain output is always 65x65 heights.
-            if let Some(tile_size) = arguments.tile_size
-                && tile_size != 65
-            {
-                return Err("CTB heightmap-1.0 output requires --tile-size 65".into());
-            }
+            // C++ ctb-tile.cpp:499-507 uses profile-based tile_size for the grid
+            // (geodetic=65, mercator=256) regardless of output format. The terrain
+            // heightmap TILE_SIZE=65 is a compile-time constant (config.hpp),
+            // independent of the grid tile_size.
+            let terrain_grid_size = arguments
+                .tile_size
+                .unwrap_or(profile_default_tile_size(&arguments.profile)?);
             let grid: Box<dyn TileGrid> = match arguments.profile.as_str() {
-                "geodetic" => Box::new(GlobalGeodeticGrid::new(65)?),
-                "mercator" => Box::new(GlobalMercatorGrid::new(65)?),
+                "geodetic" => Box::new(GlobalGeodeticGrid::new(terrain_grid_size)?),
+                "mercator" => Box::new(GlobalMercatorGrid::new(terrain_grid_size)?),
                 profile => return Err(format!("unsupported TMS profile {profile}").into()),
             };
             write_heightmap_tileset_with_factory(
@@ -336,8 +334,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        Arguments, Predictor, RasterGeoTiffCompression, TiffVariant, gtiff_options,
-        validate_warp_options, worker_count,
+        gtiff_options, validate_warp_options, worker_count, Arguments, Predictor,
+        RasterGeoTiffCompression, TiffVariant,
     };
 
     #[test]

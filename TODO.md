@@ -129,6 +129,20 @@
       oracle 50/50 通过；Rust 控制点已覆盖）。
 - [x] 完成 Mercator direct-source z0 upper-edge payload 回归；16×16 fixture 直同 CRS
       达到 90/90，跨 CRS 4326→3857 达到 50/50。
+- [x] 修复 Terrain + Mercator 的 grid tile_size：C++ ctb-tile.cpp 按 profile 设默认
+      tile_size（geodetic=65, mercator=256），terrain heightmap 的 TILE_SIZE=65
+      是 config.hpp 编译期常量，与 grid tile_size 独立。Rust 旧实现硬编码
+      GlobalMercatorGrid(65) 导致 max_zoom=4（应为 2）和采样点位置错误。
+      修复后 TerrainSamplePlan 分离 grid tile_size 和 heightmap_size；
+      CLI 和 terrain writer 移除 tile_size==65 门禁
+      （TECHNICAL_PLAN P0 记录 14 根因 J；`terrain_sampling.rs`、`tileset.rs`、
+      `src/bin/ctb-tile.rs`）。
+- [x] 修复 Terrain child mask 计算：C++ 使用 source bounds 与 tile 四分之一象限的
+      strict `<` overlaps 判定 child flag（`TerrainTiler.cpp:55-73`、`Bounds.hpp:222-227`），
+      Rust 旧实现用 tile-coordinate child_mask_for 会错误包含边界相切的 tile。新增
+      `terrain_child_mask` 和 `strict_overlaps` 辅助函数并接入两个 terrain writer；
+      `max_zoom` 使用自然 max（`grid.zoom_for_resolution`）而非 `plan.max_zoom`
+      （TECHNICAL_PLAN P0 记录 15 根因 K；`tileset.rs`）。
 - [ ] 记录 Mercator 2×2 source 的 Terrain expanded bounds、65 个目标像元中心及 C++ `GWKAverageOrMode` source window，解释中心边界四样本 `5500/6000` 对 `6500/7000` 的差异；overview warp 复用同一坐标审计，不引入未经 oracle 证明的 epsilon。
 - [x] 实现纯 Rust 4326↔3857 source/target 坐标变换及反向采样，覆盖 RasterTiler 目标像素中心/footprint（`raster.rs`、`raster_sampling.rs`、CLI；74 tests passed）；TerrainTiler 已接入 `TerrainSamplePlan` 和 factory writer，C++ 差分仍待完成。
 - [x] 对 EPSG:4326→3857 正向变换补齐有效纬度裁剪，并用超范围控制点和 tile 边界测试验证
