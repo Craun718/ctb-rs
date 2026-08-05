@@ -61,20 +61,24 @@ impl RasterTileSamplePlan {
     }
 
     pub fn sample(&self, row: u32, column: u32) -> Option<RasterTileSample> {
-        if row >= self.tile_size || column >= self.tile_size {
-            return None;
-        }
-        let min_x = self.bounds.min_x + f64::from(column) * self.resolution;
-        let max_x = min_x + self.resolution;
-        let max_y = self.bounds.max_y - f64::from(row) * self.resolution;
-        let min_y = max_y - self.resolution;
-        Some(RasterTileSample {
-            // GDAL GenImgProjTransformer computes the destination pixel
-            // centre as (iDstX + 0.5) * resolution + origin, which differs
-            // from (min_x + max_x) / 2.0 at the f64 ULP level and propagates
-            // into bilinear 4-sample integer rounding.
-            world_x: self.bounds.min_x + (f64::from(column) + 0.5) * self.resolution,
-            world_y: self.bounds.max_y - (f64::from(row) + 0.5) * self.resolution,
+       if row >= self.tile_size || column >= self.tile_size {
+           return None;
+       }
+        let col = f64::from(column);
+        let row_f = f64::from(row);
+        // GDAL transforms each destination pixel corner independently through
+        // the forward GeoTransform with FMA contraction (gdaltransformer.cpp:
+        // 3124-3140). Using mul_add matches the fmadd instruction that clang
+        // emits for `gt[0] + pixel * gt[1]`.
+        let min_x = col.mul_add(self.resolution, self.bounds.min_x);
+        let max_x = (col + 1.0).mul_add(self.resolution, self.bounds.min_x);
+        let max_y = row_f.mul_add(-self.resolution, self.bounds.max_y);
+        let min_y = (row_f + 1.0).mul_add(-self.resolution, self.bounds.max_y);
+       Some(RasterTileSample {
+            // GDAL GenImgProjTransformer computes the destination pixel centre
+            // as (iDstX + 0.5) * resolution + origin using the same FMA path.
+            world_x: (col + 0.5).mul_add(self.resolution, self.bounds.min_x),
+            world_y: (row_f + 0.5).mul_add(-self.resolution, self.bounds.max_y),
             footprint: Bounds::new(min_x, min_y, max_x, max_y).expect(
                 "grid resolution and validated tile bounds form a non-empty destination cell",
             ),

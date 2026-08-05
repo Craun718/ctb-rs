@@ -552,7 +552,91 @@ footprint 来源改为 source_center ± 0.5（GDAL `padfX ± 0.5`），而非世
    `min_x + resolution` 累计的 f64 ULP 偏差。
  
  Rust 证据：85 项测试和 `cargo clippy -D warnings` 通过。C++ oracle 144 组差分
- 复核仍待补
+复核仍待补
+
+#### P0 实施记录 11：16×16 fixture 最后 4 组差分根因（FMA contraction）
+
+根因 D/E/F 修复后 16×16 fixture 收敛至 141/144。剩余 3 个 tile 共 4 个像素的差异全部
+追溯到同一个上游根因：GDAL 坐标计算中的 FMA（Fused Multiply-Add）contraction。
+
+##### 根因 G：GDAL 坐标变换表达式的 FMA contraction
+
+`GDALGenImgProjTransform`（`gdaltransformer.cpp:3124-3140`）中的正向 GeoTransform
+表达式 `gt[0] + padfX[i] * gt[1] + padfY[i] * gt[2]` 和逆向 GeoTransform 表达式
+`invGT[0] + padfX[i] * invGT[1] + padfY[i] * invGT[2]`（`gdaltransformer.cpp:3162-3168`）
+均为内联表达式。clang 在 ARM64 macOS 上对 C 代码默认使用 `-ffp-contract=on`（C99
+标准允许），将 `gt[0] + dfPixel * gt[1]` 编译为 `fmadd` 指令。该指令在内部以全精度
+完成乘法后加法，仅做一次舍入。Rust 设置 `-ffp-contract=off`，因此
+`origin + pixel * resolution` 执行两次舍入（先乘法舍入，再加法舍入）。`worldX` 的
+末位 1-ULP 差异经 cubic/bilinear/average 核传播后在 `floor(x + 0.5)` 边界处产生不同
+的整数舍入结果。
+
+逆向 GeoTransform 路径也使用 FMA：`GDALInvGeoTransform`（`gdaltransformer.cpp:4576-
+4588`）预计算 `invGT[1] = 1.0 / gt[1]` 和 `invGT[0] = -gt[0] / gt[1]`，然后
+`GDALGenImgProjTransform` 内联应用 `invGT[0] + worldX * invGT[1]`（同样 FMA 收缩）。
+
+**影响**：cubic tile `0/0/0` px(63,17)（cpp=1250 rust=1251）、cubic tile `2/3/3`
+px(56,64)（cpp=485 rust=486）、average tile `2/3/2` px(61,3)（cpp=1051 rust=1050）和
+px(58,6)（cpp=1458 rust=1457）。
+
+**诊断证明**（`/tmp/runtime_diag.c`，使用 volatile 变量阻止常量折叠）：
+
+- `clang -O0 -ffp-contract=off runtime_diag.c -lm`：worldX 末位为 `...d8a0`，
+  cubic 结果 `485.5` → floor(+0.5) → **486**（与 Rust 当前一致）
+- `clang -O0 runtime_diag.c -lm`（默认 FMA on）：worldX 末位为 `...d89f`，
+  cubic 结果 `485.4999...` → floor(+0.5) → **485**（与 C++ oracle 一致）
+- Rust `f64::mul_add(56.5, res, -45.0)` 产生的 bit pattern（`0xc01789d89d89d89f`）
+  与 C FMA 版本完全相同（`/tmp/coord_diag.rs` vs `/tmp/coord_diag.c`）
+
+**修复方案**：在 Rust 坐标计算中使用 `f64::mul_add()` 复制 GDAL 的 FMA 收缩行为。
+
+1. **正向 GeoTransform**（`raster_sampling.rs::RasterTileSamplePlan::sample`）：
+   `origin + pixel * res` → `pixel_center.mul_add(res, origin)`；Y 轴
+   `max_y - pixel * res` → `pixel_center.mul_add(-res, max_y)`。像元角点
+   `min_x`/`max_x`/`min_y`/`max_y` 同理改为 `mul_add`，匹配 GDAL 对左/右角点的
+   独立变换。
+
+2. **逆向 GeoTransform**（`sampling.rs` 中 `(world - origin) / pixel_width` 出现的
+   位置）：改为 `GDALInvGeoTransform` 预计算倒数 + `mul_add`：
+   `inv_pw = 1.0 / pixel_width; inv_ox = -origin_x / pixel_width;
+   pixel_x = world_x.mul_add(inv_pw, inv_ox)`。涉及 `sample_at_level_with_nearest_support`、
+   `average_at`、`passes_footprint_margin_gate` 和 `indices_overlapping_footprint`。
+
+对 16×16 fixture（source pixel_width=0.5，倒数为精确值 2.0），逆向 GT 改动不产生数值
+变化；只有正向 GT 的 `mul_add` 对 4 个像素产生实际影响。对非 2 的幂次 pixel_width 的
+数据源，两处改动均需要才能达到 GDAL 一致。
+
+#### P0 实施记录 12：16×16 fixture 最后一组差分根因（average 加权增量算法）
+
+根因 G 的 FMA 修复使 cubic/nearest 全部修复，但 average tile `2/3/2` px(58,6) 仍然差 1
+（cpp=1458 rust=1457）。该像素的四个源像元（1407/1408/1507/1508）权重相等，精确均值为
+1457.5，位于 `floor(x+0.5)` 的舍入边界。
+
+##### 根因 H：GDAL average 使用加权增量算法
+
+GDAL `GWKAverageOrModeThread`（`gdalwarpkernel.cpp:7016-7086`，GDAL 3.11.4）的 GRA_Average
+分支不使用 `sum += value * weight; … sum / total_weight` 公式，而是采用加权增量均值
+（Weighted Incremental Algorithm）：
+
+```c
+dfTotalWeight += dfWeight;
+dfValueReal += (dfWeight / dfTotalWeight) * (dfValueRealTmp - dfValueReal);
+```
+
+两种算法在数学上等价，但在 IEEE 754 双精度下因中间舍入路径不同而在边界值处产生
+不同的末位结果。Clang 对最后的乘加使用 FMA 收缩（`-ffp-contract=on`），Rust 使用
+`mul_add` 复制该行为。
+
+**修复**：将 `sampling.rs::average_at` 的累加循环改为 GDAL 的加权增量算法，最终
+`mul_add(ratio, diff, value)` 匹配 FMA。修复后 16×16 fixture 达到 144/144。
+
+##### 单元测试断言更新（FMA tile_bounds）
+
+根因 G 的 `mul_add` 修复使 `grid.rs::tile_bounds` 在 tile_size=65 的 zoom 0 边界产生
+`max_x = -4.44e-15`（与 C++ 一致）。4 个单元测试的硬编码精确值断言改为近似比较
+（容差 1e-10）；tile_size=4 的测试不受影响（分辨率 45.0 为精确值）。
+
+Rust 证据：85 单元测试通过、clippy 无警告、16×16 oracle 144/144。
 
 ### P2：补齐 GDAL VRT 等价层
 

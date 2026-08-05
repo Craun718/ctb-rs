@@ -98,7 +98,21 @@
       （`gdalwarpkernel.cpp:3015-3047`；TECHNICAL_PLAN P0 记录 10 根因 E；`sampling.rs`）。
 - [x] 将 `average_at` 的 footprint 来源从世界坐标像元边界改为 source_center ± 0.5
       （GDAL `padfX ± 0.5`；`gdalwarpkernel.cpp:6810-6811`），消除非对称权重导致的 1-ULP
-      舍入偏差（TECHNICAL_PLAN P0 记录 10 根因 F；`sampling.rs`）。
+     舍入偏差（TECHNICAL_PLAN P0 记录 10 根因 F；`sampling.rs`）。
+- [x] 将正向 GeoTransform 坐标计算从 `origin + pixel * res` 改为
+      `pixel.mul_add(res, origin)`（Y 轴 `pixel.mul_add(-res, max_y)`），复制 GDAL
+      `GDALApplyGeoTransform` 在 clang ARM64 上的 FMA contraction 行为。像元角点
+      `min_x`/`max_x`/`min_y`/`max_y` 同理改为 `mul_add`（`gdaltransformer.cpp:3124-3140`；
+      TECHNICAL_PLAN P0 记录 11 根因 G；`raster_sampling.rs`）。
+- [x] 将逆向 GeoTransform 坐标计算从 `(world - origin) / pixel_width` 改为
+      `GDALInvGeoTransform` 预计算倒数 + `mul_add`（`inv_pw = 1.0 / pw;
+      inv_ox = -origin / pw; pixel = world.mul_add(inv_pw, inv_ox)`），匹配 GDAL
+      `GDALInvGeoTransform` + FMA 内联应用（`gdaltransformer.cpp:3162-3168, 4576-4588`；
+      TECHNICAL_PLAN P0 记录 11 根因 G；`sampling.rs`）。
+- [x] 将 `average_at` 累加循环从 `sum += sample * df_weight; … sum / total_weight` 改为
+      GDAL 加权增量算法（`total_weight += df_weight; value += (df_weight / total_weight)
+      * (sample - value)`），并使用 `mul_add` 匹配 clang FMA contraction（TECHNICAL_PLAN
+      P0 记录 12 根因 H；`gdalwarpkernel.cpp:7016-7086`；`sampling.rs`）。
 - [ ] 用含多个 NoData 像元的 fixture 验证逐像元 NaN 标记、12 个采样分支的有效样本过滤、
       全 NoData 时的 destination 初值 0，以及 Terrain 编码结果；当前 2×2 单 NoData 的
       Raster average/Terrain z0 最小 oracle 已通过，完整矩阵仍待补。

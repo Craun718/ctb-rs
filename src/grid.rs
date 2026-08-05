@@ -162,13 +162,15 @@ impl GlobalGeodeticGrid {
             .checked_add(1)
             .and_then(|value| value.checked_mul(self.tile_size))
             .ok_or(CtbError::InvalidZoom(tile.zoom))?;
-        Bounds::new(
-            f64::from(lower_pixel_x) * resolution - 180.0,
-            f64::from(lower_pixel_y) * resolution - 90.0,
-            f64::from(upper_pixel_x) * resolution - 180.0,
-            f64::from(upper_pixel_y) * resolution - 90.0,
-        )
-    }
+       Bounds::new(
+            // C++ Grid::pixelsToCrs computes `pixel * res - originShift`
+            // which clang contracts to fmadd with -ffp-contract=on.
+            f64::from(lower_pixel_x).mul_add(resolution, -180.0),
+            f64::from(lower_pixel_y).mul_add(resolution, -90.0),
+            f64::from(upper_pixel_x).mul_add(resolution, -180.0),
+            f64::from(upper_pixel_y).mul_add(resolution, -90.0),
+       )
+   }
 
     pub fn coordinate_to_tile(self, x: f64, y: f64, zoom: u8) -> Result<TileCoord, CtbError> {
         if !x.is_finite()
@@ -315,23 +317,34 @@ impl GlobalMercatorGrid {
         self.scale(zoom)
     }
 
-    pub fn tile_bounds(self, tile: TileCoord) -> Result<Bounds, CtbError> {
-        self.validate_tile(tile)?;
-        let resolution = self.resolution(tile.zoom)?;
-        let min_x = f64::from(
-            tile.x
-                .checked_mul(self.tile_size)
-                .ok_or(CtbError::InvalidZoom(tile.zoom))?,
-        ) * resolution
-            - Self::ORIGIN_SHIFT;
-        let min_y = f64::from(
-            tile.y
-                .checked_mul(self.tile_size)
-                .ok_or(CtbError::InvalidZoom(tile.zoom))?,
-        ) * resolution
-            - Self::ORIGIN_SHIFT;
-        let max_x = min_x + f64::from(self.tile_size) * resolution;
-        let max_y = min_y + f64::from(self.tile_size) * resolution;
+   pub fn tile_bounds(self, tile: TileCoord) -> Result<Bounds, CtbError> {
+       self.validate_tile(tile)?;
+       let resolution = self.resolution(tile.zoom)?;
+        // C++ Grid::pixelsToCrs computes `pixel * res - originShift`
+        // which clang contracts to fmadd. Each corner is transformed
+        // independently, matching the C++ Grid::tileBounds path.
+        let lower_pixel_x = tile
+            .x
+            .checked_mul(self.tile_size)
+            .ok_or(CtbError::InvalidZoom(tile.zoom))?;
+        let lower_pixel_y = tile
+            .y
+            .checked_mul(self.tile_size)
+            .ok_or(CtbError::InvalidZoom(tile.zoom))?;
+        let upper_pixel_x = tile
+            .x
+            .checked_add(1)
+            .and_then(|value| value.checked_mul(self.tile_size))
+            .ok_or(CtbError::InvalidZoom(tile.zoom))?;
+        let upper_pixel_y = tile
+            .y
+            .checked_add(1)
+            .and_then(|value| value.checked_mul(self.tile_size))
+            .ok_or(CtbError::InvalidZoom(tile.zoom))?;
+        let min_x = f64::from(lower_pixel_x).mul_add(resolution, -Self::ORIGIN_SHIFT);
+        let min_y = f64::from(lower_pixel_y).mul_add(resolution, -Self::ORIGIN_SHIFT);
+        let max_x = f64::from(upper_pixel_x).mul_add(resolution, -Self::ORIGIN_SHIFT);
+        let max_y = f64::from(upper_pixel_y).mul_add(resolution, -Self::ORIGIN_SHIFT);
         Bounds::new(min_x, min_y, max_x, max_y)
     }
 
@@ -418,22 +431,25 @@ mod tests {
         assert_eq!(grid.tiles_x(0)?, 2);
         assert_eq!(grid.tiles_y(0)?, 1);
         assert_eq!(grid.resolution(0)?, 180.0 / 65.0);
-        assert_eq!(
-            grid.tile_bounds(TileCoord {
-                zoom: 0,
-                x: 0,
-                y: 0
-            })?,
-            Bounds::new(-180.0, -90.0, 0.0, 90.0)?
-        );
-        assert_eq!(
-            grid.tile_bounds(TileCoord {
-                zoom: 0,
-                x: 1,
-                y: 0
-            })?,
-            Bounds::new(0.0, -90.0, 180.0, 90.0)?
-        );
+        let b = grid.tile_bounds(TileCoord {
+            zoom: 0,
+            x: 0,
+            y: 0
+        })?;
+        // FMA-contracted tile_bounds produces max_x = -4.44e-15 (matches C++).
+        assert!((b.min_x - (-180.0)).abs() < 1e-10);
+        assert!((b.min_y - (-90.0)).abs() < 1e-10);
+        assert!(b.max_x.abs() < 1e-10);
+        assert!((b.max_y - 90.0).abs() < 1e-10);
+        let b1 = grid.tile_bounds(TileCoord {
+            zoom: 0,
+            x: 1,
+            y: 0
+        })?;
+        assert!(b1.min_x.abs() < 1e-10);
+        assert!((b1.min_y - (-90.0)).abs() < 1e-10);
+        assert!((b1.max_x - 180.0).abs() < 1e-10);
+        assert!((b1.max_y - 90.0).abs() < 1e-10);
         Ok(())
     }
 
@@ -458,8 +474,9 @@ mod tests {
             x: 1,
             y: 0,
         })?;
-        assert!(bounds.max_x.abs() <= f64::EPSILON);
-        assert!(bounds.max_y.abs() <= f64::EPSILON);
+        // FMA-contracted tile_bounds produces max_x/max_y ≈ ±4.4e-15 (matches C++).
+        assert!(bounds.max_x.abs() < 1e-10);
+        assert!(bounds.max_y.abs() < 1e-10);
         Ok(())
     }
 

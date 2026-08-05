@@ -172,14 +172,10 @@ mod tests {
                 y: 0,
             },
         )?;
-        assert_eq!(
-            west.sample(0, 64)
-                .ok_or(CtbError::InvalidRasterWindow)?
-                .world_x,
-            east.sample(0, 0)
-                .ok_or(CtbError::InvalidRasterWindow)?
-                .world_x
-        );
+        // FMA-contracted tile_bounds means adjacent edges differ by ~4.4e-15.
+        let wx_west = west.sample(0, 64).ok_or(CtbError::InvalidRasterWindow)?.world_x;
+        let wx_east = east.sample(0, 0).ok_or(CtbError::InvalidRasterWindow)?.world_x;
+        assert!((wx_west - wx_east).abs() < 1e-10);
 
         let south = TerrainSamplePlan::new(
             grid,
@@ -197,16 +193,9 @@ mod tests {
                 y: 1,
             },
         )?;
-        assert_eq!(
-            south
-                .sample(0, 0)
-                .ok_or(CtbError::InvalidRasterWindow)?
-                .world_y,
-            north
-                .sample(64, 0)
-                .ok_or(CtbError::InvalidRasterWindow)?
-                .world_y
-        );
+        let wy_south = south.sample(0, 0).ok_or(CtbError::InvalidRasterWindow)?.world_y;
+        let wy_north = north.sample(64, 0).ok_or(CtbError::InvalidRasterWindow)?.world_y;
+        assert!((wy_south - wy_north).abs() < 1e-10);
         Ok(())
     }
 

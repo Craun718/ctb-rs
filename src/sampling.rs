@@ -113,14 +113,17 @@ fn sample_at_level_with_nearest_support(
         return Ok(0.0);
     }
 
-    let pixel_x = (world_x - metadata.transform.origin_x) / metadata.transform.pixel_width;
-    let pixel_y = (world_y - metadata.transform.origin_y) / metadata.transform.pixel_height;
+    let pixel_x = metadata.transform.world_to_pixel_x(world_x);
+    let pixel_y = metadata.transform.world_to_pixel_y(world_y);
     match method {
-        ResamplingMethod::Nearest => {
-            let column = clamped_pixel(pixel_x.floor(), level.data_width);
-            let row = clamped_pixel(pixel_y.floor(), level.data_height);
-            read_sample(source, level, column, row)
-        }
+       ResamplingMethod::Nearest => {
+            // GDAL GWKGeneralCaseThread nearest: static_cast<int>(padfX + 1e-10)
+            // (gdalwarpkernel.cpp:5346-5347). The 1e-10 epsilon prevents
+            // sub-ULP errors from selecting the wrong pixel at boundaries.
+            let column = clamped_pixel(pixel_x + 1.0e-10, level.data_width);
+            let row = clamped_pixel(pixel_y + 1.0e-10, level.data_height);
+           read_sample(source, level, column, row)
+       }
         ResamplingMethod::Bilinear => bilinear(source, level, pixel_x - 0.5, pixel_y - 0.5),
         ResamplingMethod::Cubic | ResamplingMethod::CubicSpline | ResamplingMethod::Lanczos => {
             filtered_sample(source, level, pixel_x - 0.5, pixel_y - 0.5, method)
@@ -155,7 +158,7 @@ pub fn sample_with_footprint_level(
     method: ResamplingMethod,
 ) -> Result<f64, CtbError> {
     let value = match method {
-        ResamplingMethod::Average => average_at(source, level, world_x, world_y, footprint),
+        ResamplingMethod::Average => average_at(source, level, footprint),
         ResamplingMethod::Max => extrema_at(source, level, footprint, true),
         ResamplingMethod::Min => extrema_at(source, level, footprint, false),
         ResamplingMethod::Mode => mode_at(source, level, footprint),
@@ -292,7 +295,7 @@ pub fn sample_with_footprint_raster_tiler_level(
         return Ok(0.0);
     }
     let value = match method {
-        ResamplingMethod::Average => average_at(source, level, world_x, world_y, footprint),
+        ResamplingMethod::Average => average_at(source, level, footprint),
         ResamplingMethod::Max => extrema_at(source, level, footprint, true),
         ResamplingMethod::Min => extrema_at(source, level, footprint, false),
         ResamplingMethod::Mode => mode_at(source, level, footprint),
@@ -380,28 +383,21 @@ fn extrema_at(
 fn average_at(
     source: &dyn RasterSource,
     level: &SamplingLevel,
-    world_x: f64,
-    world_y: f64,
     footprint: Bounds,
 ) -> Result<f64, CtbError> {
     let metadata = &level.metadata;
     let transform = &metadata.transform;
 
-    // Center the source pixel footprint on the destination pixel center
-    // to avoid floating-point asymmetry from boundary arithmetic
-    // (gdalwarpkernel.cpp:6885,7010-7011). GDAL transforms destination
-    // pixel corners; here we derive half-extents from the world footprint
-    // and place them symmetrically around the center computed from
-    // world_x/world_y, matching the destination pixel centre formula
-    // (iDstX + 0.5) * res + origin.
-    let x_center = (world_x - transform.origin_x) / transform.pixel_width;
-    let y_center = (world_y - transform.origin_y) / transform.pixel_height;
-    let half_x = footprint.width() / (2.0 * transform.pixel_width.abs());
-    let half_y = footprint.height() / (2.0 * transform.pixel_height.abs());
-    let df_x_min = x_center - half_x;
-    let df_x_max = x_center + half_x;
-    let df_y_min = y_center - half_y;
-    let df_y_max = y_center + half_y;
+    // GDAL GWKAverageOrModeComputeLineCoords transforms each destination
+    // pixel corner independently through the GenImgProj transformer
+    // (forward dst GT + inverse src GT, both FMA-contracted;
+    // gdalwarpkernel.cpp:6870-7011). We replicate this by applying the
+    // inverse src GT to each world-coordinate corner. For north-up
+    // transforms the top edge (max_y) maps to a lower pixel row.
+    let df_x_min = transform.world_to_pixel_x(footprint.min_x);
+    let df_x_max = transform.world_to_pixel_x(footprint.max_x);
+    let df_y_min = transform.world_to_pixel_y(footprint.max_y);
+    let df_y_max = transform.world_to_pixel_y(footprint.min_y);
 
     // Check intersection with [0, nSrcSize] (gdalwarpkernel.cpp:6816).
     const EPS: f64 = 1e-10;
@@ -426,8 +422,12 @@ fn average_at(
         i_src_y_max += 1;
     }
 
-    // GDAL GWKAOM_Average weight loop (gdalwarpkernel.cpp:6862-6874).
-    let mut sum = 0.0;
+    // GDAL GWKAOM_Average weight loop (gdalwarpkernel.cpp:7016-7086).
+    //
+    // GDAL uses the weighted incremental algorithm mean
+    // (cf Wikipedia "Weighted incremental algorithm").
+    // Clang contracts the final mul+add into fmadd, so we use mul_add.
+    let mut value = 0.0;
     let mut total_weight = 0.0;
     for i_src_y in i_src_y_min..i_src_y_max {
         let df_weight_y = compute_weight_y(i_src_y, i_src_y_min, i_src_y_max, df_y_min, df_y_max);
@@ -447,14 +447,16 @@ fn average_at(
             if !sample.is_finite() {
                 continue;
             }
-            sum += sample * df_weight;
             total_weight += df_weight;
+            let ratio = df_weight / total_weight;
+            let diff = sample - value;
+            value = ratio.mul_add(diff, value);
         }
     }
     if total_weight == 0.0 {
         Ok(0.0)
     } else {
-        Ok(sum / total_weight)
+        Ok(value)
     }
 }
 
@@ -468,10 +470,17 @@ fn indices_overlapping_footprint(
     if limit == 0 {
         return None;
     }
-    let first = (first_world - origin) / pixel_size;
-    let last = (last_world - origin) / pixel_size;
-    let lower = first.min(last).floor();
-    let upper = first.max(last).ceil() - 1.0;
+    let inv_pixel_size = 1.0 / pixel_size;
+    let inv_origin = -origin / pixel_size;
+    let first = first_world.mul_add(inv_pixel_size, inv_origin);
+    let last = last_world.mul_add(inv_pixel_size, inv_origin);
+    // GDAL GWKAverageOrModeThread: iSrcXMin = floor(dfXMin + EPS),
+    // iSrcXMax = ceil(dfXMax - EPS) (gdalwarpkernel.cpp:6817-6823).
+    // The 1e-10 EPS prevents sub-ULP coordinate shifts from selecting
+    // an extra boundary source pixel.
+    const EPS: f64 = 1e-10;
+    let lower = (first.min(last) + EPS).floor();
+    let upper = (first.max(last) - EPS).ceil() - 1.0;
     let max_index = f64::from(limit - 1);
     if upper < 0.0 || lower > max_index {
         return None;
@@ -514,10 +523,10 @@ fn warp_margin(df_scale: f64) -> f64 {
 /// source pixel coordinates, all lie within `[-nMargin, nSrcSize + nMargin]`.
 fn passes_footprint_margin_gate(level: &SamplingLevel, footprint: Bounds, tile_size: u32) -> bool {
     let transform = &level.metadata.transform;
-    let x_left = (footprint.min_x - transform.origin_x) / transform.pixel_width;
-    let x_right = (footprint.max_x - transform.origin_x) / transform.pixel_width;
-    let y_top = (footprint.max_y - transform.origin_y) / transform.pixel_height;
-    let y_bottom = (footprint.min_y - transform.origin_y) / transform.pixel_height;
+    let x_left = transform.world_to_pixel_x(footprint.min_x);
+    let x_right = transform.world_to_pixel_x(footprint.max_x);
+    let y_top = transform.world_to_pixel_y(footprint.max_y);
+    let y_bottom = transform.world_to_pixel_y(footprint.min_y);
     let df_x_min = x_left.min(x_right);
     let df_x_max = x_left.max(x_right);
     let df_y_min = y_top.min(y_bottom);

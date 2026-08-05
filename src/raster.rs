@@ -127,6 +127,26 @@ impl AffineTransform {
             self.origin_y,
         )
     }
+
+    /// Convert a world X coordinate to source pixel X using GDAL's
+    /// GDALInvGeoTransform reciprocal + FMA contraction
+    /// (gdaltransformer.cpp:4576-4588, 3162-3168). For north-up
+    /// transforms: `pixel = world / pw - origin / pw`, but GDAL
+    /// precomputes `1/pw` and `-origin/pw` then evaluates
+    /// `invGT[0] + world * invGT[1]` as a fused multiply-add.
+    pub fn world_to_pixel_x(&self, world_x: f64) -> f64 {
+        let inv_pixel_width = 1.0 / self.pixel_width;
+        let inv_origin_x = -self.origin_x / self.pixel_width;
+        world_x.mul_add(inv_pixel_width, inv_origin_x)
+    }
+
+    /// Convert a world Y coordinate to source pixel Y (see
+    /// [`world_to_pixel_x`](Self::world_to_pixel_x)).
+    pub fn world_to_pixel_y(&self, world_y: f64) -> f64 {
+        let inv_pixel_height = 1.0 / self.pixel_height;
+        let inv_origin_y = -self.origin_y / self.pixel_height;
+        world_y.mul_add(inv_pixel_height, inv_origin_y)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

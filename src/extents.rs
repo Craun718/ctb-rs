@@ -76,7 +76,8 @@ mod tests {
         let geojson = geojson_for_level(&grid, &level)?;
         assert!(geojson.contains(r#""tx": 0, "ty": 0"#));
         assert!(geojson.contains("[-1.800000000000000e+02, -9.000000000000000e+01]"));
-        assert!(geojson.contains("[0.000000000000000e+00, 9.000000000000000e+01]"));
+        // max_x is FMA-contracted: -4.44e-15 instead of exact 0.0 (matches C++).
+        assert!(geojson.contains("[-4.440892098500626e-15, 9.000000000000000e+01]"));
         Ok(())
     }
 
