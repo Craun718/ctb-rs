@@ -181,8 +181,12 @@
       排版格式因 clap vs getopt 不同（已知差异）。
       clap 的格式化帮助仍待 golden 收敛。
 - [x] -z/--error-threshold and -m/--warp-memory: defaults parsed, non-default rejected.
-      非默认值显式报未实现错误；待 C++ oracle 可运行后再验证 ApproxTransformer 和 warp
-      memory 对结果/性能契约的实际影响。
+     非默认值显式报未实现错误；待 C++ oracle 可运行后再验证 ApproxTransformer 和 warp
+     memory 对结果/性能契约的实际影响。
+     已由 C++ oracle 关闭：默认阈值（0.125）下 GDALApproxTransform 对 CTB 全部重投影输出
+     无可观察差异（4326→mercator 708/708、3857→geodetic 138/138 逐像素相同），Rust 精确
+     路径与 C++ 默认近似路径观察等价，结论为无需翻译 ApproxTransformer
+     （TECHNICAL_PLAN P5 记录 5）。
 - [x] 校正 `ctb-tile`/`ctb-extents` 的 profile 默认 tile size（Terrain 65、非 Terrain 256），
       并拒绝 Terrain 的 `--creation-option`（C++ `ctb-tile.cpp`、`ctb-extents.cpp`；76 tests
       passed）。C++ CLI 差分仍待补。

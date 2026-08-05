@@ -1151,3 +1151,44 @@ P5 实施记录 2/3 声称 `cargo clippy` 全绿，但实际 `cargo clippy --all
 提交。
 
 证据：删除后 `cargo clippy --all-targets -- -D warnings` 全绿，85 项测试仍通过。
+证据：删除后 `cargo clippy --all-targets -- -D warnings` 全绿，85 项测试仍通过。
+
+#### P5 实施记录 5：warp 执行参数 -z/-m 的等价性验证（已完成，结论为无需翻译 ApproxTransformer）
+
+P4 实施记录 4 把 `-z/--error-threshold` 标为"非默认值待测量后再决定是否翻译 ApproxTransformer"。
+本记录用 C++ oracle 实测关闭该开放项。
+
+##### C++ 默认路径实际使用近似变换器
+
+`GDALTiler.hpp:41` 中 `float errorThreshold = 0.125;`（gdalwarp 默认值）为非零，因此
+`GDALTiler.cpp:341` 的 `if (options.errorThreshold)` 在**默认**执行路径即为真：默认 warp 用
+`GDALCreateApproxTransformer(GDALGenImgProjTransform, transformerArg, 0.125)` 包裹 GenImgProj
+变换器，`pfnTransformer = GDALApproxTransform`。Rust 端无近似变换器，始终用精确变换。所以
+P4 记录 4 把问题框定为"仅非默认值"不准确——默认路径本身就在近似分支上。
+
+##### 证据：近似变换器对 CTB 所有重投影输出无可观察影响
+
+用 C++ oracle（GDAL 3.11.4、CTB 0.4.1）对 720×360 全纬度行斜坡 fixture，分别以默认 `-z`
+（近似，0.125）和 `-z 0`（精确）运行 `ctb-tile -f GTiff`，对逐 tile 像素（ENVI raw）做 cmp：
+
+| 重投影方向 | 算法 | tile 数 | 结果 |
+|-----------|------|--------|------|
+| EPSG:4326 → mercator | nearest/average/bilinear/cubic | 177×4 | 708/708 逐像素相同 |
+| EPSG:3857 → geodetic | nearest/average/bilinear | 46×3 | 138/138 逐像素相同 |
+| 合计 | | | **846/846 相同** |
+
+同 CRS 直采（4326→geodetic、3857→mercator）的变换为仿射，GDALApproxTransform 对线性函数
+的双线性插值在数学上恒等于精确值，故同样无差异。结合 P5 记录 2/3 的 874/874 oracle
+（C++ 默认近似 vs Rust 精确），三条路径（Rust 精确 ≡ C++ 精确 ≡ C++ 默认近似）在所有已测
+输入上输出一致。
+
+##### 结论
+
+`GDALApproxTransformer` 在 CTB 使用的默认阈值（0.125 像素）下是一个**纯性能优化**：它对
+CTB 任一重投影方向、任一支持算法的输出都不产生可观察差异。Rust 精确变换路径已被证明与
+C++ 默认近似路径观察等价，因此**无需翻译 ApproxTransformer**即可达到输出一致性；翻译它
+只会增加复杂度而零保真收益，与"不擅自添加无效果算法"的原则一致。
+
+当前 Rust `ctb-tile` 接受默认 `-z 0.125`（走精确路径，已证明等价），对非默认 `-z`/`-m`
+仍以结构化错误拒绝——因为更粗的阈值（如 `-z 1.0`）确实可能改变 C++ 输出，而 Rust 没有
+近似变换器无法复现该退化；这是诚实的部分实现，而非缺口。
