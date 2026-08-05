@@ -330,6 +330,65 @@ nearest/bilinear 和 cubic/cubicspline/lanczos 分支内部，仅对 center-base
 footprint 算法（average/mode/max/min/med/q1/q3）不再受门禁约束，与 GDAL
 `GWKAverageOrMode` 行为一致。
 
+#### P0 实施记录 8：cubic/cubicspline 连续核 tap 范围与 cubic 边界 bilinear 回退（已实现）
+
+##### C++ 根因
+
+RasterTiler 的 12 算法 GTiff oracle（10 tiles × 12 算法 = 120 组）中，nearest、bilinear、
+lanczos、average、mode、max、min、med、q1、q3 共 110 组逐像素通过；cubic 有 7 组、
+cubicspline 有 3 组在 source 边界像元处存在差异。两个独立的根因如下。
+
+**根因 A：cubic 缺少 4-sample 边界 bilinear 回退。**
+
+GDAL 对 `GRA_Cubic` 在 `dfXScale > 0.5 && dfYScale > 0.5` 时走
+`GWKCubicResample4Sample`（`gdalwarpkernel.cpp:3278`），而非通用 `GWKResample`。该函数
+在入口处检查 4×4 tap 窗口（`iSrcX-1 … iSrcX+2`、`iSrcY-1 … iSrcY+2`）是否全部在 source
+范围内；若任一越界，直接回退到 `GWKBilinearResample4Sample`（`gdalwarpkernel.cpp:3297`），
+不执行"丢弃越界 tap + 权重归一化"。对 2×2 source，每个目标像元都触发回退，因此 cubic
+在边界处应给出 bilinear（等价于最近有效源像元）的结果。Rust 此前对 cubic 使用与
+cubicspline/lanczos 相同的通用路径（丢弃越界 tap 并归一化），导致 cubic 在边界产生过冲。
+
+**根因 B：filtered_sample tap 范围偏窄。**
+
+GDAL 通用路径 `GWKResample`（`gdalwarpkernel.cpp:4027`，cubicspline 与 lanczos 走此路径）
+的 tap 范围由 `nFiltInitX..=nXRadius` 决定（`gdalwarpkernel.cpp:1320-1326`）：
+
+- `nXRadius = dfXScale < 1.0 ? ceil(radius / dfXScale) : radius`；ctb-tile 的 RasterTiler
+  路径 `dfXScale >= 1.0`，故 `nXRadius = radius`。
+- `nFiltInitX = ((radius + 1) % 2) - nXRadius`。
+
+对 radius=2（cubic/cubicspline）：`nFiltInitX = (3%2) - 2 = -1`，tap 范围 `-1..=2`（4 tap）。
+对 radius=3（lanczos）：`nFiltInitX = (4%2) - 3 = -3`，tap 范围 `-3..=3`（7 tap）。
+
+Rust `filtered_sample` 此前用 `start_offset..=radius-1`（radius=2 时 `-1..=1` 仅 3 tap，
+radius=3 时 `-2..=2` 仅 5 tap），缺失了 `+2`（cubicspline）和 `+3`（lanczos）tap。lanczos
+在 2×2 fixture 上因额外 tap 恒越界而被丢弃，故未暴露差异；cubicspline 在边界像元处因缺
+`+2` tap 导致数值偏差。
+
+##### 等价 Rust 修复
+
+`sampling.rs::filtered_sample`：
+
+1. tap 范围改为 `nFiltInitX..=nXRadius`，即 `((radius + 1) % 2) - radius ..= radius`，
+   与 GDAL `nFiltInitX/nXRadius`（dfXScale >= 1.0）一致。
+2. 对 `Cubic`（对应 `GWKCubicResample4Sample` 的 4-sample 路径）：在加权循环前检查 4×4
+   tap 窗口是否全部在 `level.data_width/data_height` 范围内；若有任一越界，回退到现有
+   `bilinear`（等价 `GWKBilinearResample4Sample`）。cubicspline 与 lanczos 仍走通用路径
+   （丢弃越界 tap + 权重归一化），与 `GWKResample` 一致。
+
+`GWKCubicComputeWeights`（4-sample cubic 权重）与 Rust `kernel_weight` 的 cubic 分支在
+代数与数值上等价（已逐点验证），因此非边界 cubic 卷积不需额外改动。cubic 4-sample 路径
+不按权重归一化，但当全部 16 tap 在界时权重和恰为 1.0，归一化为 no-op。
+
+##### 已知遗留
+
+cubic 的 4-sample 路径还含逐像元 density（NoData）回退：任一 tap density 低于阈值即回退
+bilinear。当前 Rust 对界内 NaN tap 仍走丢弃+归一化，与 GDAL 在含 NoData 的界内窗口下可能
+不同；该差异归入 NoData 多像元 fixture（TODO P2）单独验证，本记录不覆盖。
+
+Rust 证据：2×2 fixture GTiff oracle 12 算法 × 10 tiles 由 110/120 收敛至 120/120 逐像素
+通过；`cargo test` 与 `cargo clippy -- -D warnings` 通过。
+
 ### P2：补齐 GDAL VRT 等价层
 
 按 `GDALTiler` 的执行顺序完成 source/grid CRS 比较、四角 bounds 变换、目标 GeoTransform、

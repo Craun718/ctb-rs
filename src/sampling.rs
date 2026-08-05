@@ -500,18 +500,32 @@ fn filtered_sample(
             ));
         }
     };
-    let start_offset = if radius == 2 { -1 } else { -2 };
+    // GDAL GWKResample tap window: nFiltInitX..=nXRadius for dfXScale >= 1.0
+    // (gdalwarpkernel.cpp:1320-1326). radius 2 -> -1..=2, radius 3 -> -3..=3.
+    let filt_init = ((radius + 1) % 2) - radius;
     let x_base = centre_x.floor() as i32;
     let y_base = centre_y.floor() as i32;
+    // GRA_Cubic uses GWKCubicResample4Sample: if any of the 4x4 taps
+    // (iSrcX-1..iSrcX+2) is out of bounds, GDAL falls back to bilinear
+    // (gdalwarpkernel.cpp:3297). cubicspline/lanczos use the general path
+    // with edge tap dropping + weight renormalization instead.
+    if method == ResamplingMethod::Cubic
+        && (x_base - 1 < 0
+            || x_base + 2 >= level.data_width as i32
+            || y_base - 1 < 0
+            || y_base + 2 >= level.data_height as i32)
+    {
+        return bilinear(source, level, centre_x, centre_y);
+    }
     let mut weighted_sum = 0.0;
     let mut weight_sum = 0.0;
-    for y_offset in start_offset..=radius - 1 {
+    for y_offset in filt_init..=radius {
         let y = y_base + y_offset;
         if y < 0 || y >= level.data_height as i32 {
             continue;
         }
         let y_weight = kernel_weight(centre_y - f64::from(y), method);
-        for x_offset in start_offset..=radius - 1 {
+        for x_offset in filt_init..=radius {
             let x = x_base + x_offset;
             if x < 0 || x >= level.data_width as i32 {
                 continue;

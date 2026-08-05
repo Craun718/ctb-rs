@@ -48,6 +48,11 @@
 - [x] 按 GDAL `gdalresamplingkernels.h` 实现 cubic、cubicspline、lanczos 的有限 kernel、
       边缘 tap 丢弃和权重归一化；用非平坦 source fixture 锁定数值（`sampling.rs`，72 tests
       passed）。C++ 差分、缩放和 NoData/density 仍待补。
+- [x] 修正 `filtered_sample` tap 范围为 GDAL `nFiltInitX..=nXRadius`
+      （`((radius+1)%2)-radius ..= radius`），并为 `Cubic` 加入 4-sample 边界 bilinear 回退
+      （对应 `GWKCubicResample4Sample` 的 `iSrcX-1..iSrcX+2` 越界检查）。2×2 fixture GTiff
+      oracle 由 110/120 收敛至 120/120（TECHNICAL_PLAN P0 记录 8；`sampling.rs`）。cubicspline
+      的界内 NoData density 回退仍归 P2 NoData fixture。
 - [x] 将 `scripts/verify-ctb-oracle.zsh` 的 resampling 矩阵扩展到 CLI 的全部 12 个算法；
       脚本通过 `zsh -n`。使用恢复后的 C++ oracle 执行并记录 12 个算法的数值差异。
 - [ ] 固定 `GDALTiler::createRasterTile` 的 GeoTransform、destination 初始化和 band 行为 oracle。
@@ -62,7 +67,8 @@
 - [x] 补齐 RasterTiler 的 nearest、bilinear、cubic、cubicspline、lanczos、average、mode、max、
       min、med、q1、q3 Rust 分支；复用现有核函数和离散统计实现，非平坦 Rust fixture 待补。
 - [ ] 对上述 12 个 RasterTiler 算法分别生成非平坦 C++ oracle 并完成数值差分；当前脚本已
-      证明 Terrain 的 4 组 direct/overview 前置矩阵，RasterTiler GTiff 数值矩阵仍待执行。
+      证明 Terrain 的 4 组 direct/overview 前置矩阵；RasterTiler 2×2 GTiff 数值矩阵已执行
+      且 12 算法 × 10 tiles = 120 组逐像素通过，NoData 多像元与 overview fixture 仍待补。
 - [ ] 对 integer/float、NoData 和 source 覆盖外的转换顺序逐项差分。
 - [x] 完成 RasterTiler footprint 核的 source-outside destination 初始化差分；plain z0 GTiff
       tile-size-16 的 12 算法均通过 C++，7 个统计核通过中心 bounds 门禁修复；NoData 和
