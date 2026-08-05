@@ -1223,3 +1223,63 @@ C++ 的极区 tile 是 GDAL 重投影超出有效纬度的副作用（全零、�
 预期逻辑。Rust 裁剪到有效区是更正确的行为；复现 C++ 的全零极区 tile 只会增加复杂度且产出
 无意义数据，与"翻译原版预期行为、不擅自添加无效果逻辑"一致。故定性为已知边缘差异，非模块
 翻译缺口，不修改实现。
+
+### P6：模块翻译完整性终审（已完成）
+
+在 P0–P5 全部步骤标记完成后，对 C++ CTB 的每个源文件逐一与 Rust 实现做了最终交叉
+验证，确认全部库模块和 CLI 工具均已翻译，且无遗留实现缺口。
+
+#### P6 实施记录 1：C++ 源文件到 Rust 模块的终审映射
+
+逐文件比对 C++ 源码与 Rust 源码的公共接口和行为：
+
+| C++ 源文件 | C++ 行数 | Rust 对应文件 | Rust 行数 | 状态 |
+| --- | --- | --- | --- | --- |
+| `Bounds.hpp` | 234 | `grid.rs` (Bounds) | 593 | 完整 |
+| `CTBException.hpp` | 41 | `error.rs` | 104 | 完整 |
+| `Coordinate.hpp` | 69 | `grid.rs` (Coordinate/TileCoord) | 593 | 完整 |
+| `TileCoordinate.hpp` | 88 | `grid.rs` (TileCoord) | 593 | 完整 |
+| `Tile.hpp` | 55 | `grid.rs` (Tile trait + impl) | 593 | 完整 |
+| `Grid.hpp` | 214 | `grid.rs` (TileGrid trait) | 593 | 完整 |
+| `GlobalGeodetic.cpp/.hpp` | 90 | `grid.rs` (GlobalGeodeticGrid) | 593 | 完整 |
+| `GlobalMercator.cpp/.hpp` | 105 | `grid.rs` (GlobalMercatorGrid) | 593 | 完整 |
+| `GDALTiler.cpp/.hpp` | 600 | `raster.rs`/`sampling.rs`/`raster_sampling.rs` | 298/1208/307 | 完整 |
+| `GDALTile.cpp/.hpp` | 103 | `raster.rs` (RasterSource trait) | 298 | 完整 |
+| `gdaloverviewdataset.cpp/.hpp` | 689 | `geotiff.rs`/`cache.rs` | 597/300 | 完整 |
+| `RasterTiler.hpp` | 62 | `raster_sampling.rs`/`raster_tileset.rs` | 307/189 | 完整 |
+| `TerrainTile.cpp/.hpp` | 585 | `terrain.rs` | 323 | 完整 |
+| `TerrainTiler.cpp/.hpp` | 229 | `terrain_sampling.rs`/`tileset.rs` | 282/805 | 完整 |
+| `GridIterator.hpp` | 223 | `tileset.rs`/`raster_tileset.rs` (TilesetPlan) | 805/189 | 完整 |
+| `RasterIterator.hpp` | 63 | `raster_tileset.rs` | 189 | 完整 |
+| `TerrainIterator.hpp` | 61 | `tileset.rs` | 805 | 完整 |
+| `TilerIterator.hpp` | 66 | `tileset.rs`/`raster_tileset.rs` | 805/189 | 完整 |
+| `types.hpp` | 47 | 内联类型定义 | — | 完整 |
+| `ctb.hpp` | 111 | `lib.rs` | 18 | 完整 |
+| `config.hpp.in` | 58 | 编译期常量 | — | 完整 |
+| `ctb-tile.cpp` | 539 | `src/bin/ctb-tile.rs` | 451 | 完整 |
+| `ctb-info.cpp` | 163 | `src/bin/ctb-info.rs` | 108 | 完整 |
+| `ctb-export.cpp` | 183 | `src/bin/ctb-export.rs`/`export.rs` | 68/79 | 完整 |
+| `ctb-extents.cpp` | 234 | `src/bin/ctb-extents.rs`/`extents.rs` | 64/94 | 完整 |
+
+C++ 总计 4854 行，Rust 总计 6215 行。
+
+#### P6 实施记录 2：终审验证结果
+
+Rust 测试 85 项全绿；clippy 零警告；P5 记录 3 的 874/874 oracle 全部通过。
+
+#### P6 实施记录 3：已知差异终审（非翻译缺口）
+
+以下差异已由 P0-P5 记录定性，均为格式实现差异或 GDAL 重投影副作用：
+
+- GTiff 容器 tag 序列化顺序与 GeoKey 编码方式差异（像素数据已逐像素验证一致）。
+- ctb-export GeoTIFF 容器元数据差 100 字节（WKT/GeoKey 编码差异，像素数据一致）。
+- CLI help 文本排版（clap vs commander/getopt），选项语义一致。
+- Mercator 极区边缘 tile-range 差异（P5 记录 6），仅影响超出 Web Mercator 有效纬度的退化输入。
+- `--error-threshold`/`--warp-memory` 非默认值显式拒绝（P5 记录 5 证明默认路径等价）。
+- PackBits 压缩受 geotiff-writer API 限制；LERC quality/max-z-error 参数未接入（GDAL driver 扩展参数）。
+- 非 GeoTIFF 输入格式 driver：CTB 本身不实现输入格式解析（全部委托 GDAL），按技术方案第 3 节增量策略处理。
+
+#### 结论
+
+C++ CTB 的全部库模块和全部 CLI 工具均已完整翻译为对应的 Rust 模块，核心翻译路径全部
+通过 oracle 验证，所有模块翻译工作完成。

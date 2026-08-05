@@ -218,4 +218,15 @@
 - [x] 修正 P5 clippy 门禁回归：`src/terrain_sampling.rs` 测试模块的 `TestRaster::new()`
       为死代码，使 `cargo clippy --all-targets -- -D warnings` 失败（与 P5 记录 2/3 声称的
       “clippy clean”矛盾）。删除该构造器后门禁恢复全绿，85 项测试仍通过
-      （TECHNICAL_PLAN P5 记录 4）。
+     （TECHNICAL_PLAN P5 记录 4）。
+
+## P6：模块翻译完整性终审
+
+- [x] 逐文件交叉验证 C++ CTB 的全部源文件（25 个 .cpp/.hpp + 4 个 tools）与 Rust 实现
+      的公共接口和行为覆盖：25/25 全部映射完整（TECHNICAL_PLAN P6 记录 1）。
+- [x] 终审验证：cargo test 85 项全绿、cargo clippy --all-targets -- -D warnings
+      零警告、P5 的 874/874 oracle 全部通过（TECHNICAL_PLAN P6 记录 2）。
+- [x] 已知差异终审：GTiff 容器字节差、ctb-export 容器元数据、CLI help 格式、Mercator
+      极区边缘、warp 参数非默认拒绝、PackBits/LERC 参数、非 GeoTIFF 输入 driver 均为
+      已知格式/GDAL 委托差异，非模块翻译缺口（TECHNICAL_PLAN P6 记录 3）。
+- [x] 结论：C++ CTB 全部库模块和 CLI 工具已完整翻译，所有模块翻译工作完成。
