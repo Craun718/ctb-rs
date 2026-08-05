@@ -28,7 +28,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let arguments = Arguments::parse();
-    let terrain = HeightmapTerrain::read_gzip(&arguments.input)?;
+    // C++ ctb-info.cpp catches CTBException and prints "Error: " + e.what()
+    // (the Display equivalent), then returns exit code 1. Rust's default
+    // main error handler uses Debug format, so we intercept to match C++.
+    let terrain = match HeightmapTerrain::read_gzip(&arguments.input) {
+        Ok(terrain) => terrain,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+    };
 
     if arguments.show_heights {
         print!("Heights:");

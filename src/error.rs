@@ -20,6 +20,8 @@ pub enum CtbError {
     TilesetIo(String),
     InvalidTerrainPayloadLength { expected: usize, actual: usize },
     InvalidWaterMaskLength(usize),
+    WrongTerrainFileSize,
+    TooManyTerrainBytes,
 }
 
 impl Display for CtbError {
@@ -88,6 +90,12 @@ impl Display for CtbError {
                     formatter,
                     "water mask must contain one or 65536 bytes, got {length}"
                 )
+            }
+            Self::WrongTerrainFileSize => {
+                write!(formatter, "File has wrong file size to be a valid terrain")
+            }
+            Self::TooManyTerrainBytes => {
+                write!(formatter, "File has too many bytes to be a valid terrain")
             }
         }
     }

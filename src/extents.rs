@@ -43,7 +43,9 @@ pub fn write_extents(
     output_directory: impl AsRef<Path>,
 ) -> Result<(), CtbError> {
     let output_directory = output_directory.as_ref();
-    for level in &plan.levels {
+    // C++ ctb-extents.cpp writeBounds iterates from startZoom down to endZoom
+    // (high to low); plan.levels is ascending, so iterate in reverse.
+    for level in plan.levels.iter().rev() {
         let path = output_directory.join(format!("{}.geojson", level.zoom));
         println!("creating {}", path.display());
         fs::write(path, geojson_for_level(grid, level)?)

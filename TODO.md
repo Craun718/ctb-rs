@@ -189,7 +189,15 @@
 - [x] 将 RasterTiler 默认 tile size 改为 profile-based（geodetic=65、mercator=256），匹配 C++
       `ctb-tile.cpp:503-507` 按 profile 而非输出格式设默认值的逻辑（TECHNICAL_PLAN P0 记录 6；
       `profile_default_tile_size()`；Terrain 仍固定 65 且拒绝显式非 65，待 P3 mercator terrain
-      grid 路径完成后统一处理）。
+     grid 路径完成后统一处理）。
+- [x] 修正 `ctb-extents` 的 stdout zoom 输出顺序：C++ `writeBounds` 按 startZoom 递减迭代
+      （高→低），Rust `write_extents` 原按升序，修复为逆序迭代（`ctb-extents.cpp:147-150`；
+      `extents.rs`；oracle stdout diff 为空，GeoJSON 仍逐字节一致）。
+- [x] 修正 `ctb-info` 对非法 terrain 输入的错误消息：C++ zlib gzread auto-detect 对非 gzip
+      文件读为原始字节，size 不匹配后报 "File has wrong file size to be a valid terrain"；
+      Rust `decode_gzip` 原报 `TerrainCompression("invalid gzip header")`。新增
+      `WrongTerrainFileSize` 和 `TooManyTerrainBytes` 错误变体，Display 文本匹配 C++
+      （`TerrainTile.cpp::readFile`；`terrain.rs`、`error.rs`；oracle stderr 逐行一致）。
 
 ## P5：完成门禁
 

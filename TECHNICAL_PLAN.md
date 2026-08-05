@@ -987,6 +987,36 @@ driver 文件扩展名与失败方式。
 
 完成标准：兼容矩阵不存在未解释的原版可用路径；所有格式由纯 Rust 依赖或项目内实现支持。
 
+#### P4 实施记录 11：ctb-extents 输出 zoom 顺序修正（已实现）
+
+C++ `ctb-extents.cpp` 的 `writeBounds` 以 `for (; startZoom >= endZoom; --startZoom)`
+从最高 zoom 递减到最低 zoom，stdout 依次输出 `creating N.geojson`（N 从高到低）。
+Rust `extents.rs::write_extents` 原先按 `plan.levels` 升序迭代（低到高），导致 stdout
+"creating" 消息顺序与 C++ 相反。GeoJSON 文件内容本身逐字节相同（每个 zoom 级独立文件），
+差异仅在 stdout 输出顺序。
+
+修复：`write_extents` 改为按 `plan.levels` 逆序迭代（高到低），匹配 C++
+`writeBounds` 的递减循环（`ctb-extents.cpp:147-150`）。C++ oracle 验证：stdout diff
+为空，GeoJSON 文件仍逐字节一致。
+
+#### P4 实施记录 12：ctb-info 非法 terrain 输入错误路径修正（已实现）
+
+C++ `TerrainTile.cpp::Terrain::readFile` 使用 `gzopen("rb") + gzread`，zlib 自动检测
+gzip 格式。非 gzip 文件（如 GeoTIFF）被当作未压缩数据读取，inflated 字节数不等于
+`MAX_TERRAIN_SIZE`（73987）或 `TILE_CELL_SIZE*2+2`（8452），switch 落入 default 分支，
+输出 `CTBException("File has wrong file size to be a valid terrain")`。当 inflated
+数据超出 `MAX_TERRAIN_SIZE` 时，第二个 `gzread(buf, 1)` 返回非零，输出
+`"File has too many bytes to be a valid terrain"`。
+
+Rust `terrain.rs::decode_gzip` 使用 `flate2::read::GzDecoder`，非 gzip 输入立即产生
+`TerrainCompression("invalid gzip header")`，与 C++ 错误文本不同。
+
+修复：新增 `CtbError::WrongTerrainFileSize` 和 `CtbError::TooManyTerrainBytes`，
+Display 文本分别匹配 C++ 的 "File has wrong file size to be a valid terrain" 和
+"File has too many bytes to be a valid terrain"；`decode_gzip` 解压失败返回
+`WrongTerrainFileSize`，解压成功但 size 超限返回 `TooManyTerrainBytes`。
+C++ oracle 验证：对 GeoTIFF 输入，`ctb-info -e file.tif` stderr 逐行匹配 C++。
+
 ### P5：全量审计
 
 在无 GDAL/PROJ 的 CI 环境运行 Rust 测试；在隔离 oracle 环境运行 C++ 对照。输出版本化的

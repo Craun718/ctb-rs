@@ -149,18 +149,22 @@ impl HeightmapTerrain {
     pub fn decode_gzip(encoded: &[u8]) -> Result<Self, CtbError> {
         let mut decoder = GzDecoder::new(encoded);
         let mut raw = Vec::with_capacity(DETAILED_PAYLOAD_SIZE);
-        decoder
+        // C++ Terrain::readFile uses gzopen("rb")+gzread; zlib auto-detects
+        // gzip and reads non-gzip files as raw bytes. The raw size won't
+        // match expected terrain sizes, so the C++ switch falls through to
+        // "File has wrong file size to be a valid terrain".
+        if decoder
             .by_ref()
             .take((DETAILED_PAYLOAD_SIZE + 1) as u64)
             .read_to_end(&mut raw)
-            .map_err(|error| CtbError::TerrainCompression(error.to_string()))?;
-        if raw.len() > DETAILED_PAYLOAD_SIZE {
-            return Err(CtbError::InvalidTerrainPayloadLength {
-                expected: COMPACT_PAYLOAD_SIZE,
-                actual: raw.len(),
-            });
+            .is_err()
+        {
+            return Err(CtbError::WrongTerrainFileSize);
         }
-        Self::decode_raw(&raw)
+        if raw.len() > DETAILED_PAYLOAD_SIZE {
+            return Err(CtbError::TooManyTerrainBytes);
+        }
+        Self::decode_raw(&raw).map_err(|_| CtbError::WrongTerrainFileSize)
     }
 
     pub fn write_gzip(&self, path: impl AsRef<Path>) -> Result<(), CtbError> {
@@ -290,14 +294,14 @@ mod tests {
     fn gzip_rejects_invalid_and_oversized_payloads() -> Result<(), Box<dyn std::error::Error>> {
         assert!(matches!(
             HeightmapTerrain::decode_gzip(b"not gzip"),
-            Err(CtbError::TerrainCompression(_))
+            Err(CtbError::WrongTerrainFileSize)
         ));
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(&vec![0; DETAILED_PAYLOAD_SIZE + 1])?;
         let oversized = encoder.finish()?;
         assert!(matches!(
             HeightmapTerrain::decode_gzip(&oversized),
-            Err(CtbError::InvalidTerrainPayloadLength { .. })
+            Err(CtbError::TooManyTerrainBytes)
         ));
         Ok(())
     }
