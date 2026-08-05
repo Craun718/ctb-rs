@@ -82,7 +82,7 @@ fn ctb_tile_and_info_work_as_processes() -> Result<(), Box<dyn std::error::Error
         .output()?;
     assert!(info.status.success());
     let stdout = String::from_utf8(info.stdout)?;
-    assert_eq!(stdout, "Child tiles: None\nTile type: all land\n");
+    assert_eq!(stdout, " None\nTile type: all land\n");
 
     let heights_info = Command::new(env!("CARGO_BIN_EXE_ctb-info"))
         .args(["-e", "-c", "-t"])

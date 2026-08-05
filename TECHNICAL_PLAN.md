@@ -1016,6 +1016,14 @@ Display 文本分别匹配 C++ 的 "File has wrong file size to be a valid terra
 "File has too many bytes to be a valid terrain"；`decode_gzip` 解压失败返回
 `WrongTerrainFileSize`，解压成功但 size 超限返回 `TooManyTerrainBytes`。
 C++ oracle 验证：对 GeoTIFF 输入，`ctb-info -e file.tif` stderr 逐行匹配 C++。
+C++ oracle 验证：对 GeoTIFF 输入，`ctb-info -e file.tif` stderr 逐行匹配 C++。
+
+#### P4 实施记录 13：ctb-info 无子 tile 输出格式修正（已实现）
+
+C++ `ctb-info.cpp` 的 child 信息分支中，`"Child tiles:"` 前缀仅在 `hasChildren()`
+为 true 时输出；else 分支仅输出 `" None"`（带前导空格，无前缀）。Rust 原先始终
+输出 `"Child tiles: None"`。修复：names 为空时输出 `" None"`，匹配 C++
+（`ctb-info.cpp:100-115`；`src/bin/ctb-info.rs`；max-zoom terrain oracle 逐行一致）。
 
 ### P5：全量审计
 

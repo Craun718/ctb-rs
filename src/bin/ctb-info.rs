@@ -76,7 +76,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             names.push("NE");
         }
         if names.is_empty() {
-            println!("Child tiles: None");
+            // C++ ctb-info.cpp only prints "Child tiles:" inside the
+            // hasChildren() branch; the else branch prints " None".
+            println!(" None");
         } else {
             println!("Child tiles: {}", names.join(" "));
         }

@@ -198,6 +198,10 @@
       Rust `decode_gzip` 原报 `TerrainCompression("invalid gzip header")`。新增
       `WrongTerrainFileSize` 和 `TooManyTerrainBytes` 错误变体，Display 文本匹配 C++
       （`TerrainTile.cpp::readFile`；`terrain.rs`、`error.rs`；oracle stderr 逐行一致）。
+      `terrain.rs`、`error.rs`；oracle stderr 逐行一致）。
+- [x] 修正 `ctb-info` 无子 tile 时的输出格式：C++ 仅在 `hasChildren()` 为 true 时输出
+      "Child tiles:" 前缀，else 分支输出 " None"（`ctb-info.cpp:100-115`；
+      `src/bin/ctb-info.rs`；max-zoom terrain oracle 逐行一致）。
 
 ## P5：完成门禁
 
