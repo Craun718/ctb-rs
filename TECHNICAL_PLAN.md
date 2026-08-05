@@ -665,6 +665,21 @@ Rust 旧实现通过 `geotiff.rs::mark_nodata` 将 NoData 转为 NaN，再由采
 `is_finite()` 检查保留——对 Int32 源不会触发（-9999 为有限值）；Float32 NaN
 源的过滤差异留待后续 fixture 验证。
 
+#### Oracle 覆盖扩展（P0 记录 13 续）
+
+修复后扩展了 GTiff oracle 矩阵，全部逐字节通过：
+
+- 16x16 无 NoData（Int32, EPSG:4326）：12 算法 x 144 tiles = 144/144
+- 16x16 含 NoData（Int32, EPSG:4326）：12 算法 x 144 tiles = 144/144
+- 16x16 Float32（EPSG:4326）：12 算法 x 144 tiles = 144/144
+- Mercator 直同 CRS（Int32, EPSG:3857）：10 算法 x 90 tiles = 90/90
+- 跨 CRS 4326 to 3857（Int32）：10 算法 x 50 tiles = 50/50
+- Terrain 全量矩阵（5 类源 x 12 算法 x 2 range）：120/120
+
+合计 GTiff 572 tiles + Terrain 120 = 692 tiles 逐字节通过。Float32 GTiff 验证了
+Float32 写出路径和 warp working data type 不做整数舍入的行为；跨 CRS 验证了纯 Rust
+4326 to 3857 重投影路径。
+
 ### P2：补齐 GDAL VRT 等价层
 
 按 `GDALTiler` 的执行顺序完成 source/grid CRS 比较、四角 bounds 变换、目标 GeoTransform、

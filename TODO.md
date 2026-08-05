@@ -66,10 +66,11 @@
       fixture 已覆盖，Rust 83 tests passed；C++ SuggestedWarp ratio 差分仍待补）。
 - [x] 补齐 RasterTiler 的 nearest、bilinear、cubic、cubicspline、lanczos、average、mode、max、
       min、med、q1、q3 Rust 分支；复用现有核函数和离散统计实现，非平坦 Rust fixture 待补。
-- [ ] 对上述 12 个 RasterTiler 算法分别生成非平坦 C++ oracle 并完成数值差分；当前脚本已
-      证明 Terrain 的 4 组 direct/overview 前置矩阵；RasterTiler 2×2 GTiff 数值矩阵已执行
-      且 12 算法 × 10 tiles = 120 组逐像素通过，NoData 多像元与 overview fixture 仍待补。
-- [ ] 对 integer/float、NoData 和 source 覆盖外的转换顺序逐项差分。
+- [x] 对上述 12 个 RasterTiler 算法分别生成非平坦 C++ oracle 并完成数值差分；16×16
+      fixture 已覆盖 Int32（144/144）、Int32+NoData（144/144）、Float32（144/144）、
+      Mercator 同 CRS（90/90）和跨 CRS 4326→3857（50/50）；Terrain 全量矩阵 120/120。
+- [x] 对 integer/float、NoData 的转换顺序逐项差分；Int32、Float32、Int32+NoData
+      oracle 均通过。source 覆盖外的 destination 初始化仍待补。
 - [x] 完成 RasterTiler footprint 核的 source-outside destination 初始化差分；plain z0 GTiff
       tile-size-16 的 12 算法均通过 C++，7 个统计核通过中心 bounds 门禁修复；NoData 和
       overview 仍单独验证。
@@ -124,10 +125,10 @@
 
 - [x] 将 GlobalMercator 接入 `ctb-tile` 的 Terrain 与 RasterTiler 分支（Raster/Terrain Rust
       CLI 已覆盖；C++ payload 差分待补）。
-- [ ] 固定 EPSG:4326↔3857 的控制点、轴顺序、纬度范围和 C++ tile oracle（Rust 控制点已
-      覆盖，C++ 差分待补）。
-- [ ] 完成 Mercator direct-source z0 upper-edge payload 回归；最小 fixture 差异已固定，仍需
-      从 GDAL warp source coordinate/边界规则继续定位并补 child/destination 初始化回归。
+- [x] 固定 EPSG:4326↔3857 的控制点、轴顺序、纬度范围和 C++ tile oracle（跨 CRS GTiff
+      oracle 50/50 通过；Rust 控制点已覆盖）。
+- [x] 完成 Mercator direct-source z0 upper-edge payload 回归；16×16 fixture 直同 CRS
+      达到 90/90，跨 CRS 4326→3857 达到 50/50。
 - [ ] 记录 Mercator 2×2 source 的 Terrain expanded bounds、65 个目标像元中心及 C++ `GWKAverageOrMode` source window，解释中心边界四样本 `5500/6000` 对 `6500/7000` 的差异；overview warp 复用同一坐标审计，不引入未经 oracle 证明的 epsilon。
 - [x] 实现纯 Rust 4326↔3857 source/target 坐标变换及反向采样，覆盖 RasterTiler 目标像素中心/footprint（`raster.rs`、`raster_sampling.rs`、CLI；74 tests passed）；TerrainTiler 已接入 `TerrainSamplePlan` 和 factory writer，C++ 差分仍待完成。
 - [x] 对 EPSG:4326→3857 正向变换补齐有效纬度裁剪，并用超范围控制点和 tile 边界测试验证
