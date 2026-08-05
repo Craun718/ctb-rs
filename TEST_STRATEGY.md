@@ -209,3 +209,22 @@ C++ ratio/tie 差分仍待补。
 
 Cargo 命令必须在禁用沙盒的环境执行。生产代码和测试均不得以 `unwrap` 隐藏预期失败；测试中
 若使用 `expect`，消息应说明被验证的不变量。
+ 
+## 8. P2 GDAL 核函数精确匹配（根因 D/E/F）
+ 
+16×16 GTiff fixture 的 144 组 RasterTiler 差分中，P0 记录 9 消除了 16 组边缘差异，
+剩余 4 组为 1-ULP 整数舍入偏差，涉及三个独立根因：
+ 
+- 根因 D（bilinear 累加序）：bilinear 改用 GDAL GWKBilinearResample4Sample 的预乘角点权重
+  直接累加（gdalwarpkernel.cpp:2696-2810），替换可分离横向/纵向插值。测试断言 4 个角点权重
+  按 UL*(rx*ry)+UR*((1-rx)*ry)+LL*(rx*(1-ry))+LR*((1-rx)*(1-ry)) 累加序计算。
+ 
+- 根因 E（cubic 权重公式 + 分离卷积）：cubic 改用 GDAL GWKCubicComputeWeights 系数公式
+  （gdalwarpkernel.cpp:2946-2956）+ 分离 CONVOL4 结构（先横向 4 行，再纵向），替换非分离 2D
+  卷积。测试断言权重系数与 GDAL 多项式求值序一致，且卷积先横向再纵向。
+ 
+- 根因 F（average footprint 来源）：average_at 的 footprint 来源从世界坐标像元边界改为
+  source_center±0.5（GDAL padfX±0.5），确保 footprint 始终恰好 1 个 source pixel 宽。
+ 
+根因 D 已在工作树中实现。根因 E 和 F 尚待实现；实现后须运行 cargo test + cargo clippy
+-D warnings，再以 C++ oracle 差分复核 144 组是否全绿。

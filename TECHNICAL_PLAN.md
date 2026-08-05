@@ -467,6 +467,93 @@ f64 浮点运算中产生不同舍入（末位 ULP 差异），在 bilinear 4-sa
 `self.bounds.max_y - (f64::from(row) + 0.5) * self.resolution`。footprint 的像素边缘坐标
 （min_x/max_y 等）保持不变。
 
+#### P0 实施记录 10：16×16 fixture 剩余 4 组差分根因（bilinear 累加序 / cubic 权重多项式 / average footprint）
+
+P0 记录 9 的三类修复将 16×16 fixture 从 124/144 提升至 140/144。剩余 4 组差分均为整数舍入
+边界（`floor(x+0.5)` 在 x≈N.5 处）的 1-ULP 浮点偏差，涉及三个独立根因。
+
+##### 根因 D：bilinear 4-sample 累加序与 GDAL 不一致（bilinear 1 组 + cubic fallback 1 组）
+
+**影响**：`bilinear` tile `2/3/2.tif` px(5,54) cpp=1313 rust=1314；`cubic` 同像素（因
+x_base=0 导致 4×4 tap 越界，cubic 回退 bilinear）。
+
+GDAL `GWKBilinearResample4Sample`（`gdalwarpkernel.cpp:2675-2683`）先计算角点权重
+`dfRatioX`、`dfRatioY`，再用预乘权重累加：
+
+```
+acc  = UL * (dfRatioX * dfRatioY)
+acc += UR * ((1-dfRatioX) * dfRatioY)
+acc += LL * (dfRatioX * (1-dfRatioY))
+acc += LR * ((1-dfRatioX) * (1-dfRatioY))
+```
+
+Rust `bilinear` 使用可分离插值（separable interpolation）：先横向 `interpolate(UL, UR, h)`，
+再纵向 `interpolate(top, bottom, v)`。两种方式数学等价但浮点累加序不同。在该像素上 GDAL 得
+`1313.4999999999998`（floor→1313），Rust 得 `1313.5`（floor→1314）。
+
+**修复位置**：`sampling.rs::bilinear`，改为预乘角点权重的 4-sample 直接累加。
+
+##### 根因 E：cubic 核权重多项式求值序 + 非分离 vs 分离卷积（cubic 1 组）
+
+**影响**：`cubic` tile `2/3/3.tif` px(64,56) cpp=485 rust=486（4×4 tap 全在界内，不回退）。
+
+两处差异：
+
+1. **权重多项式**：GDAL `GWKCubicComputeWeights`（`gdalwarpkernel.cpp:2946-2956`）使用
+   `halfX * (-1 + x*(2-x))` 等特定求值序；Rust `kernel_weight` 使用 `d*d*(1.5*|d|-2.5)+1` 等
+   不同表达式。数学等价但 f64 求值路径不同，导致权重末位 ULP 差异（如 X tap -1 差 2.4e-16）。
+
+2. **卷积结构**：GDAL 使用分离卷积——先横向 `CONVOL4(coeffsX, row)` 得 4 个中间值，再纵向
+   `CONVOL4(coeffsY, intermediates)`（`gdalwarpkernel.cpp:3015-3047`）。Rust `filtered_sample`
+   使用非分离 2D 卷积——`weight = x_weight * y_weight`，逐像元累加。分离与非分离的浮点舍入路径
+   不同。
+
+GDAL 得 `485.49999999999994`（floor→485），Rust 得 `485.5`（floor→486）。
+
+**修复位置**：`sampling.rs::filtered_sample`（cubic 分支），改用 GDAL `GWKCubicComputeWeights`
+系数公式 + 分离 CONVOL4 结构。
+
+##### 根因 F：average footprint 来源与 GDAL source_center±0.5 不一致（average 1 组）
+
+**影响**：`average` tile `2/3/2.tif` px(6,58) cpp=1458 rust=1457。
+
+GDAL `GWKAverageOrModeThread` 的 footprint 为 `padfX[iDstX] ± 0.5`（`gdalwarpkernel.cpp:6810-
+6811`），即 source pixel 中心坐标 ± 0.5，始终恰好 1 个 source pixel 宽，几何完全对称。4 个
+像元权重相等，加权平均 = 简单平均 = 恰好 1457.5 → floor→1458。
+
+Rust `average_at` 接收的 footprint 来自 `RasterTileSamplePlan::sample` 的世界坐标像元边界
+（`min_x`、`min_x + resolution`），经 `transform_bounds` 转换后到 source pixel 坐标系。因
+`min_x + resolution` ≠ `origin + (col+1) * resolution` 在 f64 层面（`df_x_min + df_x_max =
+13.999999999999998` ≠ 14.0），4 个像元权重末位不等（差 1 ULP），加权平均 = `1457.4999...`
+→ floor→1457。
+
+**修复位置**：`sampling.rs::average_at`（及 `sample_with_footprint_raster_tiler_level`），将
+footprint 来源改为 source_center ± 0.5（GDAL `padfX ± 0.5`），而非世界坐标像元边界。
+ 
+ ##### 实现状态（根因 D/E/F 均已实现，C++ 差分复核待补）
+ 
+ - **根因 D（bilinear）**：`sampling.rs::bilinear` 已改为 GDAL
+   `GWKBilinearResample4Sample` 的预乘角点权重直接累加
+   （`UL*(rx*ry) + UR*((1-rx)*ry) + LL*(rx*(1-ry)) + LR*((1-rx)*(1-ry))`），
+   替换可分离 `interpolate(interpolate(UL,UR,h), interpolate(LL,LR,h), v)`。
+   已删除不再使用的 `interpolate`/`interpolate_valid` 函数。
+ 
+ - **根因 E（cubic）**：新增 `cubic_separable_sample`、`cubic_compute_weights` 和
+   `convol4` 函数，严格匹配 GDAL `GWKCubicComputeWeights` 系数公式
+   （`halfX*(-1+x*(2-x))` 等求值序）和分离 CONVOL4 结构（先横向 4 行，再纵向）。
+   `filtered_sample` 对 `Cubic` 分支委托到 `cubic_separable_sample`，保留
+   CubicSpline/Lanczos 的非分离 weight-renormalization 路径（对应 GDAL
+   `GWKResample`）。
+ 
+ - **根因 F（average）**：`average_at` 签名增加 `world_x`/`world_y`，将 source
+   pixel footprint 从世界坐标像元边界改为 `center ± half_extent`，其中
+   `half_extent = footprint.width() / (2 * |pixel_width|)`。此方式保留了
+   非 1:1 缩放时的实际 footprint 宽度（而非强制 0.5），同时通过中心对称消除
+   `min_x + resolution` 累计的 f64 ULP 偏差。
+ 
+ Rust 证据：85 项测试和 `cargo clippy -D warnings` 通过。C++ oracle 144 组差分
+ 复核仍待补
+
 ### P2：补齐 GDAL VRT 等价层
 
 按 `GDALTiler` 的执行顺序完成 source/grid CRS 比较、四角 bounds 变换、目标 GeoTransform、

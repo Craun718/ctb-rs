@@ -88,7 +88,17 @@
 - [x] 将 destination centre 计算从 `(min_x + max_x) / 2.0` 改为
       `bounds.min_x + (column + 0.5) * resolution`（等价 GDAL `GenImgProjTransformer`
       `(iDstX + 0.5) * res + origin`），消除末位 ULP 差异在 bilinear 4-sample 中传播导致的
-      整数舍入偏差（TECHNICAL_PLAN P0 记录 9 根因 C；`raster_sampling.rs`）。
+     整数舍入偏差（TECHNICAL_PLAN P0 记录 9 根因 C；`raster_sampling.rs`）。
+- [x] 将 `bilinear` 从可分离插值改为 GDAL `GWKBilinearResample4Sample` 预乘角点权重直接累加
+      （`acc = UL*(rx*ry) + UR*((1-rx)*ry) + LL*(rx*(1-ry)) + LR*((1-rx)*(1-ry))`；
+      `gdalwarpkernel.cpp:2675-2683`），消除累加序差异在 px(5,54) 处的 1-ULP 舍入偏差
+      （TECHNICAL_PLAN P0 记录 10 根因 D；`sampling.rs`）。
+- [x] 将 cubic 分支改用 GDAL `GWKCubicComputeWeights` 系数公式（`gdalwarpkernel.cpp:2946-2956`）
+      + 分离 CONVOL4 结构（先横向再纵向），替换 Rust `kernel_weight` 非分离 2D 卷积
+      （`gdalwarpkernel.cpp:3015-3047`；TECHNICAL_PLAN P0 记录 10 根因 E；`sampling.rs`）。
+- [x] 将 `average_at` 的 footprint 来源从世界坐标像元边界改为 source_center ± 0.5
+      （GDAL `padfX ± 0.5`；`gdalwarpkernel.cpp:6810-6811`），消除非对称权重导致的 1-ULP
+      舍入偏差（TECHNICAL_PLAN P0 记录 10 根因 F；`sampling.rs`）。
 - [ ] 用含多个 NoData 像元的 fixture 验证逐像元 NaN 标记、12 个采样分支的有效样本过滤、
       全 NoData 时的 destination 初值 0，以及 Terrain 编码结果；当前 2×2 单 NoData 的
       Raster average/Terrain z0 最小 oracle 已通过，完整矩阵仍待补。

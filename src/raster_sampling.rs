@@ -107,8 +107,14 @@ impl RasterTileSamplePlan {
                 )?;
                 let footprint =
                     transform_bounds(point.footprint, &self.target_crs, &source.metadata().crs)?;
-               values.push(sample_with_footprint_raster_tiler_level(
-                    source, &level, world_x, world_y, footprint, method, self.tile_size,
+                values.push(sample_with_footprint_raster_tiler_level(
+                    source,
+                    &level,
+                    world_x,
+                    world_y,
+                    footprint,
+                    method,
+                    self.tile_size,
                 )?);
             }
         }

@@ -155,19 +155,17 @@ pub fn sample_with_footprint_level(
     method: ResamplingMethod,
 ) -> Result<f64, CtbError> {
     let value = match method {
-      ResamplingMethod::Average => average_at(source, level, footprint),
-       ResamplingMethod::Max => extrema_at(source, level, footprint, true),
-      ResamplingMethod::Min => extrema_at(source, level, footprint, false),
-      ResamplingMethod::Mode => mode_at(source, level, footprint),
-      ResamplingMethod::Med => quantile_at(source, level, footprint, 0.5),
-      ResamplingMethod::Q1 => quantile_at(source, level, footprint, 0.25),
-      ResamplingMethod::Q3 => quantile_at(source, level, footprint, 0.75),
-      ResamplingMethod::Nearest | ResamplingMethod::Bilinear => {
-          sample_at_level(source, level, world_x, world_y, method)
-      }
-        ResamplingMethod::Cubic
-        | ResamplingMethod::CubicSpline
-        | ResamplingMethod::Lanczos => {
+        ResamplingMethod::Average => average_at(source, level, world_x, world_y, footprint),
+        ResamplingMethod::Max => extrema_at(source, level, footprint, true),
+        ResamplingMethod::Min => extrema_at(source, level, footprint, false),
+        ResamplingMethod::Mode => mode_at(source, level, footprint),
+        ResamplingMethod::Med => quantile_at(source, level, footprint, 0.5),
+        ResamplingMethod::Q1 => quantile_at(source, level, footprint, 0.25),
+        ResamplingMethod::Q3 => quantile_at(source, level, footprint, 0.75),
+        ResamplingMethod::Nearest | ResamplingMethod::Bilinear => {
+            sample_at_level(source, level, world_x, world_y, method)
+        }
+        ResamplingMethod::Cubic | ResamplingMethod::CubicSpline | ResamplingMethod::Lanczos => {
             sample_at_level_with_nearest_support(source, level, world_x, world_y, method, true)
         }
     }?;
@@ -263,13 +261,7 @@ pub fn sample_with_footprint_raster_tiler(
     let level = source.sampling_level_for_ratio(1.0)?;
     let tile_size = source.metadata().width;
     sample_with_footprint_raster_tiler_level(
-        source,
-        &level,
-        world_x,
-        world_y,
-        footprint,
-        method,
-        tile_size,
+        source, &level, world_x, world_y, footprint, method, tile_size,
     )
 }
 
@@ -300,7 +292,7 @@ pub fn sample_with_footprint_raster_tiler_level(
         return Ok(0.0);
     }
     let value = match method {
-        ResamplingMethod::Average => average_at(source, level, footprint),
+        ResamplingMethod::Average => average_at(source, level, world_x, world_y, footprint),
         ResamplingMethod::Max => extrema_at(source, level, footprint, true),
         ResamplingMethod::Min => extrema_at(source, level, footprint, false),
         ResamplingMethod::Mode => mode_at(source, level, footprint),
@@ -388,22 +380,28 @@ fn extrema_at(
 fn average_at(
     source: &dyn RasterSource,
     level: &SamplingLevel,
+    world_x: f64,
+    world_y: f64,
     footprint: Bounds,
 ) -> Result<f64, CtbError> {
     let metadata = &level.metadata;
     let transform = &metadata.transform;
 
-    // Compute destination pixel corners in source pixel coordinates
-    // (gdalwarpkernel.cpp:6810-6811, after swap-if-needed).
-    let x_left = (footprint.min_x - transform.origin_x) / transform.pixel_width;
-    let x_right = (footprint.max_x - transform.origin_x) / transform.pixel_width;
-    let y_top = (footprint.max_y - transform.origin_y) / transform.pixel_height;
-    let y_bottom = (footprint.min_y - transform.origin_y) / transform.pixel_height;
-
-    let df_x_min = x_left.min(x_right);
-    let df_x_max = x_left.max(x_right);
-    let df_y_min = y_top.min(y_bottom);
-    let df_y_max = y_top.max(y_bottom);
+    // Center the source pixel footprint on the destination pixel center
+    // to avoid floating-point asymmetry from boundary arithmetic
+    // (gdalwarpkernel.cpp:6885,7010-7011). GDAL transforms destination
+    // pixel corners; here we derive half-extents from the world footprint
+    // and place them symmetrically around the center computed from
+    // world_x/world_y, matching the destination pixel centre formula
+    // (iDstX + 0.5) * res + origin.
+    let x_center = (world_x - transform.origin_x) / transform.pixel_width;
+    let y_center = (world_y - transform.origin_y) / transform.pixel_height;
+    let half_x = footprint.width() / (2.0 * transform.pixel_width.abs());
+    let half_y = footprint.height() / (2.0 * transform.pixel_height.abs());
+    let df_x_min = x_center - half_x;
+    let df_x_max = x_center + half_x;
+    let df_y_min = y_center - half_y;
+    let df_y_max = y_center + half_y;
 
     // Check intersection with [0, nSrcSize] (gdalwarpkernel.cpp:6816).
     const EPS: f64 = 1e-10;
@@ -432,11 +430,16 @@ fn average_at(
     let mut sum = 0.0;
     let mut total_weight = 0.0;
     for i_src_y in i_src_y_min..i_src_y_max {
-        let df_weight_y =
-            compute_weight_y(i_src_y, i_src_y_min, i_src_y_max, df_y_min, df_y_max);
+        let df_weight_y = compute_weight_y(i_src_y, i_src_y_min, i_src_y_max, df_y_min, df_y_max);
         for i_src_x in i_src_x_min..i_src_x_max {
-            let df_weight =
-                compute_weight(i_src_x, df_weight_y, i_src_x_min, i_src_x_max, df_x_min, df_x_max);
+            let df_weight = compute_weight(
+                i_src_x,
+                df_weight_y,
+                i_src_x_min,
+                i_src_x_max,
+                df_x_min,
+                df_x_max,
+            );
             if df_weight <= 0.0 {
                 continue;
             }
@@ -478,7 +481,7 @@ fn indices_overlapping_footprint(
     if first_index > last_index {
         return None;
     }
-   Some((first_index, last_index))
+    Some((first_index, last_index))
 }
 
 /// GDAL dfXScale / dfYScale computation (gdalwarpkernel.cpp:1037-1060).
@@ -509,11 +512,7 @@ fn warp_margin(df_scale: f64) -> f64 {
 /// GDAL GWKAverageOrModeThread margin gate (gdalwarpkernel.cpp:6747-6754).
 /// Checks that the destination pixel's footprint corners, transformed to
 /// source pixel coordinates, all lie within `[-nMargin, nSrcSize + nMargin]`.
-fn passes_footprint_margin_gate(
-    level: &SamplingLevel,
-    footprint: Bounds,
-    tile_size: u32,
-) -> bool {
+fn passes_footprint_margin_gate(level: &SamplingLevel, footprint: Bounds, tile_size: u32) -> bool {
     let transform = &level.metadata.transform;
     let x_left = (footprint.min_x - transform.origin_x) / transform.pixel_width;
     let x_right = (footprint.max_x - transform.origin_x) / transform.pixel_width;
@@ -582,30 +581,127 @@ fn bilinear(
     centre_x: f64,
     centre_y: f64,
 ) -> Result<f64, CtbError> {
+    // GDAL GWKBilinearResample4Sample (gdalwarpkernel.cpp:2665-2818).
+    // centre_x/centre_y are center-based source pixel coordinates (pixel 0
+    // center at 0.0). GDAL uses corner-based dfSrcX (pixel 0 center at 0.5),
+    // so dfSrcX = centre_x + 0.5.
     let left = centre_x.floor();
     let top = centre_y.floor();
-    let horizontal = centre_x - left;
-    let vertical = centre_y - top;
-    let x0 = clamped_pixel(left, level.data_width);
-    let x1 = clamped_pixel(left + 1.0, level.data_width);
-    let y0 = clamped_pixel(top, level.data_height);
-    let y1 = clamped_pixel(top + 1.0, level.data_height);
+    let mut df_ratio_x = 1.5 - (centre_x + 0.5 - left);
+    let mut df_ratio_y = 1.5 - (centre_y + 0.5 - top);
 
-    let top_value = interpolate_valid(
-        read_sample_raw(source, level, x0, y0)?,
-        read_sample_raw(source, level, x1, y0)?,
-        horizontal,
-    );
-    let bottom_value = interpolate_valid(
-        read_sample_raw(source, level, x0, y1)?,
-        read_sample_raw(source, level, x1, y1)?,
-        horizontal,
-    );
-    Ok(match (top_value, bottom_value) {
-        (Some(top), Some(bottom)) => interpolate(top, bottom, vertical),
-        (Some(value), None) | (None, Some(value)) => value,
-        (None, None) => 0.0,
-    })
+    // GDAL iSrcX == -1 edge clamp (gdalwarpkernel.cpp:2681-2686).
+    let x0_idx = if left as i32 == -1 {
+        df_ratio_x = 1.0;
+        0
+    } else {
+        left as i32
+    };
+    let y0_idx = if top as i32 == -1 {
+        df_ratio_y = 1.0;
+        0
+    } else {
+        top as i32
+    };
+
+    let x0 = clamped_pixel(f64::from(x0_idx), level.data_width);
+    let x1 = clamped_pixel(f64::from(x0_idx + 1), level.data_width);
+    let y0 = clamped_pixel(f64::from(y0_idx), level.data_height);
+    let y1 = clamped_pixel(f64::from(y0_idx + 1), level.data_height);
+
+    // GDAL pre-computes weight products and accumulates per corner
+    // (gdalwarpkernel.cpp:2696-2810). This matches GDAL's rounding path
+    // exactly, unlike separable horizontal-then-vertical interpolation.
+    let ul = read_sample_raw(source, level, x0, y0)?;
+    let ur = read_sample_raw(source, level, x1, y0)?;
+    let ll = read_sample_raw(source, level, x0, y1)?;
+    let lr = read_sample_raw(source, level, x1, y1)?;
+
+    let mult_ul = df_ratio_x * df_ratio_y;
+    let mult_ur = (1.0 - df_ratio_x) * df_ratio_y;
+    let mult_ll = df_ratio_x * (1.0 - df_ratio_y);
+    let mult_lr = (1.0 - df_ratio_x) * (1.0 - df_ratio_y);
+
+    let mut acc = 0.0;
+    let mut divisor = 0.0;
+    for (value, weight) in [(ul, mult_ul), (ur, mult_ur), (ll, mult_ll), (lr, mult_lr)] {
+        if value.is_finite() {
+            acc += value * weight;
+            divisor += weight;
+        }
+    }
+    if divisor < 0.00001 {
+        Ok(0.0)
+    } else {
+        Ok(acc / divisor)
+    }
+}
+
+/// GDAL GWKCubicComputeWeights (gdalwarpkernel.cpp:3235-3244).
+///
+/// Computes Catmull-Rom cubic kernel weights using GDAL's exact polynomial
+/// evaluation order: coeffs[0] = halfX*(-1+x*(2-x)), etc.
+fn cubic_compute_weights(x: f64) -> [f64; 4] {
+    let half_x = 0.5 * x;
+    let three_x = 3.0 * x;
+    let half_x2 = half_x * x;
+    [
+        half_x * (-1.0 + x * (2.0 - x)),
+        1.0 + half_x2 * (-5.0 + three_x),
+        half_x * (1.0 + x * (4.0 - three_x)),
+        half_x2 * (-1.0 + x),
+    ]
+}
+
+/// GDAL CONVOL4 (gdalwarpkernel.cpp:3247-3250).
+fn convol4(coeffs: &[f64; 4], values: &[f64; 4]) -> f64 {
+    coeffs[0] * values[0] + coeffs[1] * values[1] + coeffs[2] * values[2] + coeffs[3] * values[3]
+}
+
+/// GDAL GWKCubicResample4Sample (gdalwarpkernel.cpp:3287-3340).
+///
+/// Uses separable convolution: first horizontal CONVOL4 over each of the
+/// 4 rows, then vertical CONVOL4 over the 4 intermediate values. Falls
+/// back to bilinear at image borders or when any tap has NoData.
+fn cubic_separable_sample(
+    source: &dyn RasterSource,
+    level: &SamplingLevel,
+    centre_x: f64,
+    centre_y: f64,
+) -> Result<f64, CtbError> {
+    let x_base = centre_x.floor() as i32;
+    let y_base = centre_y.floor() as i32;
+    let df_delta_x = centre_x - f64::from(x_base);
+    let df_delta_y = centre_y - f64::from(y_base);
+
+    // Bilinear fallback at image borders (gdalwarpkernel.cpp:3297).
+    if x_base - 1 < 0
+        || x_base + 2 >= level.data_width as i32
+        || y_base - 1 < 0
+        || y_base + 2 >= level.data_height as i32
+    {
+        return bilinear(source, level, centre_x, centre_y);
+    }
+
+    let coeffs_x = cubic_compute_weights(df_delta_x);
+    let mut row_values = [0.0f64; 4];
+    for (row_idx, y_off) in (-1..=2i32).enumerate() {
+        let y = y_base + y_off;
+        let mut samples = [0.0f64; 4];
+        for (col_idx, x_off) in (-1..=2i32).enumerate() {
+            let x = x_base + x_off;
+            let sample = read_sample_raw(source, level, x as u32, y as u32)?;
+            // GDAL falls back to bilinear if any tap has low density.
+            if !sample.is_finite() {
+                return bilinear(source, level, centre_x, centre_y);
+            }
+            samples[col_idx] = sample;
+        }
+        row_values[row_idx] = convol4(&coeffs_x, &samples);
+    }
+
+    let coeffs_y = cubic_compute_weights(df_delta_y);
+    Ok(convol4(&coeffs_y, &row_values))
 }
 
 fn filtered_sample(
@@ -615,8 +711,11 @@ fn filtered_sample(
     centre_y: f64,
     method: ResamplingMethod,
 ) -> Result<f64, CtbError> {
+    if method == ResamplingMethod::Cubic {
+        return cubic_separable_sample(source, level, centre_x, centre_y);
+    }
     let radius = match method {
-        ResamplingMethod::Cubic | ResamplingMethod::CubicSpline => 2,
+        ResamplingMethod::CubicSpline => 2,
         ResamplingMethod::Lanczos => 3,
         _ => {
             return Err(CtbError::UnsupportedRaster(
@@ -629,18 +728,6 @@ fn filtered_sample(
     let filt_init = ((radius + 1) % 2) - radius;
     let x_base = centre_x.floor() as i32;
     let y_base = centre_y.floor() as i32;
-    // GRA_Cubic uses GWKCubicResample4Sample: if any of the 4x4 taps
-    // (iSrcX-1..iSrcX+2) is out of bounds, GDAL falls back to bilinear
-    // (gdalwarpkernel.cpp:3297). cubicspline/lanczos use the general path
-    // with edge tap dropping + weight renormalization instead.
-    if method == ResamplingMethod::Cubic
-        && (x_base - 1 < 0
-            || x_base + 2 >= level.data_width as i32
-            || y_base - 1 < 0
-            || y_base + 2 >= level.data_height as i32)
-    {
-        return bilinear(source, level, centre_x, centre_y);
-    }
     let mut weighted_sum = 0.0;
     let mut weight_sum = 0.0;
     for y_offset in filt_init..=radius {
@@ -707,19 +794,6 @@ fn kernel_weight(distance: f64, method: ResamplingMethod) -> f64 {
             }
         }
         _ => 0.0,
-    }
-}
-
-fn interpolate(first: f64, second: f64, proportion: f64) -> f64 {
-    first + (second - first) * proportion
-}
-
-fn interpolate_valid(first: f64, second: f64, proportion: f64) -> Option<f64> {
-    match (first.is_finite(), second.is_finite()) {
-        (true, true) => Some(interpolate(first, second, proportion)),
-        (true, false) => Some(first),
-        (false, true) => Some(second),
-        (false, false) => None,
     }
 }
 
@@ -1038,7 +1112,7 @@ mod tests {
                 1.0,
                 Bounds::new(-2.0, 0.0, -1.0, 2.0)?,
                 ResamplingMethod::Average,
-        )?,
+            )?,
             0.0
         );
         Ok(())
@@ -1047,17 +1121,44 @@ mod tests {
     #[test]
     fn round_to_working_type_matches_gdal_clamp_round() {
         // Float types pass through unchanged.
-        assert_eq!(round_to_working_type(103.5556, RasterSampleType::Float32), 103.5556);
-        assert_eq!(round_to_working_type(103.5556, RasterSampleType::Float64), 103.5556);
+        assert_eq!(
+            round_to_working_type(103.5556, RasterSampleType::Float32),
+            103.5556
+        );
+        assert_eq!(
+            round_to_working_type(103.5556, RasterSampleType::Float64),
+            103.5556
+        );
         // Signed integers: floor(x + 0.5) — GDAL ClampRoundAndAvoidNoData signed path.
-        assert_eq!(round_to_working_type(103.5556, RasterSampleType::Signed32), 104.0);
-        assert_eq!(round_to_working_type(103.4, RasterSampleType::Signed32), 103.0);
-        assert_eq!(round_to_working_type(-3.6, RasterSampleType::Signed32), -4.0);
-        assert_eq!(round_to_working_type(-3.4, RasterSampleType::Signed32), -3.0);
+        assert_eq!(
+            round_to_working_type(103.5556, RasterSampleType::Signed32),
+            104.0
+        );
+        assert_eq!(
+            round_to_working_type(103.4, RasterSampleType::Signed32),
+            103.0
+        );
+        assert_eq!(
+            round_to_working_type(-3.6, RasterSampleType::Signed32),
+            -4.0
+        );
+        assert_eq!(
+            round_to_working_type(-3.4, RasterSampleType::Signed32),
+            -3.0
+        );
         // Unsigned integers: clamp to [0, max], then floor(x + 0.5).
-        assert_eq!(round_to_working_type(103.5556, RasterSampleType::Unsigned32), 104.0);
-        assert_eq!(round_to_working_type(-0.4, RasterSampleType::Unsigned8), 0.0);
-        assert_eq!(round_to_working_type(255.6, RasterSampleType::Unsigned8), 255.0);
+        assert_eq!(
+            round_to_working_type(103.5556, RasterSampleType::Unsigned32),
+            104.0
+        );
+        assert_eq!(
+            round_to_working_type(-0.4, RasterSampleType::Unsigned8),
+            0.0
+        );
+        assert_eq!(
+            round_to_working_type(255.6, RasterSampleType::Unsigned8),
+            255.0
+        );
     }
 
     #[test]
@@ -1078,13 +1179,8 @@ mod tests {
         };
         let footprint = Bounds::new(0.0, 1.0, 1.3, 2.0)?;
         // Weighted avg = (100*1.0 + 200*0.3) / 1.3 = 123.0769..., rounded to 123.
-        let result = sample_with_footprint(
-            &source,
-            0.65,
-            1.5,
-            footprint,
-            ResamplingMethod::Average,
-        )?;
+        let result =
+            sample_with_footprint(&source, 0.65, 1.5, footprint, ResamplingMethod::Average)?;
         assert_eq!(result, 123.0);
 
         // Same source with Float64 should not round.
