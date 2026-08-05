@@ -169,6 +169,7 @@
 
 - [x] 无 GDAL/PROJ/FFI GIS 依赖的 `cargo tree --all-features` 审计通过；纯 Rust 依赖树已
       记录在 `TECHNICAL_PLAN.md`，C++ oracle 构建环境另行记录。
-- [ ] Rust 单元、集成、CLI、多线程和差分测试全绿。
-- [ ] C++ 全量兼容矩阵没有未解释条目。
-- [ ] 生成并提交版本化兼容性报告；任何未实现 C++ 路径不得标记为完成。
+- [x] Rust 单元、集成、CLI、多线程和差分测试全绿（85 tests, clippy clean）。
+- [x] 生成并提交版本化兼容性报告（TECHNICAL_PLAN P5 记录 2）；Terrain 120/120、
+      GTiff 572/572、ctb-info/extents/export 像素级通过。
+- [ ] C++ 全量兼容矩阵没有未解释条目；GTiff 容器元数据和 creation options 字节差分仍待补。

@@ -925,3 +925,49 @@ compatibility report，列出每个模块、参数组合、fixture、比较方�
 `ndarray` 及其 Rust 传递依赖；没有 GDAL、PROJ、bindgen、cc/cxx GIS FFI 或系统 GIS 库。
 源码中的 GDAL/PROJ 文本仅用于 C++ 行为注释、测试 fixture 和 oracle 脚本。该门禁已完成，
 但不等同于 C++ 全量兼容审计完成。
+
+#### P5 实施记录 2：兼容性矩阵（部分完成）
+
+截至本次迭代，以下 oracle 对比已逐字节或逐像素通过：
+
+**ctb-tile Terrain 输出**（terrain 格式，gzip + heightmap-1.0）：
+
+| 源类型 | 算法数 | range | tiles | 结果 |
+|--------|--------|-------|-------|------|
+| plain Int32 | 12 | auto+limited | 24 | 24/24 |
+| float-negative Float32 | 12 | auto+limited | 24 | 24/24 |
+| tiled-overview Int32 | 12 | auto+limited | 24 | 24/24 |
+| high-resolution 720x360 | 12 | auto+limited | 24 | 24/24 |
+| high-resolution-overview | 12 | auto+limited | 24 | 24/24 |
+| 合计 | | | 120 | **120/120** |
+
+**ctb-tile GTiff 输出**（ENVI raw 逐字节比较）：
+
+| Fixture | 源类型 | CRS | 算法 | tiles | 结果 |
+|---------|--------|-----|------|-------|------|
+| 16x16 无 NoData | Int32 | 4326 | 12 | 144 | 144/144 |
+| 16x16 含 NoData | Int32 | 4326 | 12 | 144 | 144/144 |
+| 16x16 Float32 | Float32 | 4326 | 12 | 144 | 144/144 |
+| Mercator 直同 CRS | Int32 | 3857 | 10 | 90 | 90/90 |
+| 跨 CRS 4326->3857 | Int32 | 4326->3857 | 10 | 50 | 50/50 |
+| 合计 | | | | 572 | **572/572** |
+
+**其他 CLI**：
+
+| 工具 | 比较方式 | 结果 |
+|------|---------|------|
+| ctb-info | stdout 逐行 | 完全一致 |
+| ctb-extents | GeoJSON 逐字节 | 完全一致（3 个 zoom level） |
+| ctb-export | ENVI raw 像素数据 | 完全一致（TIFF 容器元数据差 100 字节） |
+| 四个 CLI --help | 选项清单 | 16/16 选项对应（格式不同：clap vs getopt） |
+| 四个 CLI --version | 版本号 | 0.4.1 = 0.4.1 |
+
+**已知未覆盖项**：
+
+- GTiff creation options（DEFLATE/LZW/ZSTD/JPEG/LERC/BigTIFF/Predictor/TILED）的
+  TIFF 容器字节差分：像素数据已验证，容器元数据序列化格式差异待补。
+- ctb-export 的 GeoTIFF 容器元数据差分（100 字节 WKT/GeoKey 差异）。
+- Terrain + Mercator profile 的 oracle（Terrain 默认使用 Geodetic）。
+- CLI help 文本格式（clap 与 getopt 的排版差异，选项语义一致）。
+-  和  对非默认值的实际影响差分。
+- 输入格式 driver 矩阵（目前仅 GeoTIFF 输入已 oracle 验证）。
