@@ -175,6 +175,15 @@ RasterTiler plain z0 GTiff/tile-size-16 oracle 结果：5 个连续核和 7 个 
 逐值通过。原始失败情形是中心位于 source bounds 外而 footprint 擦边，C++ 样本为 destination
 初值 0；Rust 已在 RasterTiler 统计入口补门禁，且现有 Terrain source-edge overlap 测试仍通过。
 
+NoData 最小 oracle 使用 2×2 Int32 GeoTIFF、NoData=200；C++/Rust RasterTiler average GTiff
+逐值一致，Terrain z0 gzip payload 逐字节一致。后续仍需混合窗口、全 NoData、12 算法和
+overview density。
+
+Mercator 边界审计必须保存：source 2×2 的 GeoTransform/CRS/样本矩阵、Terrain expanded
+target bounds、目标 row/column 的 world center 与 footprint、C++ `CPL_DEBUG=ON` 的
+`GWKAverageOrMode Src=...` window，以及 Rust 对应 source row/column。只有这些中间值一致
+后，才可关闭 Mercator/overview TODO；不接受仅凭最终 payload 猜测的舍入修复。
+
 `ctb-tile` 参数测试还必须覆盖 `-z` 默认 `0.125`、`-m` 默认 `0` 的解析、负数/非有限值
 拒绝，以及非默认值在任何 tile 写出前显式返回未实现错误。待 C++ oracle 恢复后，再比较
 `-z` 对投影结果的影响，并确认 `-m` 是否仅为执行资源提示。

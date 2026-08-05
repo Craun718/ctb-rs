@@ -109,6 +109,8 @@ impl<S: RasterSource> RasterSource for CachedRasterSource<S> {
     fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError> {
         let level = SamplingLevel {
             level: 0,
+            data_width: self.metadata().width,
+            data_height: self.metadata().height,
             metadata: self.metadata().clone(),
         };
         self.read_sampling_window(&level, request)

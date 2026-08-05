@@ -25,11 +25,22 @@
 - [x] 让 `ctb-tile -f GTiff -p mercator` 构造 Mercator Grid（Rust z0/z1 路径与 metadata 已覆盖）；
       C++ 固定 EPSG:3857 direct-source 的 paths/samples 差分仍待补。
 - [ ] 运行 Geodetic 无回归差分及新的 Mercator direct-source C++ oracle 测试；Geodetic
-      direct Terrain 已通过 4 组输入 × 12 算法 × 2 range，带 high-resolution overview 的
-      source window 差异仍待补，随后继续 Mercator。
+      direct Terrain 已通过 4 组输入 × 12 算法 × 2 range。high-resolution overview 的 24
+      组差异根因已定位（P0 记录 4），修复后应可达全 120 组通过，随后继续 Mercator。
+      现 120/120 组通过。
 
 ## P2：GDAL VRT 等价
 
+- [x] 定位 high-resolution-overview 24 组 terrain payload 差异根因：C++
+      `GDALTiler::createRasterTile` overview 路径不更新 `psWarpOptions->hSrcDS`，warp
+      transformer 用 overview 坐标但从主数据集读数据（TECHNICAL_PLAN P0 记录 4）。
+- [x] 实现根因修复：`sampling_level_for_ratio` 返回 `level: 0` 但保留 overview metadata，
+      复现 C++ 从主数据集读取的 warp 行为。修复后 119/120 组通过。
+- [x] 实现 warp 工作数据类型整数舍入：GDAL 将源 band 的 Int32 类型传播为 warp working
+      data type，平均结果经 `floor(x+0.5)` 舍入后写入（TECHNICAL_PLAN P0 记录 5）。
+      Rust `sampling.rs` 已在 `sample_with_footprint_level` 和
+      `sample_with_footprint_raster_tiler_level` 返回前按 `sample_type` 舍入。
+      全 120 组 oracle 矩阵逐字节通过。
 - [x] 实现并测试 `mode`、`med`、`q1`、`q3` 离散统计采样核；固定 row-major 窗口、空覆盖
       返回 0、mode 首次出现 tie-break 和 nearest-rank 分位数规则（`GDALTiler.cpp` 的
       `eResampleAlg` 分支；Rust 非平坦窗口单元测试；71 tests passed）。C++ 输出差分仍待补，
@@ -57,7 +68,8 @@
       tile-size-16 的 12 算法均通过 C++，7 个统计核通过中心 bounds 门禁修复；NoData 和
       overview 仍单独验证。
 - [ ] 用含多个 NoData 像元的 fixture 验证逐像元 NaN 标记、12 个采样分支的有效样本过滤、
-      全 NoData 时的 destination 初值 0，以及 Terrain 编码结果；与 GDAL density 差分待补。
+      全 NoData 时的 destination 初值 0，以及 Terrain 编码结果；当前 2×2 单 NoData 的
+      Raster average/Terrain z0 最小 oracle 已通过，完整矩阵仍待补。
 
 ## P3：Mercator 与重投影
 
@@ -67,9 +79,8 @@
       覆盖，C++ 差分待补）。
 - [ ] 完成 Mercator direct-source z0 upper-edge payload 回归；最小 fixture 差异已固定，仍需
       从 GDAL warp source coordinate/边界规则继续定位并补 child/destination 初始化回归。
-- [x] 实现纯 Rust 4326↔3857 source/target 坐标变换及反向采样，覆盖 RasterTiler 目标像素
-      中心/footprint（`raster.rs`、`raster_sampling.rs`、CLI；74 tests passed）；TerrainTiler
-      已接入 `TerrainSamplePlan` 和 factory writer，C++ 差分仍待完成。
+- [ ] 记录 Mercator 2×2 source 的 Terrain expanded bounds、65 个目标像元中心及 C++ `GWKAverageOrMode` source window，解释中心边界四样本 `5500/6000` 对 `6500/7000` 的差异；overview warp 复用同一坐标审计，不引入未经 oracle 证明的 epsilon。
+- [x] 实现纯 Rust 4326↔3857 source/target 坐标变换及反向采样，覆盖 RasterTiler 目标像素中心/footprint（`raster.rs`、`raster_sampling.rs`、CLI；74 tests passed）；TerrainTiler 已接入 `TerrainSamplePlan` 和 factory writer，C++ 差分仍待完成。
 - [x] 对 EPSG:4326→3857 正向变换补齐有效纬度裁剪，并用超范围控制点和 tile 边界测试验证
       （Rust 78 tests passed）；C++ GDAL 数值差分仍待补。
 - [ ] 根据 C++ oracle 矩阵登记并实现后续实际需要的 CRS/WKT 表达；当前内建 EPSG:4326/3857 已实现。

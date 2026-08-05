@@ -151,6 +151,74 @@ destination 初值 `0`；Rust 原先先按 footprint 相交面积统计，违反
 门禁。现按 C++ 执行顺序仅在 RasterTiler 统计核前加入中心 bounds 检查，Terrain overlap 路径
 继续保留原有行为；plain GTiff z0/tile-size-16 的全部 12 算法已逐值通过。
 
+同一 2×2 Int32 fixture 设置 NoData=200 后，C++/Rust RasterTiler average GTiff 与 Terrain
+z0 payload 均逐值/逐字节通过；这只关闭最小 NoData 回归，不替代多 NoData、全 NoData 和
+overview density 矩阵。
+
+#### P2 实施记录 8：Mercator/overview 边界调查（进行中）
+
+Mercator EPSG:3857 direct-source 最小 fixture 为 2×2 source（上行 `100/200`、下行
+`300/400`），z0 Terrain 两边均生成 `0/0/0.terrain`，差异只集中在中心边界四个样本：
+C++ 编码 `5500/6000`，Rust 编码 `6500/7000`。当前证据不足以把差异归因于单一浮点常量；
+下一步必须按 `TerrainTiler::terrainTileBounds` 的扩展 bounds、目标像元中心、GDAL warp
+source window 和 destination 初值逐项记录，再修改 Rust。overview fixture 也继续沿用同一
+source-window 证据链，禁止以经验 epsilon 替代 C++ 公式。
+
+#### P0 实施记录 4：high-resolution-overview 根因定位（已定位，待实现修复）
+
+##### C++ 根因
+
+`GDALTiler::createRasterTile(double (&adfGeoTransform)[6])`（GDALTiler.cpp:280-352）的
+overview 路径存在数据源不匹配 bug：
+
+1. 第 304 行将 `psWarpOptions->hSrcDS = hSrcDS`（主数据集）。
+2. `getOverviewDataset` 返回 overview dataset（`hWrkSrcDS`），第 328-329 行据此重建
+   transformer，使其坐标映射到 overview 像素空间。
+3. 但 `psWarpOptions->hSrcDS` 从未更新为 overview dataset。只有 `hWrkSrcDS == NULL`
+   分支（第 326 行）才会赋值。overview 路径跳过该赋值。
+4. `GDALCreateWarpedVRT(hWrkSrcDS, ..., psWarpOptions)` 将 `hWrkSrcDS`（overview）用于
+   band metadata，但 `Initialize(psOptions)` clone 的 `psWO_Dup->hSrcDS` 仍是主数据集。
+5. 结果：warp kernel 的 transformer 将目标像元角映射到 overview 像素坐标，但数据
+   读取使用 `psWO_Dup->hSrcDS`（主数据集）的相同像素索引。
+
+overview 坐标被直接当作主数据集像素索引使用。对于 720x360 主数据集 +
+360x180 overview，overview 行 90-179（南半球）映射到主数据集行 90-179（北半球的下半
+段），因此 C++ 对南半球目标像元读到北半球的值。
+
+##### 证据
+
+720x360 源（2x2 块：上 100/200、下 300/400），overview 360x180（上 100/200、下 300/400）：
+
+- Terrain `0/0/0.terrain` 行 32（最后一个匹配行）：overview 坐标落在行 87-89（北），
+  主数据集行 87-89 也在北（值 100），两边一致。
+- 行 33（首个差异行）：overview 坐标落在行 90-92（overview 南，值 300），但主数据集
+  行 90-92 在北半段（值 100）。C++（读主数据集）得 height=100（raw 5500）；
+  Rust（读 overview）得 height=300（raw 6500）。
+- 差异恰好从行 33 开始、持续到行 64（64 列 x 32 行 = 2048 个），与 overview row >= 90
+  完全对应。
+
+##### 等价 Rust 修复
+
+C++ warp 的语义是：用 overview GeoTransform 计算像素索引，从主数据集读取数据。
+Rust 的 `SamplingLevel { level, metadata }` 可直接表达此不匹配：
+
+- `metadata`：保留 overview 的 GeoTransform 和维度（用于坐标计算和窗口校验）。
+- `level`：设为 `0`（base IFD），使 `read_sampling_window` 从主数据集读取。
+
+修改位置：`geotiff.rs` 的 `sampling_level_for_ratio`，返回值 `level` 从
+`selected as u16 + 1` 改为 `0`。
+
+此修复不影响无 overview 源（overview_count == 0 时已返回 level 0），也不影响
+`tiled-overview`（2x2 源的 target_ratio = 1.0，不触发 overview 选择）。仅影响
+overview 被选中时的数据读取层。
+
+##### 待验证
+
+- record 4 的 Rust 修复已实现（`sampling_level_for_ratio` 返回 `level: 0` + overview
+  metadata），119/120 组通过；剩余 1 组差异为 warp 工作数据类型整数舍入，见记录 5。
+- 全 5 源 x 12 算法 x 2 range 矩阵（120 组）逐字节通过。
+- RasterTiler overview 路径是否复现同一 C++ 行为（当前 RasterTiler 尚未接入 overview
+  选择，需后续 oracle 差分确认）。
 
 ### P1：收敛既有 Geodetic 路径
 
@@ -176,6 +244,36 @@ EPSG:4326 输入在无输出前返回错误的断言；`cargo test`（69 passed�
 P1 全部完成的证据。C++ 依据为
 `src/RasterIterator.hpp`（继承 `TilerIterator`）和 `src/GridIterator.hpp`（x 外层、y 内层、由
 startZoom 递减至 endZoom）。
+
+#### P0 实施记录 5：warp 工作数据类型整数舍入（已实现）
+
+##### C++ 根因
+
+GDAL warp 的工作数据类型在 `GDALCreateWarpedVRT` 中由 `GDALWarpResolveWorkingDataType`
+从源 band 类型推导。由于该函数在赋值 `hDstDS` 之前调用（vrtwarped.cpp:398-399），工作
+类型仅由源 band 决定。对于 Int32 源，工作类型解析为 `GDT_Int32`，VRT band 也以 Int32
+创建。平均采样核 `GWKAverageOrModeThread` 在 double 中累加加权平均值（结果如 103.5556），
+但写入目标 buffer 时经过 `GWKSetPixelValue` -> `ClampRoundAndAvoidNoData<GInt32>`
+（gdalwarpkernel.cpp:2055-2057），对有符号整数执行
+`static_cast<T>(floor(dfReal + 0.5))`（同文件 1857-1859）。103.5556 被舍入为 104，
+与 oracle 的 5520（104.0m）一致。
+
+##### 证据
+
+诊断程序 `/tmp/ctb-edge/diag12.cpp` 对同一 transformer、同一 hSrcDS（主数据集 Int32）、
+同一 source window `177,0,184x181` 的 `GRA_Average` 直接调用对比：显式
+`GDT_Float32` 得 103.5556（Rust 当前行为），显式 `GDT_Int32` 得 104（匹配 oracle），
+VRT band 数据类型 = 5（`GDT_Int32`），RasterIO 读出 104.0。差异仅出现在
+high-resolution-overview 源 z0 x=1 y=0 tile 东重叠列 col 64，该列目标像元覆盖值 100 和
+200 的源像元边界，加权平均产生非整数。其他 tile/算法在同质源区域内不产生非整数结果。
+
+##### 等价 Rust 修复
+
+在 `sampling.rs` 的 `sample_with_footprint_level` 和
+`sample_with_footprint_raster_tiler_level` 返回前，按 `level.metadata.sample_type` 执行
+GDAL `ClampRoundAndAvoidNoData` 等价舍入：Float 类型保持原值；整数类型执行
+`(value + 0.5).floor()`，匹配 GDAL 有符号 `floor(dfReal + 0.5)` 和无符号
+`static_cast<T>(dfReal + 0.5)`。
 
 ### P2：补齐 GDAL VRT 等价层
 

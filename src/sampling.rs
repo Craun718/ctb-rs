@@ -1,7 +1,7 @@
 use crate::{
     CtbError,
     grid::Bounds,
-    raster::{RasterSource, SamplingLevel, WindowRequest},
+    raster::{RasterSampleType, RasterSource, SamplingLevel, WindowRequest},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +18,38 @@ pub enum ResamplingMethod {
     Med,
     Q1,
     Q3,
+}
+
+/// Round a resampled value to match GDAL's warp working data type.
+///
+/// GDAL resolves the warp working data type from the source band via
+/// `GDALWarpResolveWorkingDataType`, which runs inside `GDALCreateWarpedVRT`
+/// *before* `hDstDS` is assigned (vrtwarped.cpp:398-399). For an Int32 source
+/// the working type becomes `GDT_Int32` and the VRT band is created as Int32.
+/// The warp kernel accumulates in double but stores the result through
+/// `ClampRoundAndAvoidNoData<T>` (gdalwarpkernel.cpp:1844-1862): signed
+/// integers use `floor(dfReal + 0.5)`, unsigned use
+/// `static_cast<T>(dfReal + 0.5)`, both preceded by range clamping.
+fn round_to_working_type(value: f64, sample_type: RasterSampleType) -> f64 {
+    match sample_type {
+        RasterSampleType::Float32 | RasterSampleType::Float64 => value,
+        RasterSampleType::Signed8 => round_clamped(value, -128.0, 127.0),
+        RasterSampleType::Unsigned8 => round_clamped(value, 0.0, 255.0),
+        RasterSampleType::Signed16 => round_clamped(value, -32768.0, 32767.0),
+        RasterSampleType::Unsigned16 => round_clamped(value, 0.0, 65535.0),
+        RasterSampleType::Signed32 => round_clamped(value, -2147483648.0, 2147483647.0),
+        RasterSampleType::Unsigned32 => round_clamped(value, 0.0, 4294967295.0),
+    }
+}
+
+fn round_clamped(value: f64, min: f64, max: f64) -> f64 {
+    if value < min {
+        min
+    } else if value > max {
+        max
+    } else {
+        (value + 0.5).floor()
+    }
 }
 
 /// Sample an EPSG:4326, north-up source at a world coordinate.
@@ -85,8 +117,8 @@ fn sample_at_level_with_nearest_support(
     let pixel_y = (world_y - metadata.transform.origin_y) / metadata.transform.pixel_height;
     match method {
         ResamplingMethod::Nearest => {
-            let column = clamped_pixel(pixel_x.floor(), metadata.width);
-            let row = clamped_pixel(pixel_y.floor(), metadata.height);
+            let column = clamped_pixel(pixel_x.floor(), level.data_width);
+            let row = clamped_pixel(pixel_y.floor(), level.data_height);
             read_sample(source, level, column, row)
         }
         ResamplingMethod::Bilinear => bilinear(source, level, pixel_x - 0.5, pixel_y - 0.5),
@@ -122,7 +154,7 @@ pub fn sample_with_footprint_level(
     footprint: Bounds,
     method: ResamplingMethod,
 ) -> Result<f64, CtbError> {
-    match method {
+    let value = match method {
         ResamplingMethod::Average => average_at(source, level, footprint, world_x, world_y),
         ResamplingMethod::Max => extrema_at(source, level, footprint, true),
         ResamplingMethod::Min => extrema_at(source, level, footprint, false),
@@ -136,7 +168,8 @@ pub fn sample_with_footprint_level(
         ResamplingMethod::Cubic | ResamplingMethod::CubicSpline | ResamplingMethod::Lanczos => {
             sample_at_level_with_nearest_support(source, level, world_x, world_y, method, true)
         }
-    }
+    }?;
+    Ok(round_to_working_type(value, level.metadata.sample_type))
 }
 
 fn samples_in_footprint(
@@ -150,14 +183,14 @@ fn samples_in_footprint(
         footprint.max_x,
         metadata.transform.origin_x,
         metadata.transform.pixel_width,
-        metadata.width,
+        level.data_width,
     );
     let rows = indices_overlapping_footprint(
         footprint.min_y,
         footprint.max_y,
         metadata.transform.origin_y,
         metadata.transform.pixel_height,
-        metadata.height,
+        level.data_height,
     );
     let (Some((first_column, last_column)), Some((first_row, last_row))) = (columns, rows) else {
         return Ok(Vec::new());
@@ -248,7 +281,7 @@ pub fn sample_with_footprint_raster_tiler_level(
     {
         return Ok(0.0);
     }
-    match method {
+    let value = match method {
         ResamplingMethod::Average => average_at(source, level, footprint, world_x, world_y),
         ResamplingMethod::Max => extrema_at(source, level, footprint, true),
         ResamplingMethod::Min => extrema_at(source, level, footprint, false),
@@ -262,7 +295,8 @@ pub fn sample_with_footprint_raster_tiler_level(
         ResamplingMethod::Cubic | ResamplingMethod::CubicSpline | ResamplingMethod::Lanczos => {
             sample_at_level_with_nearest_support(source, level, world_x, world_y, method, false)
         }
-    }
+    }?;
+    Ok(round_to_working_type(value, level.metadata.sample_type))
 }
 
 fn extrema_at(
@@ -277,14 +311,14 @@ fn extrema_at(
         footprint.max_x,
         metadata.transform.origin_x,
         metadata.transform.pixel_width,
-        metadata.width,
+        level.data_width,
     );
     let rows = indices_overlapping_footprint(
         footprint.min_y,
         footprint.max_y,
         metadata.transform.origin_y,
         metadata.transform.pixel_height,
-        metadata.height,
+        level.data_height,
     );
     let (Some((first_column, last_column)), Some((first_row, last_row))) = (columns, rows) else {
         return Ok(0.0);
@@ -320,14 +354,14 @@ fn average_at(
         footprint.max_x,
         metadata.transform.origin_x,
         metadata.transform.pixel_width,
-        metadata.width,
+        level.data_width,
     );
     let rows = indices_overlapping_footprint(
         footprint.min_y,
         footprint.max_y,
         metadata.transform.origin_y,
         metadata.transform.pixel_height,
-        metadata.height,
+        level.data_height,
     );
     let (Some((first_column, last_column)), Some((first_row, last_row))) = (columns, rows) else {
         return Ok(0.0);
@@ -409,15 +443,14 @@ fn bilinear(
     centre_x: f64,
     centre_y: f64,
 ) -> Result<f64, CtbError> {
-    let metadata = &level.metadata;
     let left = centre_x.floor();
     let top = centre_y.floor();
     let horizontal = centre_x - left;
     let vertical = centre_y - top;
-    let x0 = clamped_pixel(left, metadata.width);
-    let x1 = clamped_pixel(left + 1.0, metadata.width);
-    let y0 = clamped_pixel(top, metadata.height);
-    let y1 = clamped_pixel(top + 1.0, metadata.height);
+    let x0 = clamped_pixel(left, level.data_width);
+    let x1 = clamped_pixel(left + 1.0, level.data_width);
+    let y0 = clamped_pixel(top, level.data_height);
+    let y1 = clamped_pixel(top + 1.0, level.data_height);
 
     let top_value = interpolate_valid(
         read_sample_raw(source, level, x0, y0)?,
@@ -459,13 +492,13 @@ fn filtered_sample(
     let mut weight_sum = 0.0;
     for y_offset in start_offset..=radius - 1 {
         let y = y_base + y_offset;
-        if y < 0 || y >= level.metadata.height as i32 {
+        if y < 0 || y >= level.data_height as i32 {
             continue;
         }
         let y_weight = kernel_weight(centre_y - f64::from(y), method);
         for x_offset in start_offset..=radius - 1 {
             let x = x_base + x_offset;
-            if x < 0 || x >= level.metadata.width as i32 {
+            if x < 0 || x >= level.data_width as i32 {
                 continue;
             }
             let x_weight = kernel_weight(centre_x - f64::from(x), method);
@@ -852,9 +885,66 @@ mod tests {
                 1.0,
                 Bounds::new(-2.0, 0.0, -1.0, 2.0)?,
                 ResamplingMethod::Average,
-            )?,
+        )?,
             0.0
         );
+        Ok(())
+    }
+
+    #[test]
+    fn round_to_working_type_matches_gdal_clamp_round() {
+        // Float types pass through unchanged.
+        assert_eq!(round_to_working_type(103.5556, RasterSampleType::Float32), 103.5556);
+        assert_eq!(round_to_working_type(103.5556, RasterSampleType::Float64), 103.5556);
+        // Signed integers: floor(x + 0.5) — GDAL ClampRoundAndAvoidNoData signed path.
+        assert_eq!(round_to_working_type(103.5556, RasterSampleType::Signed32), 104.0);
+        assert_eq!(round_to_working_type(103.4, RasterSampleType::Signed32), 103.0);
+        assert_eq!(round_to_working_type(-3.6, RasterSampleType::Signed32), -4.0);
+        assert_eq!(round_to_working_type(-3.4, RasterSampleType::Signed32), -3.0);
+        // Unsigned integers: clamp to [0, max], then floor(x + 0.5).
+        assert_eq!(round_to_working_type(103.5556, RasterSampleType::Unsigned32), 104.0);
+        assert_eq!(round_to_working_type(-0.4, RasterSampleType::Unsigned8), 0.0);
+        assert_eq!(round_to_working_type(255.6, RasterSampleType::Unsigned8), 255.0);
+    }
+
+    #[test]
+    fn average_rounds_to_source_integer_type() -> Result<(), CtbError> {
+        // 2x2 source with Signed32 sample type. Footprint partially overlaps
+        // pixels 0 (=100) and 1 (=200) so the weighted average is non-integer.
+        let source = TestRaster {
+            metadata: RasterMetadata {
+                width: 2,
+                height: 2,
+                band_count: 1,
+                crs: Crs::Epsg4326,
+                transform: AffineTransform::north_up(0.0, 2.0, 1.0, -1.0)?,
+                no_data: None,
+                sample_type: RasterSampleType::Signed32,
+            },
+            samples: vec![100.0, 200.0, 300.0, 400.0],
+        };
+        let footprint = Bounds::new(0.0, 1.0, 1.3, 2.0)?;
+        // Weighted avg = (100*1.0 + 200*0.3) / 1.3 = 123.0769..., rounded to 123.
+        let result = sample_with_footprint(
+            &source,
+            0.65,
+            1.5,
+            footprint,
+            ResamplingMethod::Average,
+        )?;
+        assert_eq!(result, 123.0);
+
+        // Same source with Float64 should not round.
+        let mut float_source = source;
+        float_source.metadata.sample_type = RasterSampleType::Float64;
+        let result_f = sample_with_footprint(
+            &float_source,
+            0.65,
+            1.5,
+            Bounds::new(0.0, 1.0, 1.3, 2.0)?,
+            ResamplingMethod::Average,
+        )?;
+        assert!((result_f - 160.0 / 1.3).abs() < 1e-12);
         Ok(())
     }
 }

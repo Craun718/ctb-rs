@@ -183,6 +183,8 @@ impl RasterSource for GeoTiffRasterSource {
         if !target_ratio.is_finite() || target_ratio <= 1.0 || overview_count == 0 {
             return Ok(crate::raster::SamplingLevel {
                 level: 0,
+                data_width: self.metadata.width,
+                data_height: self.metadata.height,
                 metadata: self.metadata.clone(),
             });
         }
@@ -218,6 +220,8 @@ impl RasterSource for GeoTiffRasterSource {
         if selected < 0 {
             return Ok(crate::raster::SamplingLevel {
                 level: 0,
+                data_width: self.metadata.width,
+                data_height: self.metadata.height,
                 metadata: self.metadata.clone(),
             });
         }
@@ -246,7 +250,14 @@ impl RasterSource for GeoTiffRasterSource {
             sample_type: self.metadata.sample_type,
         };
         Ok(crate::raster::SamplingLevel {
-            level: selected as u16 + 1,
+            // C++ GDALTiler::createRasterTile recreates the transformer from the
+            // overview dataset but never updates psWarpOptions->hSrcDS, so the
+            // warp kernel reads from the base dataset at overview pixel indices.
+            // level 0 (base IFD) preserves overview metadata for coordinate math
+            // while reading from the base band, matching the C++ oracle exactly.
+            level: 0,
+            data_width: self.metadata.width,
+            data_height: self.metadata.height,
             metadata,
         })
     }
@@ -256,7 +267,12 @@ impl RasterSource for GeoTiffRasterSource {
         level: &crate::raster::SamplingLevel,
         request: WindowRequest,
     ) -> Result<RasterWindow, CtbError> {
-        self.validate_window(&level.metadata, request)?;
+        let data_metadata = RasterMetadata {
+            width: level.data_width,
+            height: level.data_height,
+            ..level.metadata.clone()
+        };
+        self.validate_window(&data_metadata, request)?;
         let mut samples = self.read_samples(level.level, request)?;
         mark_nodata(&mut samples, level.metadata.no_data);
         Ok(RasterWindow { request, samples })
@@ -458,19 +474,23 @@ mod tests {
         assert_eq!(base.metadata.width, 8);
 
         let half = source.sampling_level_for_ratio(2.0)?;
-        assert_eq!(half.level, 1);
+        // C++ warp reads from the base dataset at overview pixel indices;
+        // sampling_level_for_ratio returns level 0 with overview metadata.
+        assert_eq!(half.level, 0);
         assert_eq!(half.metadata.width, 4);
         assert_eq!(half.metadata.height, 4);
         assert_eq!(half.metadata.transform.pixel_width, 2.0);
         assert_eq!(half.metadata.transform.pixel_height, -2.0);
 
         let quarter = source.sampling_level_for_ratio(4.0)?;
-        assert_eq!(quarter.level, 2);
+        assert_eq!(quarter.level, 0);
         assert_eq!(quarter.metadata.width, 2);
         assert_eq!(quarter.metadata.height, 2);
         assert_eq!(quarter.metadata.transform.pixel_width, 4.0);
         assert_eq!(quarter.metadata.transform.pixel_height, -4.0);
 
+        // Reading through the selected level reads from the base IFD at
+        // overview pixel coordinates, matching C++ warp semantics.
         let window = source.read_sampling_window(
             &half,
             WindowRequest {
@@ -481,7 +501,26 @@ mod tests {
                 overview: half.level,
             },
         )?;
-        assert_eq!(window.samples, vec![0.0, 2.0, 16.0, 18.0]);
+        assert_eq!(window.samples, vec![0.0, 1.0, 8.0, 9.0]);
+
+        // Verify the overview IFD itself is readable via an explicit level.
+        let ovr_level = crate::raster::SamplingLevel {
+            level: 1,
+            data_width: half.metadata.width,
+            data_height: half.metadata.height,
+            metadata: half.metadata.clone(),
+        };
+        let ovr_window = source.read_sampling_window(
+            &ovr_level,
+            WindowRequest {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+                overview: 1,
+            },
+        )?;
+        assert_eq!(ovr_window.samples, vec![0.0, 2.0, 16.0, 18.0]);
         fs::remove_file(path)?;
         Ok(())
     }

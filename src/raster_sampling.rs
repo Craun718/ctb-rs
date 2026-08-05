@@ -265,6 +265,8 @@ mod tests {
             },
             overview: SamplingLevel {
                 level: 1,
+                data_width: 1,
+                data_height: 1,
                 metadata: RasterMetadata {
                     width: 1,
                     height: 1,

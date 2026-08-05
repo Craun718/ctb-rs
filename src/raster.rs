@@ -173,10 +173,18 @@ pub struct RasterWindow {
 ///
 /// `metadata()` on a source always describes its base dataset for tile
 /// planning. A sampling level may instead describe one internal overview.
+///
+/// When the C++ warp selects an overview, it computes source pixel indices in
+/// overview coordinate space but reads from the base dataset (see
+/// TECHNICAL_PLAN P0 record 4). `metadata` carries the overview GeoTransform
+/// and dimensions for coordinate math; `data_width`/`data_height` carry the
+/// actual data source dimensions used for bounds clamping and window reads.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SamplingLevel {
     pub level: u16,
     pub metadata: RasterMetadata,
+    pub data_width: u32,
+    pub data_height: u32,
 }
 
 pub trait RasterSource: Send + Sync {
@@ -185,9 +193,12 @@ pub trait RasterSource: Send + Sync {
     fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError>;
 
     fn sampling_level_for_ratio(&self, _target_ratio: f64) -> Result<SamplingLevel, CtbError> {
+        let metadata = self.metadata().clone();
         Ok(SamplingLevel {
             level: 0,
-            metadata: self.metadata().clone(),
+            data_width: metadata.width,
+            data_height: metadata.height,
+            metadata,
         })
     }
 
