@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-2022
+            artifact: ctb-binaries-windows-x64
+            binary_ext: .exe
+          - os: macos-14
+            artifact: ctb-binaries-macos-arm64
+            binary_ext: ''
+          - os: ubuntu-24.04-arm
+            artifact: ctb-binaries-linux-arm64
+            binary_ext: ''
+          - os: ubuntu-24.04
+            artifact: ctb-binaries-linux-x64
+            binary_ext: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --all-targets --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            target/debug/ctb-tile${{ matrix.binary_ext }}
+            target/debug/ctb-info${{ matrix.binary_ext }}
+            target/debug/ctb-export${{ matrix.binary_ext }}
+            target/debug/ctb-extents${{ matrix.binary_ext }}
+          if-no-files-found: error

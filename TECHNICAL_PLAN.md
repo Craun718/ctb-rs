@@ -1316,3 +1316,48 @@ CLI 的 clap `version` 与手动 `--version`/`-V` 输出统一改为
 实测 `target/debug` 下四个工具的 `--version` 输出均为 `0.0.1`。验证门禁：
 `cargo fmt --check` 通过；`cargo test` 共 86 项通过；
 `cargo clippy --all-targets -- -D warnings` 通过。
+
+### P8：GitHub Actions 编译门禁（已完成）
+
+用户要求编写 GitHub CI，在 push、commit、PR 时尝试编译。GitHub Actions 没有独立的
+`commit` 事件；提交被推送到仓库后由 `push` 事件覆盖，PR 的提交由 `pull_request`
+事件覆盖。CI 只做编译，不运行测试或 oracle，保持与“尝试编译”范围一致。
+
+实施规则：
+
+1. 新增 `.github/workflows/ci.yml`。
+2. 触发事件为 `push`、`pull_request`；不配置 `commit`（GitHub Actions 不存在该事件）。
+3. 使用 `actions/checkout@v4`、`dtolnay/rust-toolchain@stable`，并通过
+   `strategy.matrix` 覆盖 Windows x64、macOS ARM、Linux ARM、Linux x64 四个 runner：
+   `windows-2022`、`macos-14`、`ubuntu-24.04-arm`、`ubuntu-24.04`。
+4. 执行 `cargo build --all-targets --locked`，覆盖四个二进制及测试/示例目标的编译。
+5. 编译成功后使用 `actions/upload-artifact@v4` 上传四个工具二进制，每个平台使用唯一
+   artifact 名：`ctb-binaries-windows-x64`、`ctb-binaries-macos-arm64`、
+   `ctb-binaries-linux-arm64`、`ctb-binaries-linux-x64`；任一二进制缺失时上传步骤失败。
+6. 不使用 GDAL/PROJ，不修改 `Cargo.toml`，不新增或移除依赖。
+
+完成标准：workflow 文件存在且能被 YAML 解析；本机
+`cargo build --all-targets --locked` 通过。
+
+#### P8 实施记录 1：GitHub Actions 编译门禁（已完成）
+
+新增 `.github/workflows/ci.yml`。`push` 与 `pull_request` 触发 `build` job，job
+使用 `strategy.matrix` 覆盖 `windows-2022`（x64）、`macos-14`（arm64）、
+`ubuntu-24.04-arm`（arm64）、`ubuntu-24.04`（x64）四个 runner；每个 runner 使用
+`actions/checkout@v4` 和 `dtolnay/rust-toolchain@stable`，执行
+`cargo build --all-targets --locked`。GitHub Actions 没有独立 `commit` 事件，提交
+推送已由 `push` 覆盖，PR 由 `pull_request` 覆盖；因此未添加不存在的 `commit`
+触发器。
+
+本机验证：workflow 文件通过 YAML 解析；`cargo build --all-targets --locked`
+通过。
+
+#### P8 实施记录 2：构建产物上传（已完成）
+
+在 `build` job 的 `cargo build --all-targets --locked` 之后新增
+`actions/upload-artifact@v4` 步骤，上传当前平台的 `target/debug/ctb-tile`、
+`target/debug/ctb-info`、`target/debug/ctb-export`、`target/debug/ctb-extents`
+四个二进制。Windows 使用 `.exe` 后缀；artifact 名为
+`ctb-binaries-windows-x64`、`ctb-binaries-macos-arm64`、
+`ctb-binaries-linux-arm64` 或 `ctb-binaries-linux-x64`，并设置
+`if-no-files-found: error` 避免静默缺少产物。

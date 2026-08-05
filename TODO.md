@@ -241,3 +241,15 @@
 - [x] 更新 `README.md`、`TEST_STRATEGY.md`、`TECHNICAL_PLAN.md` 的 Rust 版本描述。
 - [x] 运行 `cargo fmt --check`、`cargo test`、`cargo clippy --all-targets -- -D warnings`
       并回写 P7 验证证据（86 tests 全绿）。
+
+## P8：GitHub Actions 编译门禁
+
+- [x] 在技术方案中记录 CI 触发语义：GitHub Actions 无独立 `commit` 事件，push 覆盖
+      提交推送，pull_request 覆盖 PR。
+- [x] 新增 `.github/workflows/ci.yml`：`push` / `pull_request` 时运行
+      `cargo build --all-targets --locked`。
+- [x] 本地验证 workflow YAML 与编译门禁。
+- [x] 编译后使用 `actions/upload-artifact@v4` 上传四个二进制为按平台命名的
+      `ctb-binaries-*` artifact，并设置 `if-no-files-found: error`。
+- [x] 将构建 runner 扩展为 Windows x64、macOS ARM、Linux ARM、Linux x64 矩阵，
+      并按平台上传唯一 artifact。
