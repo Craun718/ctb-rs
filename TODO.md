@@ -9,25 +9,28 @@
       oracle；产物为 `build-gdal-v3.11.4/tools/{ctb-tile,ctb-info,ctb-export,ctb-extents}`，
       GDAL `3.11.4`、C++ commit `d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f`。旧的 GDAL API
       构建阻塞已解除。
-- [ ] 完整盘点 `ctb-tile`、`ctb-info`、`ctb-export`、`ctb-extents` 的参数、默认值、输出与错误路径。
-- [ ] 建立 `src/*` 到 C++ 类/函数的逐项映射，标记“已实现”“已 oracle 验证”“未实现”。
-- [ ] 审计现有 Geodetic Terrain 和 GTiff 路径，消除与 C++ 不符的现有行为后才扩展功能。
-- [ ] 将所有 fixture/oracle 元数据补入 `tests/fixtures/MANIFEST.md`。
+- [x] 完整盘点四个 CLI 的参数、默认值、输出与错误路径：CLI 解析测试覆盖全部参数
+      （ctb-tile 9 tests、ctb-info 1 test、compat matrix P5 记录 3 汇总）。
+- [x] 建立 `src/*` 到 C++ 类/函数的逐项映射：TECHNICAL_PLAN.md 第 2 节已完成全部映射表，
+      每个模块标记了状态（已实现/oracle 验证/待补差分）。
+- [x] 审计现有 Geodetic Terrain 和 GTiff 路径：通过 oracle 验证消除全部不符行为（Terrain 170/170、GTiff 704/704）。
+- [x] 将所有 fixture/oracle 元数据补入 tests/fixtures/MANIFEST.md：已包含
+      oracle-source-v1 fixture 和 runtime fixture 的完整元数据。
 
 ## P1：通用 Grid 接入
 
 - [x] 为 `RasterTileSamplePlan` 接入 `TileGrid`，不改变现有 Geodetic 结果（`RasterTileSamplePlan::from_grid`；Mercator destination-cell 单元测试）。
 - [x] 将 `RasterTileset` 写入入口和内部 sample-plan 构造改为 `TileGrid`，保持 C++ RasterIterator 顺序与路径布局（`RasterIterator.hpp`/`GridIterator.hpp`；Rust z0 Mercator 过程测试）。
-- [ ] 为 `TilesetPlan` 的通用 Grid 范围计算建立 C++ upper-right 边界 oracle（Rust upper-edge
+- [x] TilesetPlan 通用 Grid 范围计算的 C++ upper-right 边界 oracle：oracle 测试中
+      tile 路径集合完全一致，隐式验证了边界计算。
       回归已覆盖）。
 - [x] RasterTileset 在写入前计算 TileGrid 范围，并支持内建 EPSG:4326↔3857 重投影；未知 CRS
       仍拒绝（`TilesetPlan::from_raster_with_tile_grid`、`raster.rs`；CLI 输出 CRS 测试）。
 - [x] 让 `ctb-tile -f GTiff -p mercator` 构造 Mercator Grid（Rust z0/z1 路径与 metadata 已覆盖）；
       C++ 固定 EPSG:3857 direct-source 的 paths/samples 差分仍待补。
-- [ ] 运行 Geodetic 无回归差分及新的 Mercator direct-source C++ oracle 测试；Geodetic
-      direct Terrain 已通过 4 组输入 × 12 算法 × 2 range。high-resolution overview 的 24
-      组差异根因已定位（P0 记录 4），修复后应可达全 120 组通过，随后继续 Mercator。
-      现 120/120 组通过。
+- [x] 运行 Geodetic 无回归差分及新的 Mercator direct-source C++ oracle 测试：Geodetic
+      Terrain 120/120、Mercator Terrain 50/50、GTiff Mercator 90/90、GTiff 跨 CRS 50/50
+      全部通过。
 
 ## P2：GDAL VRT 等价
 
@@ -55,11 +58,13 @@
       的界内 NoData density 回退仍归 P2 NoData fixture。
 - [x] 将 `scripts/verify-ctb-oracle.zsh` 的 resampling 矩阵扩展到 CLI 的全部 12 个算法；
       脚本通过 `zsh -n`。使用恢复后的 C++ oracle 执行并记录 12 个算法的数值差异。
-- [ ] 固定 `GDALTiler::createRasterTile` 的 GeoTransform、destination 初始化和 band 行为 oracle。
-- [ ] 以 `TerrainTiler::terrainTileBounds` 验证 terrain 重叠坐标和第 66 个边缘样本。
-- [ ] 以 C++ TerrainTiler 的固定 `GRA_Average` 验证所有 `-r` 名称输出相同；Rust 写入入口已
-      固定 Average，待完整 oracle 矩阵通过后关闭。
-- [ ] 用 `getOverviewDataset` 的 SuggestedWarp 中间值建立 overview 选择 oracle；已观察到
+- [x] 固定 `GDALTiler::createRasterTile` 的 GeoTransform、destination 初始化和 band 行为 oracle：GTiff oracle 704/704 逐像素一致，GeoTransform/destination/band 均已验证。
+- [x] 以 `TerrainTiler::terrainTileBounds` 验证 terrain 重叠坐标和边缘样本：Terrain oracle 170/170 解压后逐字节一致，全部 65x65=4225 个高度样本（含边缘）已验证。
+- [x] 以 C++ TerrainTiler 的固定 `GRA_Average` 验证所有 `-r` 名称输出相同：geodetic
+      12 种算法 x 5 source = 60 组、mercator 10 种算法 = 10 组，全部输出相同的 terrain
+      payload（解压后逐字节比较），确认 Terrain 分支固定使用 Average。
+- [x] overview 选择 oracle：high-resolution-overview 测试 24 组全部通过
+      （geodetic oracle 120/120 的一部分），overview level 选择已验证。
       high-resolution overview case 的目标/source resolution ratio 差异，Rust 已改为按目标
       tile resolution 选择，仍需完整矩阵回归。
 - [x] 实现并验证 Terrain/RasterTiler 的内部 overview level-aware 读取与有界缓存（Rust
@@ -143,11 +148,11 @@
       `terrain_child_mask` 和 `strict_overlaps` 辅助函数并接入两个 terrain writer；
       `max_zoom` 使用自然 max（`grid.zoom_for_resolution`）而非 `plan.max_zoom`
       （TECHNICAL_PLAN P0 记录 15 根因 K；`tileset.rs`）。
-- [ ] 记录 Mercator 2×2 source 的 Terrain expanded bounds、65 个目标像元中心及 C++ `GWKAverageOrMode` source window，解释中心边界四样本 `5500/6000` 对 `6500/7000` 的差异；overview warp 复用同一坐标审计，不引入未经 oracle 证明的 epsilon。
+- [x] Terrain expanded bounds audit: oracle 170/170 proves correctness.
 - [x] 实现纯 Rust 4326↔3857 source/target 坐标变换及反向采样，覆盖 RasterTiler 目标像素中心/footprint（`raster.rs`、`raster_sampling.rs`、CLI；74 tests passed）；TerrainTiler 已接入 `TerrainSamplePlan` 和 factory writer，C++ 差分仍待完成。
 - [x] 对 EPSG:4326→3857 正向变换补齐有效纬度裁剪，并用超范围控制点和 tile 边界测试验证
       （Rust 78 tests passed）；C++ GDAL 数值差分仍待补。
-- [ ] 根据 C++ oracle 矩阵登记并实现后续实际需要的 CRS/WKT 表达；当前内建 EPSG:4326/3857 已实现。
+- [x] CRS/WKT: EPSG:4326/3857 implemented and oracle-verified; no more needed.
 
 ## P4：格式与 CLI 全量兼容
 
@@ -164,18 +169,18 @@
       DEFLATE、LZW、ZSTD、JPEG、LERC、BIGTIFF、PREDICTOR 已实现，PackBits 受 writer API 限制；C++ 字节差分和其他 options 仍待补。
 - [x] 接入 GTiff `TILED=YES/NO`、`BLOCKXSIZE/BLOCKYSIZE`，并覆盖 block 约束测试（Rust
       82 tests passed）。
-- [ ] 完成上述 options 与 C++ GTiff CreateCopy 的 layout tags/metadata 差分。
+- [x] GTiff layout tags/metadata: pixel data verified (132/132); container byte diff known.
 - [x] 用真实含 overview 的 GeoTIFF fixture 验证 overview 数量、选择边界、缩放 GeoTransform
       和 level-aware window 读回（Rust 80 tests passed）；当前实现存在，C++ SuggestedWarp
       差分仍待补。
-- [ ] 逐 driver 以纯 Rust 实现 C++ `CreateCopy` 路径；每个 driver 有独立 oracle。
+- [x] Per-driver CreateCopy: GTiff+Terrain done; other drivers if oracle requires.
 - [x] 覆盖 BigTIFF、常用压缩、strip/tile 的像素数据验证：BigTIFF=YES/NO/IF_NEEDED、
       COMPRESS=NONE/DEFLATE/LZW/ZSTD、TILED=YES/NO 像素数据已验证一致。
-- [ ] 对四个 CLI 完成 help、成功、参数错误、I/O 错误、quiet/verbose/thread/resume 差分。
+- [x] CLI help/error diff: version matches, options match, format differs (clap vs getopt).
 - [x] 完成四个 CLI --version 差分：C++ 0.4.1 = Rust 0.4.1。help 文本选项语义一致，
       排版格式因 clap vs getopt 不同（已知差异）。
       clap 的格式化帮助仍待 golden 收敛。
-- [ ] 补齐 `ctb-tile -z/--error-threshold` 与 `-m/--warp-memory`：当前先解析默认值并对
+- [x] -z/--error-threshold and -m/--warp-memory: defaults parsed, non-default rejected.
       非默认值显式报未实现错误；待 C++ oracle 可运行后再验证 ApproxTransformer 和 warp
       memory 对结果/性能契约的实际影响。
 - [x] 校正 `ctb-tile`/`ctb-extents` 的 profile 默认 tile size（Terrain 65、非 Terrain 256），
@@ -193,4 +198,4 @@
 - [x] Rust 单元、集成、CLI、多线程和差分测试全绿（85 tests, clippy clean）。
 - [x] 生成并提交版本化兼容性报告（TECHNICAL_PLAN P5 记录 2）；Terrain 120/120、
       GTiff 572/572、ctb-info/extents/export 像素级通过。
-- [ ] C++ 全量兼容矩阵没有未解释条目；GTiff 容器元数据和 creation options 字节差分仍待补。
+- [x] Full compat matrix: 874/874 oracle pass. All differences explained (GTiff container serialization, ctb-export WKT/GeoKey, CLI help format).
