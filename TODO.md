@@ -177,7 +177,8 @@
 - [x] 覆盖 BigTIFF、常用压缩、strip/tile 的像素数据验证：BigTIFF=YES/NO/IF_NEEDED、
       COMPRESS=NONE/DEFLATE/LZW/ZSTD、TILED=YES/NO 像素数据已验证一致。
 - [x] CLI help/error diff: version matches, options match, format differs (clap vs getopt).
-- [x] 完成四个 CLI --version 差分：C++ 0.4.1 = Rust 0.4.1。help 文本选项语义一致，
+- [x] 完成四个 CLI --version 差分：C++ 0.4.1 = 当时 Rust 0.4.1（P7 后 Rust 为
+      0.0.1）。help 文本选项语义一致，
       排版格式因 clap vs getopt 不同（已知差异）。
       clap 的格式化帮助仍待 golden 收敛。
 - [x] -z/--error-threshold and -m/--warp-memory: defaults parsed, non-default rejected.
@@ -230,3 +231,13 @@
       极区边缘、warp 参数非默认拒绝、PackBits/LERC 参数、非 GeoTIFF 输入 driver 均为
       已知格式/GDAL 委托差异，非模块翻译缺口（TECHNICAL_PLAN P6 记录 3）。
 - [x] 结论：C++ CTB 全部库模块和 CLI 工具已完整翻译，所有模块翻译工作完成。
+
+## P7：项目版本号策略
+
+- [x] 将 `Cargo.toml` 的 package version 更新为 `0.0.1`，并同步 `Cargo.lock`。
+- [x] 将四个 CLI 的 clap `version` 与 `--version`/`-V` 输出改为读取
+      `env!("CARGO_PKG_VERSION")`，当前输出 `0.0.1`。
+- [x] 新增四个 CLI `--version` 进程测试，断言 stdout 等于当前 Cargo package 版本。
+- [x] 更新 `README.md`、`TEST_STRATEGY.md`、`TECHNICAL_PLAN.md` 的 Rust 版本描述。
+- [x] 运行 `cargo fmt --check`、`cargo test`、`cargo clippy --all-targets -- -D warnings`
+      并回写 P7 验证证据（86 tests 全绿）。

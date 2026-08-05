@@ -4,7 +4,10 @@ use clap::Parser;
 use ctb_rs::terrain::{HEIGHTMAP_TILE_SIZE, HeightmapTerrain, WaterMask};
 
 #[derive(Debug, Parser)]
-#[command(about = "Inspect a CTB heightmap terrain file", version = "0.4.1")]
+#[command(
+    about = "Inspect a CTB heightmap terrain file",
+    version = env!("CARGO_PKG_VERSION")
+)]
 struct Arguments {
     /// Print all raw CTB heightmap values as rows.
     #[arg(short = 'e', long)]
@@ -24,7 +27,7 @@ struct Arguments {
 
 fn main() -> Result<(), Box<dyn Error>> {
     if std::env::args().any(|argument| argument == "--version" || argument == "-V") {
-        println!("0.4.1");
+        println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let arguments = Arguments::parse();

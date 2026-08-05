@@ -86,7 +86,7 @@ RasterTiler footprint 采样。保留 EPSG:4326 Geodetic 现有 tests 作为无�
 | ctb-info | stdout 逐行比较 | 完全一致 |
 | ctb-extents | GeoJSON 逐字节比较 | 完全一致 |
 | ctb-export | ENVI raw 像素数据比较 | 完全一致 |
-| 四 CLI --version | 版本号 | 0.4.1 = 0.4.1 |
+| 四 CLI --version | Rust stdout | Rust 0.0.1；C++ oracle 仍为 0.4.1 |
 | 总计 | | **874/874** |
 
 Terrain 比较使用解压后 payload（gzip 压缩字节因 flate2/zlib 差异不同，但解压内容一致）。
@@ -178,8 +178,10 @@ Overview fixture 使用 `geotiff-writer` 的多级 top-level COG：断言 overvi
 CLI 默认值测试分别覆盖 Terrain 65、GTiff 256、geodetic extents 65、mercator extents 256；
 Terrain 携带 creation option 必须在输出目录写入前失败。
 
-CLI 版本测试固定四个 C++ 工具 `--version` 的 stdout 为 `0.4.1`；帮助测试比较选项集合、
-默认值、参数顺序和退出状态，路径前缀与 clap 自动换行属于需单独归一化的展示差异。
+CLI 版本测试固定 C++ oracle 的四个工具 `--version` stdout 为 `0.4.1`；Rust 四个 CLI
+`--version` 固定输出当前 Cargo package 版本（当前为 `0.0.1`），不再跟随 C++ oracle
+版本号。帮助测试比较选项集合、默认值、参数顺序和退出状态，路径前缀与 clap 自动换行
+属于需单独归一化的展示差异。
 
 当前 oracle 执行证据：C++ `ctb-tile` 与 Rust Terrain payload 对 plain、float-negative、
 tiled-overview、high-resolution（无 overview）四类输入的 12 算法和 automatic/limited

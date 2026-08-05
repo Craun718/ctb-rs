@@ -128,8 +128,9 @@ C++ `TerrainTiler::createRasterTile` 沿用未设置 `TilerOptions` 的 GDAL 默
 #### P4 实施记录 5：四个 CLI 版本入口（已实现，帮助文本仍待收敛）
 
 C++ oracle 的四个工具均以 `--version` 输出 `0.4.1`；Rust 工具此前将该参数误解析为输入或
-未知选项。四个 clap 入口已固定公开版本字符串 `0.4.1`，与 CTB 0.4.1 oracle 对齐；帮助文本
-的格式、可执行文件路径和参数描述仍作为独立 CLI golden 差分保留。
+未知选项。当时四个 clap 入口固定公开版本字符串 `0.4.1`，与 CTB 0.4.1 oracle 对齐；
+P7 起 Rust 四个 CLI 改为输出当前 Cargo package 版本 `0.0.1`，不再与 C++ oracle 版本号
+相同。帮助文本的格式、可执行文件路径和参数描述仍作为独立 CLI golden 差分保留。
 
 #### P0 实施记录 3：Terrain resampling oracle 矩阵（部分通过）
 
@@ -1078,7 +1079,7 @@ compatibility report，列出每个模块、参数组合、fixture、比较方�
 | ctb-extents | GeoJSON 逐字节 | 完全一致（3 个 zoom level） |
 | ctb-export | ENVI raw 像素数据 | 完全一致（TIFF 容器元数据差 100 字节） |
 | 四个 CLI --help | 选项清单 | 16/16 选项对应（格式不同：clap vs getopt） |
-| 四个 CLI --version | 版本号 | 0.4.1 = 0.4.1 |
+| 四个 CLI --version | 历史 oracle 版本号 | C++ 0.4.1 = 当时 Rust 0.4.1；P7 后 Rust 为 0.0.1 |
 
 **已知未覆盖项**：
 
@@ -1123,7 +1124,7 @@ compatibility report，列出每个模块、参数组合、fixture、比较方�
 | ctb-info | stdout 逐行 | 完全一致 |
 | ctb-extents | GeoJSON 逐字节 | 完全一致 |
 | ctb-export | ENVI raw 像素数据 | 完全一致 |
-| 四个 CLI --version | 版本号 | 0.4.1 = 0.4.1 |
+| 四个 CLI --version | 历史 oracle 版本号 | C++ 0.4.1 = 当时 Rust 0.4.1；P7 后 Rust 为 0.0.1 |
 
 **总计：874 个 tile / 输出比较全部通过。**
 
@@ -1283,3 +1284,35 @@ Rust 测试 85 项全绿；clippy 零警告；P5 记录 3 的 874/874 oracle 全
 
 C++ CTB 的全部库模块和全部 CLI 工具均已完整翻译为对应的 Rust 模块，核心翻译路径全部
 通过 oracle 验证，所有模块翻译工作完成。
+
+### P7：项目版本号策略（已完成）
+
+用户明确要求 Rust 项目的发布版本号从 `0.1.0` 调整为 `0.0.1`，且四个 CLI 工具的
+`--version` 输出改为 `0.0.1`。C++ CTB oracle 仍固定为 `0.4.1`，P0–P6 的 oracle
+兼容性证据继续以 C++ `0.4.1` 为准；Rust `--version` 不再作为与 C++ 版本号相同的
+兼容断言，而是作为本项目当前发布版本标识。
+
+实施规则：
+
+1. `Cargo.toml` 的 `[package] version` 更新为 `0.0.1`，并同步更新 `Cargo.lock`。
+2. 四个 CLI 的 clap `version` 与手动 `--version`/`-V` 输出统一读取
+   `env!("CARGO_PKG_VERSION")`，避免二进制版本与 Cargo package 版本再次漂移。
+3. 新增四个 CLI `--version` 进程测试，断言退出成功且 stdout 等于当前 Cargo package
+   版本。
+4. 更新 `README.md`、`TEST_STRATEGY.md` 与本文档中的 Rust 版本描述；历史 oracle
+   记录保留 C++ `0.4.1` 作为基准版本。
+
+完成标准：`cargo fmt --check`、`cargo test`、`cargo clippy --all-targets -- -D warnings`
+全部通过；四个 CLI `--version` 输出 `0.0.1`；Cargo package 版本为 `0.0.1`。
+
+#### P7 实施记录 1：版本号调整（已完成）
+
+`Cargo.toml` 的 `[package] version` 已更新为 `0.0.1`，`Cargo.lock` 同步更新。四个
+CLI 的 clap `version` 与手动 `--version`/`-V` 输出统一改为
+`env!("CARGO_PKG_VERSION")`；新增 `ctb_cli_versions_match_cargo_package_version`
+进程测试，覆盖四个工具的两个版本参数，断言退出成功且 stdout 等于当前 Cargo package
+版本。
+
+实测 `target/debug` 下四个工具的 `--version` 输出均为 `0.0.1`。验证门禁：
+`cargo fmt --check` 通过；`cargo test` 共 86 项通过；
+`cargo clippy --all-targets -- -D warnings` 通过。

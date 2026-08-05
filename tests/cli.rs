@@ -59,6 +59,34 @@ fn write_mercator_world_geotiff(path: &Path) -> Result<(), Box<dyn std::error::E
 }
 
 #[test]
+fn ctb_cli_versions_match_cargo_package_version() -> Result<(), Box<dyn std::error::Error>> {
+    let binaries = [
+        ("ctb-tile", env!("CARGO_BIN_EXE_ctb-tile")),
+        ("ctb-info", env!("CARGO_BIN_EXE_ctb-info")),
+        ("ctb-export", env!("CARGO_BIN_EXE_ctb-export")),
+        ("ctb-extents", env!("CARGO_BIN_EXE_ctb-extents")),
+    ];
+
+    for (name, binary) in binaries {
+        for flag in ["--version", "-V"] {
+            let output = Command::new(binary).arg(flag).output()?;
+            assert!(
+                output.status.success(),
+                "{name} {flag} failed: {:?}",
+                output.stderr
+            );
+            assert_eq!(
+                String::from_utf8(output.stdout)?.trim(),
+                env!("CARGO_PKG_VERSION"),
+                "{name} {flag}"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
 fn ctb_tile_and_info_work_as_processes() -> Result<(), Box<dyn std::error::Error>> {
     let directory = temporary_directory("tile-info")?;
     let input = directory.join("dem.tif");

@@ -12,7 +12,7 @@ use ctb_rs::{
 #[derive(Debug, Parser)]
 #[command(
     about = "Write GeoJSON coverage extents for CTB terrain tiles",
-    version = "0.4.1"
+    version = env!("CARGO_PKG_VERSION")
 )]
 struct Arguments {
     /// Directory in which {zoom}.geojson files are written.
@@ -41,7 +41,7 @@ struct Arguments {
 
 fn main() -> Result<(), Box<dyn Error>> {
     if std::env::args().any(|argument| argument == "--version" || argument == "-V") {
-        println!("0.4.1");
+        println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let arguments = Arguments::parse();
