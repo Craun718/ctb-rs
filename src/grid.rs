@@ -162,15 +162,15 @@ impl GlobalGeodeticGrid {
             .checked_add(1)
             .and_then(|value| value.checked_mul(self.tile_size))
             .ok_or(CtbError::InvalidZoom(tile.zoom))?;
-       Bounds::new(
+        Bounds::new(
             // C++ Grid::pixelsToCrs computes `pixel * res - originShift`
             // which clang contracts to fmadd with -ffp-contract=on.
             f64::from(lower_pixel_x).mul_add(resolution, -180.0),
             f64::from(lower_pixel_y).mul_add(resolution, -90.0),
             f64::from(upper_pixel_x).mul_add(resolution, -180.0),
             f64::from(upper_pixel_y).mul_add(resolution, -90.0),
-       )
-   }
+        )
+    }
 
     pub fn coordinate_to_tile(self, x: f64, y: f64, zoom: u8) -> Result<TileCoord, CtbError> {
         if !x.is_finite()
@@ -317,9 +317,9 @@ impl GlobalMercatorGrid {
         self.scale(zoom)
     }
 
-   pub fn tile_bounds(self, tile: TileCoord) -> Result<Bounds, CtbError> {
-       self.validate_tile(tile)?;
-       let resolution = self.resolution(tile.zoom)?;
+    pub fn tile_bounds(self, tile: TileCoord) -> Result<Bounds, CtbError> {
+        self.validate_tile(tile)?;
+        let resolution = self.resolution(tile.zoom)?;
         // C++ Grid::pixelsToCrs computes `pixel * res - originShift`
         // which clang contracts to fmadd. Each corner is transformed
         // independently, matching the C++ Grid::tileBounds path.
@@ -434,7 +434,7 @@ mod tests {
         let b = grid.tile_bounds(TileCoord {
             zoom: 0,
             x: 0,
-            y: 0
+            y: 0,
         })?;
         // FMA-contracted tile_bounds produces max_x = -4.44e-15 (matches C++).
         assert!((b.min_x - (-180.0)).abs() < 1e-10);
@@ -444,7 +444,7 @@ mod tests {
         let b1 = grid.tile_bounds(TileCoord {
             zoom: 0,
             x: 1,
-            y: 0
+            y: 0,
         })?;
         assert!(b1.min_x.abs() < 1e-10);
         assert!((b1.min_y - (-90.0)).abs() < 1e-10);

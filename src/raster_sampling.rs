@@ -61,9 +61,9 @@ impl RasterTileSamplePlan {
     }
 
     pub fn sample(&self, row: u32, column: u32) -> Option<RasterTileSample> {
-       if row >= self.tile_size || column >= self.tile_size {
-           return None;
-       }
+        if row >= self.tile_size || column >= self.tile_size {
+            return None;
+        }
         let col = f64::from(column);
         let row_f = f64::from(row);
         // GDAL transforms each destination pixel corner independently through
@@ -74,7 +74,7 @@ impl RasterTileSamplePlan {
         let max_x = (col + 1.0).mul_add(self.resolution, self.bounds.min_x);
         let max_y = row_f.mul_add(-self.resolution, self.bounds.max_y);
         let min_y = (row_f + 1.0).mul_add(-self.resolution, self.bounds.max_y);
-       Some(RasterTileSample {
+        Some(RasterTileSample {
             // GDAL GenImgProjTransformer computes the destination pixel centre
             // as (iDstX + 0.5) * resolution + origin using the same FMA path.
             world_x: (col + 0.5).mul_add(self.resolution, self.bounds.min_x),

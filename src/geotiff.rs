@@ -167,14 +167,14 @@ impl RasterSource for GeoTiffRasterSource {
         u16::try_from(self.file.overview_count()).map_or(u16::MAX, |count| count)
     }
 
-   fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError> {
-       self.validate_window(&self.metadata, request)?;
-       // GDALCreateWarpedVRT does not set padfSrcNoDataReal, so the warp
-       // kernel treats NoData pixels as regular values (density=1.0).
-       // We return raw pixel values without NaN conversion.
-       let samples = self.read_samples(0, request)?;
-       Ok(RasterWindow { request, samples })
-   }
+    fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError> {
+        self.validate_window(&self.metadata, request)?;
+        // GDALCreateWarpedVRT does not set padfSrcNoDataReal, so the warp
+        // kernel treats NoData pixels as regular values (density=1.0).
+        // We return raw pixel values without NaN conversion.
+        let samples = self.read_samples(0, request)?;
+        Ok(RasterWindow { request, samples })
+    }
 
     fn sampling_level_for_ratio(
         &self,
@@ -273,10 +273,10 @@ impl RasterSource for GeoTiffRasterSource {
             height: level.data_height,
             ..level.metadata.clone()
         };
-       self.validate_window(&data_metadata, request)?;
-       let samples = self.read_samples(level.level, request)?;
-       Ok(RasterWindow { request, samples })
-   }
+        self.validate_window(&data_metadata, request)?;
+        let samples = self.read_samples(level.level, request)?;
+        Ok(RasterWindow { request, samples })
+    }
 }
 
 fn raster_sample_type(

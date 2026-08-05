@@ -314,12 +314,8 @@ pub fn write_heightmap_tileset_with_progress(
                         });
                         heights
                             .and_then(|heights| {
-                                let child_mask = terrain_child_mask(
-                                    source_bounds,
-                                    &grid,
-                                    tile,
-                                    max_zoom,
-                                )?;
+                                let child_mask =
+                                    terrain_child_mask(source_bounds, &grid, tile, max_zoom)?;
                                 HeightmapTerrain::from_sampled_meters(&heights, child_mask)
                             })
                             .and_then(|terrain| write_terrain_atomically(&terrain, &path))
@@ -371,12 +367,10 @@ pub fn write_heightmap_tileset_with_factory(
         options.start_zoom,
         options.end_zoom,
     )?;
-    let source_pixel_bounds =
-        source_metadata
-            .transform
-            .bounds(source_metadata.width, source_metadata.height)?;
-    let source_bounds =
-        transform_bounds(source_pixel_bounds, &source_metadata.crs, &grid.crs())?;
+    let source_pixel_bounds = source_metadata
+        .transform
+        .bounds(source_metadata.width, source_metadata.height)?;
+    let source_bounds = transform_bounds(source_pixel_bounds, &source_metadata.crs, &grid.crs())?;
     // C++ TerrainTiler::createTile gates child masks on maxZoomLevel(),
     // which is the dataset's natural max zoom from its resolution.  Match
     // the same formula as TilesetPlan::from_raster_with_tile_grid.

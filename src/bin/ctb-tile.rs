@@ -7,12 +7,12 @@ use ctb_rs::{
     grid::{GlobalGeodeticGrid, GlobalMercatorGrid, TileGrid},
     raster_geotiff::{RasterGeoTiffCompression, RasterGeoTiffWriteOptions},
     raster_tileset::{
-        raster_geotiff_path, write_raster_geotiff_tileset_with_factory, RasterTilesetOptions,
+        RasterTilesetOptions, raster_geotiff_path, write_raster_geotiff_tileset_with_factory,
     },
     sampling::ResamplingMethod::{self, Average},
     tileset::{
-        terrain_path, write_heightmap_tileset_with_factory, HeightmapTilesetOptions,
-        TileWriteProgress,
+        HeightmapTilesetOptions, TileWriteProgress, terrain_path,
+        write_heightmap_tileset_with_factory,
     },
 };
 use geotiff_writer::{Predictor, TiffVariant};
@@ -334,8 +334,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        gtiff_options, validate_warp_options, worker_count, Arguments, Predictor,
-        RasterGeoTiffCompression, TiffVariant,
+        Arguments, Predictor, RasterGeoTiffCompression, TiffVariant, gtiff_options,
+        validate_warp_options, worker_count,
     };
 
     #[test]

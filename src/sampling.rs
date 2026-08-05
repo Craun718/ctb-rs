@@ -116,14 +116,14 @@ fn sample_at_level_with_nearest_support(
     let pixel_x = metadata.transform.world_to_pixel_x(world_x);
     let pixel_y = metadata.transform.world_to_pixel_y(world_y);
     match method {
-       ResamplingMethod::Nearest => {
+        ResamplingMethod::Nearest => {
             // GDAL GWKGeneralCaseThread nearest: static_cast<int>(padfX + 1e-10)
             // (gdalwarpkernel.cpp:5346-5347). The 1e-10 epsilon prevents
             // sub-ULP errors from selecting the wrong pixel at boundaries.
             let column = clamped_pixel(pixel_x + 1.0e-10, level.data_width);
             let row = clamped_pixel(pixel_y + 1.0e-10, level.data_height);
-           read_sample(source, level, column, row)
-       }
+            read_sample(source, level, column, row)
+        }
         ResamplingMethod::Bilinear => bilinear(source, level, pixel_x - 0.5, pixel_y - 0.5),
         ResamplingMethod::Cubic | ResamplingMethod::CubicSpline | ResamplingMethod::Lanczos => {
             filtered_sample(source, level, pixel_x - 0.5, pixel_y - 0.5, method)
