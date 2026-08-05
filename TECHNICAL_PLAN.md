@@ -638,6 +638,33 @@ dfValueReal += (dfWeight / dfTotalWeight) * (dfValueRealTmp - dfValueReal);
 
 Rust 证据：85 单元测试通过、clippy 无警告、16×16 oracle 144/144。
 
+#### P0 实施记录 13：NoData 像元在 CTB warp 路径中不被过滤
+
+16×16 fixture（无 NoData 像元）达到 144/144 后，加入含 NoData 像元（-9999）的
+16×16 fixture 产生 68/144 差异。差异根因：GDAL CTB 的 warp 路径不创建源
+NoData 有效性掩码。
+
+##### 根因 I：GDALCreateWarpedVRT 不设置 padfSrcNoDataReal
+
+CTB 调用链：`GDALCreateWarpedVRT` → `VRTWarpedDataset::Initialize` →
+`GDALWarpOperation::Initialize`。其中 `GDALCreateWarpedVRT` 通过
+`CopyCommonInfoFrom` 将源 band NoData 复制到目标 VRT band，但不设置
+warp options 的 `padfSrcNoDataReal`。`VRTWarpedAddOptions` 仅设
+`INIT_DEST=0`。因此 `panUnifiedSrcValid` 和 `pafUnifiedSrcDensity` 均为 nullptr，
+`GWKGetPixelValue`（`gdalwarpkernel.cpp:2187-2190`）对所有像元返回
+`dfBandDensity=1.0`。
+
+结果：NoData 像元（如 -9999）作为普通像元值传入所有采样算法：
+nearest 输出 -9999；average 将 -9999 纳入加权均值；min 选择 -9999。
+
+Rust 旧实现通过 `geotiff.rs::mark_nodata` 将 NoData 转为 NaN，再由采样核
+`is_finite()` 跳过，导致与 C++ 不一致。
+
+**修复**：移除 `geotiff.rs` 中 `read_window` 和 `read_sampling_window` 的
+`mark_nodata` 调用。NoData 值以原始形式（如 -9999）传入采样算法。采样核中的
+`is_finite()` 检查保留——对 Int32 源不会触发（-9999 为有限值）；Float32 NaN
+源的过滤差异留待后续 fixture 验证。
+
 ### P2：补齐 GDAL VRT 等价层
 
 按 `GDALTiler` 的执行顺序完成 source/grid CRS 比较、四角 bounds 变换、目标 GeoTransform、

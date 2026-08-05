@@ -167,13 +167,14 @@ impl RasterSource for GeoTiffRasterSource {
         u16::try_from(self.file.overview_count()).map_or(u16::MAX, |count| count)
     }
 
-    fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError> {
-        self.validate_window(&self.metadata, request)?;
-        let mut samples = self.read_samples(0, request)?;
-        mark_nodata(&mut samples, self.metadata.no_data);
-
-        Ok(RasterWindow { request, samples })
-    }
+   fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError> {
+       self.validate_window(&self.metadata, request)?;
+       // GDALCreateWarpedVRT does not set padfSrcNoDataReal, so the warp
+       // kernel treats NoData pixels as regular values (density=1.0).
+       // We return raw pixel values without NaN conversion.
+       let samples = self.read_samples(0, request)?;
+       Ok(RasterWindow { request, samples })
+   }
 
     fn sampling_level_for_ratio(
         &self,
@@ -272,22 +273,10 @@ impl RasterSource for GeoTiffRasterSource {
             height: level.data_height,
             ..level.metadata.clone()
         };
-        self.validate_window(&data_metadata, request)?;
-        let mut samples = self.read_samples(level.level, request)?;
-        mark_nodata(&mut samples, level.metadata.no_data);
-        Ok(RasterWindow { request, samples })
-    }
-}
-
-fn mark_nodata(samples: &mut [f64], no_data: Option<f64>) {
-    let Some(no_data) = no_data else {
-        return;
-    };
-    for sample in samples {
-        if (no_data.is_nan() && sample.is_nan()) || (!no_data.is_nan() && *sample == no_data) {
-            *sample = f64::NAN;
-        }
-    }
+       self.validate_window(&data_metadata, request)?;
+       let samples = self.read_samples(level.level, request)?;
+       Ok(RasterWindow { request, samples })
+   }
 }
 
 fn raster_sample_type(
@@ -437,7 +426,8 @@ mod tests {
             height: 1,
             overview: 0,
         })?;
-        assert!(window.samples[0].is_nan());
+        // GDALCreateWarpedVRT does not filter NoData; raw values are returned.
+        assert_eq!(window.samples[0], 10.0);
         assert_eq!(window.samples[1], 11.0);
         fs::remove_file(path)?;
         Ok(())

@@ -113,9 +113,12 @@
       GDAL 加权增量算法（`total_weight += df_weight; value += (df_weight / total_weight)
       * (sample - value)`），并使用 `mul_add` 匹配 clang FMA contraction（TECHNICAL_PLAN
       P0 记录 12 根因 H；`gdalwarpkernel.cpp:7016-7086`；`sampling.rs`）。
-- [ ] 用含多个 NoData 像元的 fixture 验证逐像元 NaN 标记、12 个采样分支的有效样本过滤、
-      全 NoData 时的 destination 初值 0，以及 Terrain 编码结果；当前 2×2 单 NoData 的
-      Raster average/Terrain z0 最小 oracle 已通过，完整矩阵仍待补。
+- [x] 用含多个 NoData 像元的 fixture 验证 GDAL CTB warp 路径的 NoData 处理：
+      GDALCreateWarpedVRT 不设 padfSrcNoDataReal，因此 NoData 像元作为普通值传入
+      所有采样算法（nearest 输出 NoData 原值，average 纳入 NoData，min 选 NoData）。
+      移除 `geotiff.rs::mark_nodata` 后 16×16 NoData fixture 达到 144/144，原始无
+      NoData fixture 仍为 144/144（TECHNICAL_PLAN P0 记录 13 根因 I）。
+      Terrain 编码和 Float32 NaN 源的过滤差异仍待补。
 
 ## P3：Mercator 与重投影
 
