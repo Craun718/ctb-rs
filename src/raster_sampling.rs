@@ -69,8 +69,12 @@ impl RasterTileSamplePlan {
         let max_y = self.bounds.max_y - f64::from(row) * self.resolution;
         let min_y = max_y - self.resolution;
         Some(RasterTileSample {
-            world_x: (min_x + max_x) / 2.0,
-            world_y: (min_y + max_y) / 2.0,
+            // GDAL GenImgProjTransformer computes the destination pixel
+            // centre as (iDstX + 0.5) * resolution + origin, which differs
+            // from (min_x + max_x) / 2.0 at the f64 ULP level and propagates
+            // into bilinear 4-sample integer rounding.
+            world_x: self.bounds.min_x + (f64::from(column) + 0.5) * self.resolution,
+            world_y: self.bounds.max_y - (f64::from(row) + 0.5) * self.resolution,
             footprint: Bounds::new(min_x, min_y, max_x, max_y).expect(
                 "grid resolution and validated tile bounds form a non-empty destination cell",
             ),
@@ -103,8 +107,8 @@ impl RasterTileSamplePlan {
                 )?;
                 let footprint =
                     transform_bounds(point.footprint, &self.target_crs, &source.metadata().crs)?;
-                values.push(sample_with_footprint_raster_tiler_level(
-                    source, &level, world_x, world_y, footprint, method,
+               values.push(sample_with_footprint_raster_tiler_level(
+                    source, &level, world_x, world_y, footprint, method, self.tile_size,
                 )?);
             }
         }

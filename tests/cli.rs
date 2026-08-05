@@ -90,7 +90,7 @@ fn ctb_tile_and_info_work_as_processes() -> Result<(), Box<dyn std::error::Error
         .output()?;
     assert!(heights_info.status.success());
     let heights_stdout = String::from_utf8(heights_info.stdout)?;
-    assert!(heights_stdout.starts_with("Heights:\n5000 5000 5000 "));
+    assert!(heights_stdout.starts_with("Heights:\n5500 5500 5500 "));
     assert!(heights_stdout.ends_with('\n'));
     assert_eq!(heights_stdout.lines().count(), 66);
 

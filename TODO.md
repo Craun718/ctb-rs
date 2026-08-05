@@ -77,6 +77,18 @@
       cubicspline/lanczos），footprint 算法（average/mode/max/min/med/q1/q3）不再受门禁约束，
       匹配 GDAL `GWKGeneralCase` vs `GWKAverageOrMode` 差异（TECHNICAL_PLAN P0 记录 7；
       `sampling.rs`；12/12 RasterTiler GTiff oracle 像素匹配）。
+- [x] 为 footprint 算法增加 GDAL `GWKAverageOrModeThread` margin gate：将目标像元角点变换到
+      source pixel 坐标后检查是否在 `[-nXMargin, nSrcSize+nXMargin]` 内
+      （`gdalwarpkernel.cpp:6681-6754`；`nXMargin = 2*max(1,ceil(1/dfXScale))`；
+      `dfXScale = tile_size / level.data_width`）。16×16 fixture 的 14 组 footprint 边界差异
+      由本修复消除（TECHNICAL_PLAN P0 记录 9 根因 A；`sampling.rs`）。
+- [x] 将 `average_at` 的几何 overlap 权重替换为 GDAL `COMPUTE_WEIGHT` / `COMPUTE_WEIGHT_Y`
+      宏公式（`gdalwarpkernel.cpp:6838-6849`），边界像元权重使用 `[dfXMin, iSrcX+1]` 线性长度
+      而非 clipped overlap（TECHNICAL_PLAN P0 记录 9 根因 B；`sampling.rs`）。
+- [x] 将 destination centre 计算从 `(min_x + max_x) / 2.0` 改为
+      `bounds.min_x + (column + 0.5) * resolution`（等价 GDAL `GenImgProjTransformer`
+      `(iDstX + 0.5) * res + origin`），消除末位 ULP 差异在 bilinear 4-sample 中传播导致的
+      整数舍入偏差（TECHNICAL_PLAN P0 记录 9 根因 C；`raster_sampling.rs`）。
 - [ ] 用含多个 NoData 像元的 fixture 验证逐像元 NaN 标记、12 个采样分支的有效样本过滤、
       全 NoData 时的 destination 初值 0，以及 Terrain 编码结果；当前 2×2 单 NoData 的
       Raster average/Terrain z0 最小 oracle 已通过，完整矩阵仍待补。

@@ -389,6 +389,84 @@ bilinear。当前 Rust 对界内 NaN tap 仍走丢弃+归一化，与 GDAL 在�
 Rust 证据：2×2 fixture GTiff oracle 12 算法 × 10 tiles 由 110/120 收敛至 120/120 逐像素
 通过；`cargo test` 与 `cargo clippy -- -D warnings` 通过。
 
+
+#### P0 实施记录 9：16×16 fixture 三类差分根因（footprint margin gate / average weight / destination centre）
+
+2×2 fixture GTiff oracle 已 120/120 通过后，16×16 fixture（origin (-8, 48)，pixel 0.5，
+values r*100+c+1，extent [-8, 0, 40, 48]）产生 144 组中 124 match / 20 mismatch。三类独立
+根因如下。
+
+##### 根因 A：footprint 算法缺少 GDAL margin gate（14 组差异）
+
+**影响**：`average`、`mode`、`max`、`min`、`med`、`q1`、`q3` 的 z0 tile `0/0/0.tif` 和 z1 tile
+`1/1/1.tif`。
+
+GDAL `GWKAverageOrModeThread`（`gdalwarpkernel.cpp:6681`）在循环每个目标像元前，计算
+`nXMargin = 2 * max(1, ceil(1/dfXScale))`（`gdalwarpkernel.cpp:6681-6683`），将目标像元的两个
+对角角点（左上、右下）从 destination pixel 坐标变换到 source pixel 坐标后，检查全部 4 个
+坐标值（padfX、padfX2、padfY、padfY2）是否都在 `[-nXMargin, nSrcXSize+nXMargin]` 范围内
+（`gdalwarpkernel.cpp:6747-6754`）。任一值越界则跳过该目标像元（destination 保持初值 0）。
+
+`dfXScale = nDstXSize / (nSrcXSize - dfSrcXExtraSize)`（`gdalwarpkernel.cpp:1037`）；
+CTB RasterTiler 路径中 `nDstXSize = tile_size`（geodetic 默认 65），`nSrcXSize = level.data_width`，
+`dfSrcXExtraSize = 0.0`（CTB 的 `GDALCreateWarpedVRT` 路径不引入 extra size）。16×16 source 时
+`dfXScale = 65/16 = 4.0625`，`nXMargin = 2 * max(1, ceil(1/4.0625)) = 2`。
+
+Rust 此前对 footprint 算法不加门禁，仅靠 `indices_overlapping_footprint` 判断是否有交集。
+这导致 footprint 部分超出 source 边界但角点仍在 `[-2, nSrcSize+2]` 内的目标像元被保留，
+而 GDAL 因角点越界而跳过它们（返回 0）。
+
+**修复位置**：`sampling.rs::sample_with_footprint_raster_tiler_level`，在 dispatch 到 footprint
+算法前增加 margin gate 检查。门禁所需的 source 维度是 `level.data_width` / `level.data_height`
+（SamplingLevel 的数据维度），而非 `metadata.width` / `metadata.height`。
+
+##### 根因 B：average 权重公式与 GDAL COMPUTE_WEIGHT 不一致（average 额外 6+15 组差异）
+
+**影响**：`average` z0 tile `0/0/0.tif`（6 diffs at rows 15, 18）和 z1 tile `1/1/1.tif`（15 diffs at
+rows 30-33）。
+
+GDAL `GWKAverageOrModeThread` 的 average 分支使用 `COMPUTE_WEIGHT` / `COMPUTE_WEIGHT_Y` 宏
+（`gdalwarpkernel.cpp:6838-6849`）计算每个 source 像元的权重：
+
+```
+COMPUTE_WEIGHT_Y(iSrcY):
+  if iSrcY == iSrcYMin: (iSrcYMin+1 == iSrcYMax) ? 1.0 : 1-(dfYMin-iSrcYMin)
+  elif iSrcY+1 == iSrcYMax: 1-(iSrcYMax-dfYMax)
+  else: 1.0
+
+COMPUTE_WEIGHT(iSrcX, dfWeightY):
+  if iSrcX == iSrcXMin: (iSrcXMin+1 == iSrcXMax) ? dfWeightY : dfWeightY*(1-(dfXMin-iSrcXMin))
+  elif iSrcX+1 == iSrcXMax: dfWeightY*(1-(iSrcXMax-dfXMax))
+  else: dfWeightY
+```
+
+其中 `dfXMin/dfXMax/dfYMin/dfYMax` 是目标像元角点在 source pixel 坐标系中的坐标（与根因 A
+的角点相同）。边界 source 像元的权重可以大于 1.0（当目标 footprint 超出 source 边界时），
+因为公式计算的是 `[dfXMin, iSrcX+1]` 的长度（以 source pixel 为单位），而非 clipped overlap。
+
+Rust `average_at` 此前使用几何 overlap area（`overlap_length` 乘积除以总面积），对边界像元
+给出不同（偏小）的权重。当 footprint 超出 source 边界时，Rust 权重小于 GDAL 权重，导致加权
+平均结果不同。
+
+`iSrcXMin = floor(dfXMin + EPS)`，`iSrcXMax = min(ceil(dfXMax - EPS), nSrcXSize)`（EPS = 1e-10），
+当 `iSrcXMin == iSrcXMax` 且 `iSrcXMax < nSrcXSize` 时 `iSrcXMax++`（`gdalwarpkernel.cpp:6817-6823`）。
+
+**修复位置**：`sampling.rs::average_at`，替换几何 overlap 为 GDAL COMPUTE_WEIGHT 公式。
+
+##### 根因 C：destination centre 坐标计算与 GDAL GenImgProjTransformer 不一致（6 组差异）
+
+**影响**：`bilinear`（1 tile）、`cubic`（2 tiles）、`cubicspline`（1 tile），均在 tile `2/3/2.tif`。
+
+GDAL `GenImgProjTransformer` 计算 destination centre 为 `(iDstX + 0.5) * resolution + origin`。
+Rust `RasterTileSamplePlan::sample()` 计算为 `(min_x + max_x) / 2.0`。二者数学上等价但在
+f64 浮点运算中产生不同舍入（末位 ULP 差异），在 bilinear 4-sample 插值中传播后导致
+`floor(x + 0.5)` 整数舍入结果不同（如 1044 vs 1043）。
+
+**修复位置**：`raster_sampling.rs::RasterTileSamplePlan::sample`，将 centre 计算改为
+`self.bounds.min_x + (f64::from(column) + 0.5) * self.resolution` 和
+`self.bounds.max_y - (f64::from(row) + 0.5) * self.resolution`。footprint 的像素边缘坐标
+（min_x/max_y 等）保持不变。
+
 ### P2：补齐 GDAL VRT 等价层
 
 按 `GDALTiler` 的执行顺序完成 source/grid CRS 比较、四角 bounds 变换、目标 GeoTransform、

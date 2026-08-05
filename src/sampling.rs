@@ -155,17 +155,19 @@ pub fn sample_with_footprint_level(
     method: ResamplingMethod,
 ) -> Result<f64, CtbError> {
     let value = match method {
-        ResamplingMethod::Average => average_at(source, level, footprint, world_x, world_y),
-        ResamplingMethod::Max => extrema_at(source, level, footprint, true),
-        ResamplingMethod::Min => extrema_at(source, level, footprint, false),
-        ResamplingMethod::Mode => mode_at(source, level, footprint),
-        ResamplingMethod::Med => quantile_at(source, level, footprint, 0.5),
-        ResamplingMethod::Q1 => quantile_at(source, level, footprint, 0.25),
-        ResamplingMethod::Q3 => quantile_at(source, level, footprint, 0.75),
-        ResamplingMethod::Nearest | ResamplingMethod::Bilinear => {
-            sample_at_level(source, level, world_x, world_y, method)
-        }
-        ResamplingMethod::Cubic | ResamplingMethod::CubicSpline | ResamplingMethod::Lanczos => {
+      ResamplingMethod::Average => average_at(source, level, footprint),
+       ResamplingMethod::Max => extrema_at(source, level, footprint, true),
+      ResamplingMethod::Min => extrema_at(source, level, footprint, false),
+      ResamplingMethod::Mode => mode_at(source, level, footprint),
+      ResamplingMethod::Med => quantile_at(source, level, footprint, 0.5),
+      ResamplingMethod::Q1 => quantile_at(source, level, footprint, 0.25),
+      ResamplingMethod::Q3 => quantile_at(source, level, footprint, 0.75),
+      ResamplingMethod::Nearest | ResamplingMethod::Bilinear => {
+          sample_at_level(source, level, world_x, world_y, method)
+      }
+        ResamplingMethod::Cubic
+        | ResamplingMethod::CubicSpline
+        | ResamplingMethod::Lanczos => {
             sample_at_level_with_nearest_support(source, level, world_x, world_y, method, true)
         }
     }?;
@@ -259,7 +261,16 @@ pub fn sample_with_footprint_raster_tiler(
     method: ResamplingMethod,
 ) -> Result<f64, CtbError> {
     let level = source.sampling_level_for_ratio(1.0)?;
-    sample_with_footprint_raster_tiler_level(source, &level, world_x, world_y, footprint, method)
+    let tile_size = source.metadata().width;
+    sample_with_footprint_raster_tiler_level(
+        source,
+        &level,
+        world_x,
+        world_y,
+        footprint,
+        method,
+        tile_size,
+    )
 }
 
 pub fn sample_with_footprint_raster_tiler_level(
@@ -269,9 +280,27 @@ pub fn sample_with_footprint_raster_tiler_level(
     world_y: f64,
     footprint: Bounds,
     method: ResamplingMethod,
+    tile_size: u32,
 ) -> Result<f64, CtbError> {
+    // GDAL GWKAverageOrModeThread applies a margin gate to footprint
+    // algorithms before computing statistics (gdalwarpkernel.cpp:6681-6754).
+    // Center-based algorithms (nearest/bilinear/cubic/...) have their own
+    // bounds check below.
+    let is_footprint = matches!(
+        method,
+        ResamplingMethod::Average
+            | ResamplingMethod::Max
+            | ResamplingMethod::Min
+            | ResamplingMethod::Mode
+            | ResamplingMethod::Med
+            | ResamplingMethod::Q1
+            | ResamplingMethod::Q3
+    );
+    if is_footprint && !passes_footprint_margin_gate(level, footprint, tile_size) {
+        return Ok(0.0);
+    }
     let value = match method {
-        ResamplingMethod::Average => average_at(source, level, footprint, world_x, world_y),
+        ResamplingMethod::Average => average_at(source, level, footprint),
         ResamplingMethod::Max => extrema_at(source, level, footprint, true),
         ResamplingMethod::Min => extrema_at(source, level, footprint, false),
         ResamplingMethod::Mode => mode_at(source, level, footprint),
@@ -360,59 +389,69 @@ fn average_at(
     source: &dyn RasterSource,
     level: &SamplingLevel,
     footprint: Bounds,
-    _fallback_x: f64,
-    _fallback_y: f64,
 ) -> Result<f64, CtbError> {
     let metadata = &level.metadata;
-    let columns = indices_overlapping_footprint(
-        footprint.min_x,
-        footprint.max_x,
-        metadata.transform.origin_x,
-        metadata.transform.pixel_width,
-        level.data_width,
-    );
-    let rows = indices_overlapping_footprint(
-        footprint.min_y,
-        footprint.max_y,
-        metadata.transform.origin_y,
-        metadata.transform.pixel_height,
-        level.data_height,
-    );
-    let (Some((first_column, last_column)), Some((first_row, last_row))) = (columns, rows) else {
-        return Ok(0.0);
-    };
+    let transform = &metadata.transform;
 
+    // Compute destination pixel corners in source pixel coordinates
+    // (gdalwarpkernel.cpp:6810-6811, after swap-if-needed).
+    let x_left = (footprint.min_x - transform.origin_x) / transform.pixel_width;
+    let x_right = (footprint.max_x - transform.origin_x) / transform.pixel_width;
+    let y_top = (footprint.max_y - transform.origin_y) / transform.pixel_height;
+    let y_bottom = (footprint.min_y - transform.origin_y) / transform.pixel_height;
+
+    let df_x_min = x_left.min(x_right);
+    let df_x_max = x_left.max(x_right);
+    let df_y_min = y_top.min(y_bottom);
+    let df_y_max = y_top.max(y_bottom);
+
+    // Check intersection with [0, nSrcSize] (gdalwarpkernel.cpp:6816).
+    const EPS: f64 = 1e-10;
+    let n_src_w = f64::from(level.data_width);
+    let n_src_h = f64::from(level.data_height);
+    if !(df_x_max > -EPS && df_x_min < n_src_w + EPS) {
+        return Ok(0.0);
+    }
+    if !(df_y_max > -EPS && df_y_min < n_src_h + EPS) {
+        return Ok(0.0);
+    }
+
+    // Compute source pixel index range (gdalwarpkernel.cpp:6817-6823).
+    let i_src_x_min = (df_x_min + EPS).max(0.0).floor() as i32;
+    let mut i_src_x_max = ((df_x_max - EPS).ceil()).min(n_src_w) as i32;
+    if i_src_x_min == i_src_x_max && i_src_x_max < n_src_w as i32 {
+        i_src_x_max += 1;
+    }
+    let i_src_y_min = (df_y_min + EPS).max(0.0).floor() as i32;
+    let mut i_src_y_max = ((df_y_max - EPS).ceil()).min(n_src_h) as i32;
+    if i_src_y_min == i_src_y_max && i_src_y_max < n_src_h as i32 {
+        i_src_y_max += 1;
+    }
+
+    // GDAL GWKAOM_Average weight loop (gdalwarpkernel.cpp:6862-6874).
     let mut sum = 0.0;
-    let mut total_area = 0.0;
-    for row in first_row..=last_row {
-        for column in first_column..=last_column {
-            let pixel_x = pixel_interval(
-                metadata.transform.origin_x,
-                metadata.transform.pixel_width,
-                column,
-            );
-            let pixel_y = pixel_interval(
-                metadata.transform.origin_y,
-                metadata.transform.pixel_height,
-                row,
-            );
-            let overlap_area =
-                overlap_length(footprint.min_x, footprint.max_x, pixel_x.0, pixel_x.1)
-                    * overlap_length(footprint.min_y, footprint.max_y, pixel_y.0, pixel_y.1);
-            if overlap_area > 0.0 {
-                let sample = read_sample_raw(source, level, column, row)?;
-                if !sample.is_finite() {
-                    continue;
-                }
-                sum += sample * overlap_area;
-                total_area += overlap_area;
+    let mut total_weight = 0.0;
+    for i_src_y in i_src_y_min..i_src_y_max {
+        let df_weight_y =
+            compute_weight_y(i_src_y, i_src_y_min, i_src_y_max, df_y_min, df_y_max);
+        for i_src_x in i_src_x_min..i_src_x_max {
+            let df_weight =
+                compute_weight(i_src_x, df_weight_y, i_src_x_min, i_src_x_max, df_x_min, df_x_max);
+            if df_weight <= 0.0 {
+                continue;
             }
+            let sample = read_sample_raw(source, level, i_src_x as u32, i_src_y as u32)?;
+            if !sample.is_finite() {
+                continue;
+            }
+            sum += sample * df_weight;
+            total_weight += df_weight;
         }
     }
-    if total_area == 0.0 {
+    if total_weight == 0.0 {
         Ok(0.0)
     } else {
-        Ok(sum / total_area)
+        Ok(sum / total_weight)
     }
 }
 
@@ -439,17 +478,102 @@ fn indices_overlapping_footprint(
     if first_index > last_index {
         return None;
     }
-    Some((first_index, last_index))
+   Some((first_index, last_index))
 }
 
-fn pixel_interval(origin: f64, pixel_size: f64, index: u32) -> (f64, f64) {
-    let first = origin + pixel_size * f64::from(index);
-    let second = first + pixel_size;
-    (first.min(second), first.max(second))
+/// GDAL dfXScale / dfYScale computation (gdalwarpkernel.cpp:1037-1060).
+/// CTB's GDALCreateWarpedVRT path uses dfSrcXExtraSize = 0.
+fn warp_scale(n_dst_size: u32, n_src_size: u32) -> f64 {
+    let dst = f64::from(n_dst_size);
+    let src = f64::from(n_src_size);
+    let df_src_extra = 0.0;
+    let mut df_scale = dst / (src - df_src_extra);
+    if src >= dst && src <= dst + df_src_extra {
+        df_scale = 1.0;
+    }
+    if df_scale < 1.0 {
+        let df_reciprocal = 1.0 / df_scale;
+        let n_reciprocal = (df_reciprocal + 0.5) as i32;
+        if (df_reciprocal - f64::from(n_reciprocal)).abs() < 0.05 {
+            df_scale = 1.0 / f64::from(n_reciprocal);
+        }
+    }
+    df_scale
 }
 
-fn overlap_length(first_min: f64, first_max: f64, second_min: f64, second_max: f64) -> f64 {
-    first_max.min(second_max) - first_min.max(second_min)
+/// GDAL nXMargin (gdalwarpkernel.cpp:6681): `2 * max(1, ceil(1/dfScale))`.
+fn warp_margin(df_scale: f64) -> f64 {
+    f64::from(2 * 1i32.max((1.0 / df_scale).ceil() as i32))
+}
+
+/// GDAL GWKAverageOrModeThread margin gate (gdalwarpkernel.cpp:6747-6754).
+/// Checks that the destination pixel's footprint corners, transformed to
+/// source pixel coordinates, all lie within `[-nMargin, nSrcSize + nMargin]`.
+fn passes_footprint_margin_gate(
+    level: &SamplingLevel,
+    footprint: Bounds,
+    tile_size: u32,
+) -> bool {
+    let transform = &level.metadata.transform;
+    let x_left = (footprint.min_x - transform.origin_x) / transform.pixel_width;
+    let x_right = (footprint.max_x - transform.origin_x) / transform.pixel_width;
+    let y_top = (footprint.max_y - transform.origin_y) / transform.pixel_height;
+    let y_bottom = (footprint.min_y - transform.origin_y) / transform.pixel_height;
+    let df_x_min = x_left.min(x_right);
+    let df_x_max = x_left.max(x_right);
+    let df_y_min = y_top.min(y_bottom);
+    let df_y_max = y_top.max(y_bottom);
+    let n_x_margin = warp_margin(warp_scale(tile_size, level.data_width));
+    let n_y_margin = warp_margin(warp_scale(tile_size, level.data_height));
+    let src_w = f64::from(level.data_width);
+    let src_h = f64::from(level.data_height);
+    df_x_min >= -n_x_margin
+        && df_x_max <= src_w + n_x_margin
+        && df_y_min >= -n_y_margin
+        && df_y_max <= src_h + n_y_margin
+}
+
+/// GDAL COMPUTE_WEIGHT_Y macro (gdalwarpkernel.cpp:6838-6840).
+fn compute_weight_y(
+    i_src_y: i32,
+    i_src_y_min: i32,
+    i_src_y_max: i32,
+    df_y_min: f64,
+    df_y_max: f64,
+) -> f64 {
+    if i_src_y == i_src_y_min {
+        if i_src_y_min + 1 == i_src_y_max {
+            1.0
+        } else {
+            1.0 - (df_y_min - f64::from(i_src_y_min))
+        }
+    } else if i_src_y + 1 == i_src_y_max {
+        1.0 - (f64::from(i_src_y_max) - df_y_max)
+    } else {
+        1.0
+    }
+}
+
+/// GDAL COMPUTE_WEIGHT macro (gdalwarpkernel.cpp:6844-6849).
+fn compute_weight(
+    i_src_x: i32,
+    df_weight_y: f64,
+    i_src_x_min: i32,
+    i_src_x_max: i32,
+    df_x_min: f64,
+    df_x_max: f64,
+) -> f64 {
+    if i_src_x == i_src_x_min {
+        if i_src_x_min + 1 == i_src_x_max {
+            df_weight_y
+        } else {
+            df_weight_y * (1.0 - (df_x_min - f64::from(i_src_x_min)))
+        }
+    } else if i_src_x + 1 == i_src_x_max {
+        df_weight_y * (1.0 - (f64::from(i_src_x_max) - df_x_max))
+    } else {
+        df_weight_y
+    }
 }
 
 fn bilinear(
