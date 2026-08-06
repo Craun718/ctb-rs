@@ -292,3 +292,13 @@
       对应单元测试，避免高分辨率 overview 用例逐像素重复解压。
 - [x] 重新运行 `scripts/verify-ctb-oracle.zsh`，120/120 用例通过，并回写
       验证证据。
+
+## P11：GitHub Actions Node.js 运行时升级
+
+- [x] 在 `TECHNICAL_PLAN.md`、`TEST_STRATEGY.md`、`TODO.md` 登记 P11 范围与实施规则。
+- [x] 将 `.github/workflows/ci.yml` 的 `actions/checkout@v4` 升级为
+      `actions/checkout@v5`。
+- [x] 将 `.github/workflows/ci.yml` 的 `actions/upload-artifact@v4` 升级为
+      `actions/upload-artifact@v5`。
+- [x] 本地验证 workflow YAML 可解析，并确认两个 action 官方仓库存在 v5 tag。
+- [x] 回写验证证据。

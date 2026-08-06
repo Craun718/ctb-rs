@@ -1471,3 +1471,37 @@ OxiGeo 0.2.3 的可用读取范围为 GeoTIFF 与 VRT；其它格式虽能被格
 全部通过；完整 `scripts/verify-ctb-oracle.zsh` 的 5 source × 12 resampling × 2 range
 共 120 个用例全部通过，包含此前卡住的高分辨率 overview NoData 输入。
 `cargo tree --all-features` 无 `geotiff-reader` / `geotiff-writer`。
+
+### P11：GitHub Actions Node.js 运行时升级（已完成）
+
+GitHub 自 2025-09-19 起弃用 Node.js 20 的 action 运行时，当前 `ci.yml` 使用的
+`actions/checkout@v4` 与 `actions/upload-artifact@v4` 会被强制运行在 Node.js 24
+并输出 deprecation warning。为消除该警告，将两个 action 升级到官方 Node.js 24
+主版本 `actions/checkout@v5`、`actions/upload-artifact@v5`。
+
+实施规则：
+
+1. 只修改 `.github/workflows/ci.yml` 中的 action 引用，不改变触发事件、矩阵、
+   Rust toolchain、构建命令、artifact 名称或上传路径。
+2. 保持 `actions/checkout@v5` 与 `actions/upload-artifact@v5` 的可变主版本引用，
+   与当前仓库的 action 引用风格一致。
+3. 不修改 `Cargo.toml`，不新增或移除依赖；本轮不运行 Rust 算法测试。
+4. 本地验证 workflow 可被 YAML 解析，并核对两个官方仓库均存在 v5 tag。
+
+完成标准：`.github/workflows/ci.yml` 不再出现 `actions/checkout@v4` 或
+`actions/upload-artifact@v4`；GitHub Actions 日志不再出现 Node.js 20
+deprecation warning；现有构建与上传行为不变。
+
+#### P11 实施记录 1：升级 GitHub Actions 运行时（已完成）
+
+将 `.github/workflows/ci.yml` 中的 `actions/checkout@v4` 升级为
+`actions/checkout@v5`，`actions/upload-artifact@v4` 升级为
+`actions/upload-artifact@v5`；触发事件、runner 矩阵、Rust toolchain、
+`cargo build --all-targets --locked` 与 artifact 上传路径保持不变。
+
+验证：
+
+- `git ls-remote --tags https://github.com/actions/checkout.git` 与
+  `https://github.com/actions/upload-artifact.git` 均确认存在 v5 tag。
+- `.github/workflows/ci.yml` 通过 YAML 解析。
+- 工作流中已无 `actions/checkout@v4` / `actions/upload-artifact@v4`。

@@ -306,3 +306,15 @@ OxiGeo 0.2.3，并保持现有 GeoTIFF 行为基线。测试必须只断言 OxiG
 `cargo clippy --all-targets -- -D warnings`、
 `scripts/verify-ctb-oracle.zsh` 通过；`cargo tree` 无
 `geotiff-reader` / `geotiff-writer`。
+
+## 11. P11 GitHub Actions Node.js 运行时升级
+
+GitHub Actions 已弃用 Node.js 20 action 运行时，`actions/checkout@v4` 与
+`actions/upload-artifact@v4` 会在 runner 上输出 deprecation warning。升级到
+Node.js 24 主版本 `actions/checkout@v5`、`actions/upload-artifact@v5` 后，
+验证范围限定为 workflow 配置：
+
+- 确认 `.github/workflows/ci.yml` 可被 YAML 解析。
+- 检查 `actions/checkout@v4`、`actions/upload-artifact@v4` 不再出现。
+- 保持 CI 的触发事件、矩阵、构建命令与 artifact 上传行为不变。
+- 不运行 Rust 测试，也不执行 C++ oracle；本变更不涉及采样或栅格行为。
