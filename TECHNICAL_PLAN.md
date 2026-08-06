@@ -1408,3 +1408,52 @@ proj4rs 可解析的 EPSG 输入，同时保留“零 GDAL/PROJ 依赖”说明�
 
 验证门禁：`cargo fmt --check`、`cargo test --all-targets`、
 `cargo clippy --all-targets -- -D warnings` 全部通过。
+
+### P10：OxiGeo 栅格读写迁移（进行中）
+
+用户要求用 OxiGeo 的栅格读写库替代当前项目的 `geotiff-reader` /
+`geotiff-writer`，以支持更多格式。经 API 与版本调查，固定使用
+`oxigeo@0.2.3`（启用 `geotiff,vrt`）与 `oxigeo-geotiff@0.2.3`（启用 `zstd`）。
+OxiGeo 0.2.3 的可用读取范围为 GeoTIFF 与 VRT；其它格式虽能被格式探测识别，但
+没有像素读取实现，不得宣称支持。写入范围仍为 GeoTIFF，保持当前 CTB 输出契约。
+
+实施规则：
+
+1. 输入支持 GeoTIFF 与 VRT；其它栅格输入在尝试打开前返回
+   `CtbError::UnsupportedRaster`，错误消息明确说明 OxiGeo 0.2.3 没有该格式的像素
+   reader，不静默降级。
+2. VRT 没有 overview API，`overview_count()` 返回 0；GeoTIFF 内部 overview
+   继续映射到现有 level-aware 读取。
+3. 保留 C++ overview 已知行为：`sampling_level_for_ratio` 返回 `level: 0`，
+   同时携带 overview metadata，读取仍从 base dataset 进行。
+4. 不再复制旧实现可疑的 `.overview_ifd(...)` 双调用；使用 OxiGeo
+   `level_size` 获得各 level 宽高。
+5. `RasterGeoTiffWriteOptions::tiff_variant` 映射为 OxiGeo `BigTiffMode`：
+   `NO=Disable`、`YES=Force`、`IF_NEEDED=Auto`。
+6. `COMPRESS=JPEG` 与 `COMPRESS=LERC` 在任何 tile 写出前返回不支持错误；其它
+   当前支持的压缩映射到 OxiGeo `Compression`，ZSTD 通过 `oxigeo-geotiff`
+   的 `zstd` 功能继续可用。
+7. OxiGeo 的 `WriterConfig::new` 默认生成 overview 与 256×256 tile；写入时显式
+   关闭 overview，并按 CLI 的 tile/strip 设置写 `tile_width` / `tile_height`。
+8. 所有 OxiGeo `u64` 宽高在进入现有 `u32` 接口前使用带错误信息的 `expect` 做
+   不变量检查，不使用 `unwrap`。
+9. 生产代码不得使用可能 panic 的 `unwrap`；穷尽分支已证明的不变量使用带消息的
+   `expect`。
+
+实现范围：
+
+- `src/geotiff.rs`：`GeoTiffRasterSource` 内部从 OxiGeo 读取 GeoTIFF/VRT，
+  保持公开类型名与现有 metadata/sample 接口；CRS 从 `epsg_code()` /
+  `srs()` 提取，无法解析时返回 `UnsupportedCrs` 或 `MissingCrs`。
+- `src/raster_geotiff.rs`、`src/export.rs`、`src/raster_tileset.rs`：低层
+  `GeoTiffWriter` 替换旧 builder，迁移 BigTIFF、Predictor、TILED 与压缩选项。
+- `src/bin/ctb-tile.rs`、`src/bin/ctb-extents.rs`：更新格式相关帮助文本；
+  README 明确输入为 GeoTIFF/VRT、输出为 GeoTIFF，并列出当前不支持的非
+  GeoTIFF/VRT 像素读取格式。
+- `tests/cli.rs`：迁移 fixture 写入/读取辅助函数，新增 VRT 打开与不支持格式拒绝
+  测试，JPEG/LERC 从成功用例改为写出前失败用例。
+
+完成标准：`cargo fmt --check`、`cargo test --all-targets`、
+`cargo clippy --all-targets -- -D warnings`、
+`scripts/verify-ctb-oracle.zsh` 通过；`cargo tree` 不再出现
+`geotiff-reader` / `geotiff-writer`；OxiGeo 0.2.3 的格式能力与文档一致。

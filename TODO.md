@@ -269,3 +269,22 @@
 - [x] 新增 CLI 集成测试：投影坐标 GeoTIFF 输入能生成对应 CTB profile 的切片。
 - [x] 运行 `cargo fmt --check`、`cargo test`、`cargo clippy --all-targets -- -D warnings`
       并回写验证证据。
+
+## P10：OxiGeo 栅格读写迁移
+
+- [ ] 在 `TECHNICAL_PLAN.md`、`TODO.md`、`TEST_STRATEGY.md` 登记 P10 范围与实施规则。
+- [ ] 通过 Cargo CLI 添加 `oxigeo@0.2.3`（`geotiff,vrt`）、
+      `oxigeo-geotiff@0.2.3`（`zstd`），移除 `geotiff-reader` /
+      `geotiff-writer`。
+- [ ] 迁移 reader：`GeoTiffRasterSource` 支持 GeoTIFF + VRT，非
+      GeoTIFF/VRT 返回 `UnsupportedRaster`；NoData、CRS、overview 与
+      `sampling_level_for_ratio` 保持现有行为。
+- [ ] 迁移 writer：低层 `GeoTiffWriter` 替换旧 builder，映射 BigTIFF、
+      Predictor、TILED、压缩；JPEG/LERC 在写出前拒绝。
+- [ ] 更新 fixture 写入/读取辅助函数，新增 VRT 与不支持格式测试，调整
+      JPEG/LERC CLI 断言。
+- [ ] 更新 `ctb-tile`、`ctb-extents` help 与 `README.md` 的格式说明。
+- [ ] 运行 `cargo fmt --check`、`cargo test --all-targets`、
+      `cargo clippy --all-targets -- -D warnings`、
+      `scripts/verify-ctb-oracle.zsh`，确认 `cargo tree` 无旧 geotiff crates，
+      并回写验证证据。

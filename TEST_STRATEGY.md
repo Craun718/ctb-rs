@@ -276,3 +276,31 @@ EPSG:3857 仍走既有内建公式，避免破坏 P0–P6 的 oracle；其它 EP
 
 完成门禁沿用 P7：`cargo fmt --check`、`cargo test`、`cargo clippy --all-targets -- -D
 warnings` 全部通过；既有 4326↔3857 oracle 行为不回归。
+
+## 10. P10 OxiGeo 栅格读写迁移
+
+P10 将 fixture 与测试辅助函数从 `geotiff-reader` / `geotiff-writer` 迁移到
+OxiGeo 0.2.3，并保持现有 GeoTIFF 行为基线。测试必须只断言 OxiGeo 0.2.3
+实际支持的读取范围：GeoTIFF 与 VRT。输出仍只验证 GeoTIFF。
+
+测试策略：
+
+- 保留现有 GeoTIFF open/metadata/value/overview/BigTIFF/Predictor/tile/strip
+  断言；fixture 生成与读回改为 OxiGeo。
+- 新增 VRT fixture：写入一个可被 OxiGeo 生成或人工构造的 `.vrt`，引用仓库内
+  小 GeoTIFF；断言 VRT 能打开、metadata 正确、数值窗口读取与源 GeoTIFF 一致。
+- 新增不支持格式拒绝测试：`.nc`、`.jp2` 或 `.h5` 输入在写出任何 tile 前返回
+  `UnsupportedRaster`，输出目录不含 tile 文件。
+- `COMPRESS=JPEG` 与 `COMPRESS=LERC` 的 CLI 测试从“成功写出”改为“在写出任何
+  tile 前失败”，并断言 `0/0/0.tif` 不存在。
+- BigTIFF 测试保留 header 断言：`BIGTIFF=NO` 为 `II*\0` / `MM\0*`，
+  `BIGTIFF=YES` 为 `II+\0` / `MM\0+`；`IF_NEEDED` 按文件大小自动选择。
+- `overview_count()` 在 VRT 输入上为 0；GeoTIFF overview 的
+  `sampling_level_for_ratio` 保持 `level: 0` 加 overview metadata 的 C++ 行为。
+- 所有维度从 OxiGeo `u64` 转入现有 `u32` 接口的转换测试覆盖合法边界与溢出拒绝；
+  测试代码如使用 `expect`，消息必须说明被验证的不变量。
+
+门禁：`cargo fmt --check`、`cargo test --all-targets`、
+`cargo clippy --all-targets -- -D warnings`、
+`scripts/verify-ctb-oracle.zsh` 通过；`cargo tree` 无
+`geotiff-reader` / `geotiff-writer`。
