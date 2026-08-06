@@ -1409,7 +1409,7 @@ proj4rs 可解析的 EPSG 输入，同时保留“零 GDAL/PROJ 依赖”说明�
 验证门禁：`cargo fmt --check`、`cargo test --all-targets`、
 `cargo clippy --all-targets -- -D warnings` 全部通过。
 
-### P10：OxiGeo 栅格读写迁移（进行中）
+### P10：OxiGeo 栅格读写迁移（已完成）
 
 用户要求用 OxiGeo 的栅格读写库替代当前项目的 `geotiff-reader` /
 `geotiff-writer`，以支持更多格式。经 API 与版本调查，固定使用
@@ -1439,6 +1439,11 @@ OxiGeo 0.2.3 的可用读取范围为 GeoTIFF 与 VRT；其它格式虽能被格
    不变量检查，不使用 `unwrap`。
 9. 生产代码不得使用可能 panic 的 `unwrap`；穷尽分支已证明的不变量使用带消息的
    `expect`。
+10. OxiGeo 对 1×1 window 读取会重复解压 GeoTIFF block，性能远低于旧的
+    `geotiff-reader` 块缓存；CTB 直接源保留 NoData 哨兵值作为普通 f64 样本，
+    因此 `ctb-tile` 的 `CachedRasterSource` 对 GeoTIFF/VRT 使用
+    `new_with_nodata_cache`，允许声明 NoData 的输入也走 64×64 块缓存，
+    避免 oracle 高分辨率 overview 用例退化为逐像素重复读取。
 
 实现范围：
 
@@ -1450,6 +1455,8 @@ OxiGeo 0.2.3 的可用读取范围为 GeoTIFF 与 VRT；其它格式虽能被格
 - `src/bin/ctb-tile.rs`、`src/bin/ctb-extents.rs`：更新格式相关帮助文本；
   README 明确输入为 GeoTIFF/VRT、输出为 GeoTIFF，并列出当前不支持的非
   GeoTIFF/VRT 像素读取格式。
+- `src/cache.rs`：新增 `new_with_nodata_cache` 构造入口，仅由直接源
+  `ctb-tile` 使用；默认 `new` 仍保留“声明 NoData 的源不做块缓存”的通用行为。
 - `tests/cli.rs`：迁移 fixture 写入/读取辅助函数，新增 VRT 打开与不支持格式拒绝
   测试，JPEG/LERC 从成功用例改为写出前失败用例。
 
@@ -1457,3 +1464,10 @@ OxiGeo 0.2.3 的可用读取范围为 GeoTIFF 与 VRT；其它格式虽能被格
 `cargo clippy --all-targets -- -D warnings`、
 `scripts/verify-ctb-oracle.zsh` 通过；`cargo tree` 不再出现
 `geotiff-reader` / `geotiff-writer`；OxiGeo 0.2.3 的格式能力与文档一致。
+
+#### P10 实施记录 1：OxiGeo 迁移验证（已完成）
+
+`cargo fmt --check`、`cargo test --all-targets`、`cargo clippy --all-targets -- -D warnings`
+全部通过；完整 `scripts/verify-ctb-oracle.zsh` 的 5 source × 12 resampling × 2 range
+共 120 个用例全部通过，包含此前卡住的高分辨率 overview NoData 输入。
+`cargo tree --all-features` 无 `geotiff-reader` / `geotiff-writer`。

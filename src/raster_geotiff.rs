@@ -1,7 +1,14 @@
 use std::path::Path;
 
-use geotiff_writer::{Compression, GeoTiffBuilder, Predictor, TiffVariant};
-use ndarray::Array2;
+use oxigeo::{
+    GeoTransform, RasterDataType,
+    core_types::types::NoDataValue,
+    geotiff::{
+        GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling, WriterConfig,
+        tiff::{Compression, Predictor},
+        writer::BigTiffMode,
+    },
+};
 
 use crate::{
     CtbError,
@@ -24,10 +31,24 @@ pub enum RasterGeoTiffCompression {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RasterGeoTiffTiffVariant {
+    Classic,
+    BigTiff,
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RasterGeoTiffPredictor {
+    None,
+    HorizontalDifferencing,
+    FloatingPoint,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RasterGeoTiffWriteOptions {
     pub compression: RasterGeoTiffCompression,
-    pub tiff_variant: TiffVariant,
-    pub predictor: Option<Predictor>,
+    pub tiff_variant: RasterGeoTiffTiffVariant,
+    pub predictor: Option<RasterGeoTiffPredictor>,
     pub tile_size: Option<(u32, u32)>,
 }
 
@@ -35,7 +56,7 @@ impl Default for RasterGeoTiffWriteOptions {
     fn default() -> Self {
         Self {
             compression: RasterGeoTiffCompression::None,
-            tiff_variant: TiffVariant::Auto,
+            tiff_variant: RasterGeoTiffTiffVariant::Auto,
             predictor: None,
             tile_size: None,
         }
@@ -100,66 +121,108 @@ pub fn write_raster_tile_as_geotiff_with_options(
             values.len()
         )));
     }
+
+    let compression = match options.compression {
+        RasterGeoTiffCompression::None => Compression::None,
+        RasterGeoTiffCompression::Deflate => Compression::Deflate,
+        RasterGeoTiffCompression::Lzw => Compression::Lzw,
+        RasterGeoTiffCompression::Zstd => Compression::Zstd,
+        RasterGeoTiffCompression::Jpeg => {
+            return Err(CtbError::UnsupportedRaster(
+                "COMPRESS=JPEG is not implemented by the OxiGeo GeoTIFF writer".to_owned(),
+            ));
+        }
+        RasterGeoTiffCompression::Lerc => {
+            return Err(CtbError::UnsupportedRaster(
+                "COMPRESS=LERC is not implemented by the OxiGeo GeoTIFF writer".to_owned(),
+            ));
+        }
+    };
+    validate_predictor(metadata.sample_type, options.predictor)?;
+
     let bounds = plan.bounds();
-    let mut builder = GeoTiffBuilder::new(
-        u32::try_from(side).map_err(|_| CtbError::InvalidRasterDimensions {
-            width: metadata.width,
-            height: metadata.height,
-        })?,
-        u32::try_from(side).map_err(|_| CtbError::InvalidRasterDimensions {
-            width: metadata.width,
-            height: metadata.height,
-        })?,
-    );
-    builder = match metadata.crs {
-        Crs::Epsg4326 => builder.geographic_epsg(4326),
-        Crs::Epsg3857 => builder.projected_epsg(3857),
+    let epsg = match metadata.crs {
+        Crs::Epsg4326 => 4326,
+        Crs::Epsg3857 => 3857,
         Crs::Epsg(code) => {
             return Err(CtbError::UnsupportedCrs(format!(
                 "output raster CRS EPSG:{code} is not a CTB grid CRS"
             )));
         }
-    }
-    .pixel_scale(plan.resolution(), plan.resolution())
-    .origin(bounds.min_x, bounds.max_y)
-    .compression(match options.compression {
-        RasterGeoTiffCompression::None => Compression::None,
-        RasterGeoTiffCompression::Deflate => Compression::Deflate,
-        RasterGeoTiffCompression::Lzw => Compression::Lzw,
-        RasterGeoTiffCompression::Zstd => Compression::Zstd,
-        RasterGeoTiffCompression::Jpeg => Compression::Jpeg,
-        RasterGeoTiffCompression::Lerc => Compression::Lerc,
-    })
-    .tiff_variant(options.tiff_variant);
-    if let Some(predictor) = options.predictor {
-        builder = builder.predictor(predictor);
-    }
+    };
+    let width = u64::try_from(side).map_err(|_| CtbError::InvalidRasterDimensions {
+        width: metadata.width,
+        height: metadata.height,
+    })?;
+    let height = u64::try_from(side).map_err(|_| CtbError::InvalidRasterDimensions {
+        width: metadata.width,
+        height: metadata.height,
+    })?;
+    let (data_type, bytes) = typed_samples(metadata.sample_type, &values)?;
+    let mut config = WriterConfig::new(width, height, 1, data_type)
+        .with_compression(compression)
+        .with_predictor(match options.predictor {
+            Some(RasterGeoTiffPredictor::None) | None => Predictor::None,
+            Some(RasterGeoTiffPredictor::HorizontalDifferencing) => {
+                Predictor::HorizontalDifferencing
+            }
+            Some(RasterGeoTiffPredictor::FloatingPoint) => Predictor::FloatingPoint,
+        })
+        .with_overviews(false, OverviewResampling::Average)
+        .with_geo_transform(GeoTransform::north_up(
+            bounds.min_x,
+            bounds.max_y,
+            plan.resolution(),
+            -plan.resolution(),
+        ))
+        .with_epsg_code(epsg);
     if let Some((tile_width, tile_height)) = options.tile_size {
-        builder = builder.tile_size(tile_width, tile_height);
+        config = config.with_tile_size(tile_width, tile_height);
+    } else {
+        config.tile_width = None;
+        config.tile_height = None;
     }
     if let Some(no_data) = metadata.no_data {
-        builder = builder.nodata(&no_data.to_string());
+        config = config.with_nodata(NoDataValue::from_float(no_data));
     }
+    let writer_options = GeoTiffWriterOptions {
+        bigtiff_mode: match options.tiff_variant {
+            RasterGeoTiffTiffVariant::Classic => BigTiffMode::Disable,
+            RasterGeoTiffTiffVariant::BigTiff => BigTiffMode::Force,
+            RasterGeoTiffTiffVariant::Auto => BigTiffMode::Auto,
+        },
+        ..GeoTiffWriterOptions::default()
+    };
+    let mut writer = GeoTiffWriter::create(path, config, writer_options)
+        .map_err(|error| CtbError::TilesetIo(error.to_string()))?;
+    writer
+        .write(&bytes)
+        .map_err(|error| CtbError::TilesetIo(error.to_string()))
+}
 
-    macro_rules! write_values {
-        ($typed:expr) => {{
-            let samples = Array2::from_shape_vec((side, side), $typed)
-                .map_err(|error| CtbError::TilesetIo(error.to_string()))?;
-            builder
-                .write_2d(path, samples.view())
-                .map_err(|error| CtbError::TilesetIo(error.to_string()))
-        }};
-    }
-
-    match metadata.sample_type {
-        RasterSampleType::Unsigned8 => write_values!(integral_values::<u8>(&values)?),
-        RasterSampleType::Signed8 => write_values!(integral_values::<i8>(&values)?),
-        RasterSampleType::Unsigned16 => write_values!(integral_values::<u16>(&values)?),
-        RasterSampleType::Signed16 => write_values!(integral_values::<i16>(&values)?),
-        RasterSampleType::Unsigned32 => write_values!(integral_values::<u32>(&values)?),
-        RasterSampleType::Signed32 => write_values!(integral_values::<i32>(&values)?),
-        RasterSampleType::Float32 => write_values!(float_values::<f32>(&values)?),
-        RasterSampleType::Float64 => write_values!(float_values::<f64>(&values)?),
+fn validate_predictor(
+    sample_type: RasterSampleType,
+    predictor: Option<RasterGeoTiffPredictor>,
+) -> Result<(), CtbError> {
+    match (predictor, sample_type) {
+        (
+            Some(RasterGeoTiffPredictor::FloatingPoint),
+            RasterSampleType::Unsigned8
+            | RasterSampleType::Signed8
+            | RasterSampleType::Unsigned16
+            | RasterSampleType::Signed16
+            | RasterSampleType::Unsigned32
+            | RasterSampleType::Signed32,
+        ) => Err(CtbError::UnsupportedRaster(
+            "PREDICTOR=3 requires a floating-point raster sample type".to_owned(),
+        )),
+        (
+            Some(RasterGeoTiffPredictor::HorizontalDifferencing),
+            RasterSampleType::Float32 | RasterSampleType::Float64,
+        ) => Err(CtbError::UnsupportedRaster(
+            "PREDICTOR=2 requires an integer raster sample type".to_owned(),
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -243,11 +306,86 @@ fn float_values<T: FloatSample>(values: &[f64]) -> Result<Vec<T>, CtbError> {
     values.iter().copied().map(T::convert).collect()
 }
 
+fn typed_samples(
+    sample_type: RasterSampleType,
+    values: &[f64],
+) -> Result<(RasterDataType, Vec<u8>), CtbError> {
+    let bytes = match sample_type {
+        RasterSampleType::Unsigned8 => {
+            let samples = integral_values::<u8>(values)?;
+            samples
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>()
+        }
+        RasterSampleType::Signed8 => {
+            let samples = integral_values::<i8>(values)?;
+            samples
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>()
+        }
+        RasterSampleType::Unsigned16 => {
+            let samples = integral_values::<u16>(values)?;
+            samples
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>()
+        }
+        RasterSampleType::Signed16 => {
+            let samples = integral_values::<i16>(values)?;
+            samples
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>()
+        }
+        RasterSampleType::Unsigned32 => {
+            let samples = integral_values::<u32>(values)?;
+            samples
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>()
+        }
+        RasterSampleType::Signed32 => {
+            let samples = integral_values::<i32>(values)?;
+            samples
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>()
+        }
+        RasterSampleType::Float32 => {
+            let samples = float_values::<f32>(values)?;
+            samples
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>()
+        }
+        RasterSampleType::Float64 => {
+            let samples = float_values::<f64>(values)?;
+            samples
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>()
+        }
+    };
+    let data_type = match sample_type {
+        RasterSampleType::Unsigned8 => RasterDataType::UInt8,
+        RasterSampleType::Signed8 => RasterDataType::Int8,
+        RasterSampleType::Unsigned16 => RasterDataType::UInt16,
+        RasterSampleType::Signed16 => RasterDataType::Int16,
+        RasterSampleType::Unsigned32 => RasterDataType::UInt32,
+        RasterSampleType::Signed32 => RasterDataType::Int32,
+        RasterSampleType::Float32 => RasterDataType::Float32,
+        RasterSampleType::Float64 => RasterDataType::Float64,
+    };
+    Ok((data_type, bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use geotiff_reader::GeoTiffFile;
+    use oxigeo::{core_types::io::FileDataSource, geotiff::GeoTiffReader};
 
     use crate::{
         grid::{GlobalGeodeticGrid, TileCoord},
@@ -289,23 +427,22 @@ mod tests {
                 15.0,
             ],
         )?;
-        let file =
-            GeoTiffFile::open(&path).map_err(|error| CtbError::RasterRead(error.to_string()))?;
+        let file = GeoTiffReader::open(
+            FileDataSource::open(&path).map_err(|error| CtbError::RasterRead(error.to_string()))?,
+        )
+        .map_err(|error| CtbError::RasterRead(error.to_string()))?;
         assert_eq!(file.width(), 4);
         assert_eq!(file.height(), 4);
-        assert_eq!(file.epsg(), Some(4326));
-        assert_eq!(file.nodata(), Some("-9999"));
-        let transform = file.transform().ok_or(CtbError::InvalidBounds)?;
+        assert_eq!(file.epsg_code(), Some(4326));
+        assert_eq!(file.nodata().as_f64(), Some(-9999.0));
+        let transform = file.geo_transform().ok_or(CtbError::InvalidBounds)?;
         assert_eq!(transform.origin_x, -180.0);
         assert_eq!(transform.origin_y, 90.0);
         assert_eq!(transform.pixel_width, 45.0);
         assert_eq!(transform.pixel_height, -45.0);
-        let samples = file
-            .read_band_window::<i32>(0, 0, 0, 4, 4)
-            .map_err(|error| CtbError::RasterRead(error.to_string()))?
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
+        let mut samples = vec![0_i32; 16];
+        file.read_window_into_typed::<i32>(0, 0, 0, 0, 4, 4, &mut samples)
+            .map_err(|error| CtbError::RasterRead(error.to_string()))?;
         assert_eq!(
             samples,
             vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
@@ -323,6 +460,39 @@ mod tests {
         assert_eq!(
             integral_values::<u8>(&[-1.0, 254.6, 300.0])?,
             vec![0, 255, 255]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_incompatible_predictor_for_sample_type() -> Result<(), CtbError> {
+        assert!(
+            validate_predictor(
+                RasterSampleType::Float64,
+                Some(RasterGeoTiffPredictor::HorizontalDifferencing)
+            )
+            .is_err()
+        );
+        assert!(
+            validate_predictor(
+                RasterSampleType::Signed16,
+                Some(RasterGeoTiffPredictor::FloatingPoint)
+            )
+            .is_err()
+        );
+        assert!(
+            validate_predictor(
+                RasterSampleType::Float64,
+                Some(RasterGeoTiffPredictor::FloatingPoint)
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_predictor(
+                RasterSampleType::Signed16,
+                Some(RasterGeoTiffPredictor::HorizontalDifferencing)
+            )
+            .is_ok()
         );
         Ok(())
     }

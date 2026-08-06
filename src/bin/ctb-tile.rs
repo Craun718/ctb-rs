@@ -5,7 +5,10 @@ use ctb_rs::{
     cache::CachedRasterSource,
     geotiff::GeoTiffRasterSource,
     grid::{GlobalGeodeticGrid, GlobalMercatorGrid, TileGrid},
-    raster_geotiff::{RasterGeoTiffCompression, RasterGeoTiffWriteOptions},
+    raster_geotiff::{
+        RasterGeoTiffCompression, RasterGeoTiffPredictor, RasterGeoTiffTiffVariant,
+        RasterGeoTiffWriteOptions,
+    },
     raster_tileset::{
         RasterTilesetOptions, raster_geotiff_path, write_raster_geotiff_tileset_with_factory,
     },
@@ -15,7 +18,6 @@ use ctb_rs::{
         write_heightmap_tileset_with_factory,
     },
 };
-use geotiff_writer::{Predictor, TiffVariant};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ResamplingArgument {
@@ -67,12 +69,24 @@ fn gtiff_options(options: &[String]) -> Result<RasterGeoTiffWriteOptions, Box<dy
             ("COMPRESS", "ZSTD") => result.compression = RasterGeoTiffCompression::Zstd,
             ("COMPRESS", "JPEG") => result.compression = RasterGeoTiffCompression::Jpeg,
             ("COMPRESS", "LERC") => result.compression = RasterGeoTiffCompression::Lerc,
-            ("BIGTIFF", "NO") => result.tiff_variant = TiffVariant::Classic,
-            ("BIGTIFF", "YES") => result.tiff_variant = TiffVariant::BigTiff,
-            ("BIGTIFF", "IF_NEEDED") => result.tiff_variant = TiffVariant::Auto,
-            ("PREDICTOR", "1") => result.predictor = Some(Predictor::None),
-            ("PREDICTOR", "2") => result.predictor = Some(Predictor::Horizontal),
-            ("PREDICTOR", "3") => result.predictor = Some(Predictor::FloatingPoint),
+            ("BIGTIFF", "NO") => {
+                result.tiff_variant = RasterGeoTiffTiffVariant::Classic;
+            }
+            ("BIGTIFF", "YES") => {
+                result.tiff_variant = RasterGeoTiffTiffVariant::BigTiff;
+            }
+            ("BIGTIFF", "IF_NEEDED") => {
+                result.tiff_variant = RasterGeoTiffTiffVariant::Auto;
+            }
+            ("PREDICTOR", "1") => {
+                result.predictor = Some(RasterGeoTiffPredictor::None);
+            }
+            ("PREDICTOR", "2") => {
+                result.predictor = Some(RasterGeoTiffPredictor::HorizontalDifferencing);
+            }
+            ("PREDICTOR", "3") => {
+                result.predictor = Some(RasterGeoTiffPredictor::FloatingPoint);
+            }
             ("TILED", "YES") => result.tile_size = Some((256, 256)),
             ("TILED", "NO") => result.tile_size = None,
             ("BLOCKXSIZE", value) => block_x = Some(parse_block_size(option, value)?),
@@ -102,7 +116,7 @@ fn parse_block_size(option: &str, value: &str) -> Result<u32, Box<dyn Error>> {
 
 #[derive(Debug, Parser)]
 #[command(
-    about = "Create CTB heightmap terrain tiles from an EPSG GeoTIFF DEM",
+    about = "Create CTB heightmap terrain tiles from a single-band, north-up GeoTIFF or VRT DEM",
     version = env!("CARGO_PKG_VERSION")
 )]
 struct Arguments {
@@ -162,7 +176,7 @@ struct Arguments {
     #[arg(short = 'm', long = "warp-memory", default_value_t = 0.0_f64)]
     warp_memory_limit: f64,
 
-    /// Input single-band, north-up EPSG GeoTIFF DEM.
+    /// Input single-band, north-up GeoTIFF or VRT DEM.
     input: PathBuf,
 }
 
@@ -190,7 +204,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let input = arguments.input.clone();
     let source_factory = move || {
         GeoTiffRasterSource::open(&input).map(|source| {
-            Box::new(CachedRasterSource::new(source, 64, 64))
+            Box::new(CachedRasterSource::new_with_nodata_cache(source, 64, 64))
                 as Box<dyn ctb_rs::raster::RasterSource>
         })
     };
@@ -334,8 +348,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        Arguments, Predictor, RasterGeoTiffCompression, TiffVariant, gtiff_options,
-        validate_warp_options, worker_count,
+        Arguments, RasterGeoTiffCompression, RasterGeoTiffPredictor, RasterGeoTiffTiffVariant,
+        gtiff_options, validate_warp_options, worker_count,
     };
 
     #[test]
@@ -409,19 +423,22 @@ mod tests {
         ])
         .expect("supported GeoTIFF options should parse");
         assert_eq!(options.compression, RasterGeoTiffCompression::Zstd);
-        assert_eq!(options.tiff_variant, TiffVariant::BigTiff);
-        assert_eq!(options.predictor, Some(Predictor::FloatingPoint));
+        assert_eq!(options.tiff_variant, RasterGeoTiffTiffVariant::BigTiff);
+        assert_eq!(
+            options.predictor,
+            Some(RasterGeoTiffPredictor::FloatingPoint)
+        );
         assert_eq!(
             gtiff_options(&["BIGTIFF=NO".to_owned()])
                 .expect("Classic TIFF option should parse")
                 .tiff_variant,
-            TiffVariant::Classic
+            RasterGeoTiffTiffVariant::Classic
         );
         assert_eq!(
             gtiff_options(&["BIGTIFF=IF_NEEDED".to_owned()])
                 .expect("automatic TIFF option should parse")
                 .tiff_variant,
-            TiffVariant::Auto
+            RasterGeoTiffTiffVariant::Auto
         );
         assert_eq!(
             gtiff_options(&[

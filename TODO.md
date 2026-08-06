@@ -272,19 +272,23 @@
 
 ## P10：OxiGeo 栅格读写迁移
 
-- [ ] 在 `TECHNICAL_PLAN.md`、`TODO.md`、`TEST_STRATEGY.md` 登记 P10 范围与实施规则。
-- [ ] 通过 Cargo CLI 添加 `oxigeo@0.2.3`（`geotiff,vrt`）、
+- [x] 在 `TECHNICAL_PLAN.md`、`TODO.md`、`TEST_STRATEGY.md` 登记 P10 范围与实施规则。
+- [x] 通过 Cargo CLI 添加 `oxigeo@0.2.3`（`geotiff,vrt`）、
       `oxigeo-geotiff@0.2.3`（`zstd`），移除 `geotiff-reader` /
       `geotiff-writer`。
-- [ ] 迁移 reader：`GeoTiffRasterSource` 支持 GeoTIFF + VRT，非
+- [x] 迁移 reader：`GeoTiffRasterSource` 支持 GeoTIFF + VRT，非
       GeoTIFF/VRT 返回 `UnsupportedRaster`；NoData、CRS、overview 与
       `sampling_level_for_ratio` 保持现有行为。
-- [ ] 迁移 writer：低层 `GeoTiffWriter` 替换旧 builder，映射 BigTIFF、
+- [x] 迁移 writer：低层 `GeoTiffWriter` 替换旧 builder，映射 BigTIFF、
       Predictor、TILED、压缩；JPEG/LERC 在写出前拒绝。
-- [ ] 更新 fixture 写入/读取辅助函数，新增 VRT 与不支持格式测试，调整
+- [x] 更新 fixture 写入/读取辅助函数，新增 VRT 与不支持格式测试，调整
       JPEG/LERC CLI 断言。
-- [ ] 更新 `ctb-tile`、`ctb-extents` help 与 `README.md` 的格式说明。
-- [ ] 运行 `cargo fmt --check`、`cargo test --all-targets`、
+- [x] 更新 `ctb-tile`、`ctb-extents` help 与 `README.md` 的格式说明。
+- [x] 运行 `cargo fmt --check`、`cargo test --all-targets`、
       `cargo clippy --all-targets -- -D warnings`、
       `scripts/verify-ctb-oracle.zsh`，确认 `cargo tree` 无旧 geotiff crates，
       并回写验证证据。
+- [x] 为声明 NoData 的 OxiGeo 直接源启用 `CachedRasterSource` 块缓存，新增
+      对应单元测试，避免高分辨率 overview 用例逐像素重复解压。
+- [x] 重新运行 `scripts/verify-ctb-oracle.zsh`，120/120 用例通过，并回写
+      验证证据。

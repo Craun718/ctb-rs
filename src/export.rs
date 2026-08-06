@@ -1,7 +1,9 @@
 use std::path::Path;
 
-use geotiff_writer::GeoTiffBuilder;
-use ndarray::Array2;
+use oxigeo::{
+    GeoTransform, RasterDataType,
+    geotiff::{GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling, WriterConfig},
+};
 
 use crate::{
     CtbError,
@@ -25,23 +27,42 @@ pub fn export_heightmap_to_geotiff(
         .iter()
         .map(|height| i16::from_ne_bytes(height.to_ne_bytes()))
         .collect::<Vec<_>>();
-    let samples = Array2::from_shape_vec((HEIGHTMAP_TILE_SIZE, HEIGHTMAP_TILE_SIZE), samples)
+    let bytes = samples
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect::<Vec<_>>();
+    let mut config = WriterConfig::new(
+        HEIGHTMAP_TILE_SIZE as u64,
+        HEIGHTMAP_TILE_SIZE as u64,
+        1,
+        RasterDataType::Int16,
+    )
+    .with_geo_transform(GeoTransform::north_up(
+        bounds.min_x,
+        bounds.max_y,
+        pixel_width,
+        -pixel_height,
+    ))
+    .with_epsg_code(4326)
+    .with_overviews(false, OverviewResampling::Average);
+    config.tile_width = None;
+    config.tile_height = None;
+    let mut writer = GeoTiffWriter::create(output, config, GeoTiffWriterOptions::default())
         .map_err(|error| CtbError::TilesetIo(error.to_string()))?;
-    GeoTiffBuilder::new(HEIGHTMAP_TILE_SIZE as u32, HEIGHTMAP_TILE_SIZE as u32)
-        .geographic_epsg(4326)
-        .pixel_scale(pixel_width, pixel_height)
-        .origin(bounds.min_x, bounds.max_y)
-        .write_2d(output, samples.view())
+    writer
+        .write(&bytes)
         .map_err(|error| CtbError::TilesetIo(error.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
+    use oxigeo::core_types::io::FileDataSource;
+
     use crate::{
         CtbError,
         terrain::{ChildMask, WaterMask},
     };
-    use geotiff_reader::GeoTiffFile;
+    use oxigeo::geotiff::GeoTiffReader;
 
     use super::*;
 
@@ -61,18 +82,18 @@ mod tests {
             },
             &path,
         )?;
-        let file = GeoTiffFile::open(&path)?;
-        assert_eq!(file.epsg(), Some(4326));
-        assert_eq!(file.width(), HEIGHTMAP_TILE_SIZE as u32);
-        assert_eq!(file.height(), HEIGHTMAP_TILE_SIZE as u32);
-        let transform = file.transform().ok_or(CtbError::InvalidBounds)?;
+        let file = GeoTiffReader::open(FileDataSource::open(&path)?)?;
+        assert_eq!(file.epsg_code(), Some(4326));
+        assert_eq!(file.width(), HEIGHTMAP_TILE_SIZE as u64);
+        assert_eq!(file.height(), HEIGHTMAP_TILE_SIZE as u64);
+        let transform = file.geo_transform().ok_or(CtbError::InvalidBounds)?;
         assert_eq!(transform.origin_x, -180.0);
         assert_eq!(transform.origin_y, 90.0);
         assert_eq!(transform.pixel_width, 180.0 / HEIGHTMAP_TILE_SIZE as f64);
         assert_eq!(transform.pixel_height, -180.0 / HEIGHTMAP_TILE_SIZE as f64);
-        let samples = file.read_band_window::<i16>(0, 0, 0, 1, 2)?;
-        let actual = samples.iter().copied().collect::<Vec<_>>();
-        assert_eq!(actual, vec![5000, -15536]);
+        let mut samples = vec![0_i16; 2];
+        file.read_window_into_typed::<i16>(0, 0, 0, 0, 2, 1, &mut samples)?;
+        assert_eq!(samples, vec![5000, -15536]);
         std::fs::remove_file(path)?;
         Ok(())
     }

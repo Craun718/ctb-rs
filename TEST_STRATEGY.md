@@ -297,6 +297,8 @@ OxiGeo 0.2.3，并保持现有 GeoTIFF 行为基线。测试必须只断言 OxiG
   `BIGTIFF=YES` 为 `II+\0` / `MM\0+`；`IF_NEEDED` 按文件大小自动选择。
 - `overview_count()` 在 VRT 输入上为 0；GeoTIFF overview 的
   `sampling_level_for_ratio` 保持 `level: 0` 加 overview metadata 的 C++ 行为。
+- `CachedRasterSource::new_with_nodata_cache` 单元测试验证声明 NoData 的源仍只
+  读取一次相邻 block，默认 `new` 保留原有逐窗口读取行为。
 - 所有维度从 OxiGeo `u64` 转入现有 `u32` 接口的转换测试覆盖合法边界与溢出拒绝；
   测试代码如使用 `expect`，消息必须说明被验证的不变量。
 

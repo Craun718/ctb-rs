@@ -6,9 +6,15 @@ use std::{
 };
 
 use ctb_rs::terrain::{ChildMask, HEIGHTMAP_SAMPLE_COUNT, HeightmapTerrain, WaterMask};
-use geotiff_reader::GeoTiffFile;
-use geotiff_writer::GeoTiffBuilder;
-use ndarray::Array2;
+use oxigeo::{
+    GeoTransform, RasterDataType,
+    core_types::io::FileDataSource,
+    geotiff::{
+        GeoTiffReader, GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling, WriterConfig,
+        tiff::{Compression, Predictor},
+    },
+    vrt::{SourceWindow, VrtBand, VrtBuilder, VrtSource},
+};
 
 fn temporary_directory(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
@@ -17,55 +23,133 @@ fn temporary_directory(label: &str) -> Result<PathBuf, Box<dyn std::error::Error
     Ok(directory)
 }
 
-fn write_world_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let samples = Array2::from_elem((65, 65), 100.0_f64);
-    GeoTiffBuilder::new(65, 65)
-        .geographic_epsg(4326)
-        .pixel_scale(360.0 / 65.0, 180.0 / 65.0)
-        .origin(-180.0, 90.0)
-        .write_2d(path, samples.view())?;
+fn write_geotiff_bytes(
+    path: &Path,
+    width: u64,
+    height: u64,
+    data_type: RasterDataType,
+    bytes: &[u8],
+    epsg: u32,
+    transform: GeoTransform,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = WriterConfig::new(width, height, 1, data_type)
+        .with_compression(Compression::None)
+        .with_predictor(Predictor::None)
+        .with_overviews(false, OverviewResampling::Average)
+        .with_geo_transform(transform)
+        .with_epsg_code(epsg);
+    config.tile_width = None;
+    config.tile_height = None;
+    let mut writer = GeoTiffWriter::create(path, config, GeoTiffWriterOptions::default())?;
+    writer.write(bytes)?;
     Ok(())
+}
+
+fn write_float64_geotiff(
+    path: &Path,
+    width: u64,
+    height: u64,
+    samples: &[f64],
+    epsg: u32,
+    transform: GeoTransform,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = samples
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect::<Vec<_>>();
+    write_geotiff_bytes(
+        path,
+        width,
+        height,
+        RasterDataType::Float64,
+        &bytes,
+        epsg,
+        transform,
+    )
+}
+
+fn write_world_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let samples = vec![100.0_f64; 65 * 65];
+    write_float64_geotiff(
+        path,
+        65,
+        65,
+        &samples,
+        4326,
+        GeoTransform::north_up(-180.0, 90.0, 360.0 / 65.0, -180.0 / 65.0),
+    )
 }
 
 fn write_small_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let samples = Array2::from_shape_vec((2, 2), vec![100.0_f64, 200.0, 300.0, 400.0])?;
-    GeoTiffBuilder::new(2, 2)
-        .geographic_epsg(4326)
-        .pixel_scale(1.0, 1.0)
-        .origin(-1.0, 1.0)
-        .write_2d(path, samples.view())?;
-    Ok(())
+    write_float64_geotiff(
+        path,
+        2,
+        2,
+        &[100.0_f64, 200.0, 300.0, 400.0],
+        4326,
+        GeoTransform::north_up(-1.0, 1.0, 1.0, -1.0),
+    )
 }
 
 fn write_u8_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let samples = Array2::from_shape_vec((2, 2), vec![10_u8, 20, 30, 40])?;
-    GeoTiffBuilder::new(2, 2)
-        .geographic_epsg(4326)
-        .pixel_scale(1.0, 1.0)
-        .origin(-1.0, 1.0)
-        .write_2d(path, samples.view())?;
-    Ok(())
+    let bytes = [10_u8, 20, 30, 40]
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect::<Vec<_>>();
+    write_geotiff_bytes(
+        path,
+        2,
+        2,
+        RasterDataType::UInt8,
+        &bytes,
+        4326,
+        GeoTransform::north_up(-1.0, 1.0, 1.0, -1.0),
+    )
 }
 
 fn write_mercator_world_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let samples = Array2::from_elem((4, 4), 7.0_f64);
     let origin_shift = std::f64::consts::PI * 6_378_137.0;
-    GeoTiffBuilder::new(4, 4)
-        .projected_epsg(3857)
-        .pixel_scale(origin_shift / 2.0, origin_shift / 2.0)
-        .origin(-origin_shift, origin_shift)
-        .write_2d(path, samples.view())?;
-    Ok(())
+    let samples = vec![7.0_f64; 16];
+    write_float64_geotiff(
+        path,
+        4,
+        4,
+        &samples,
+        3857,
+        GeoTransform::north_up(
+            -origin_shift,
+            origin_shift,
+            origin_shift / 2.0,
+            -origin_shift / 2.0,
+        ),
+    )
 }
 
 fn write_utm_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let samples = Array2::from_elem((32, 32), 9.0_f64);
-    GeoTiffBuilder::new(32, 32)
-        .epsg(32630)
-        .pixel_scale(8_000.0, 8_000.0)
-        .origin(400_000.0, 100_000.0)
-        .write_2d(path, samples.view())?;
-    Ok(())
+    let samples = vec![9.0_f64; 32 * 32];
+    write_float64_geotiff(
+        path,
+        32,
+        32,
+        &samples,
+        32630,
+        GeoTransform::north_up(400_000.0, 100_000.0, 8_000.0, -8_000.0),
+    )
+}
+
+fn open_geotiff(path: &Path) -> Result<GeoTiffReader<FileDataSource>, Box<dyn std::error::Error>> {
+    Ok(GeoTiffReader::open(FileDataSource::open(path)?)?)
+}
+
+fn read_f64_window(
+    file: &GeoTiffReader<FileDataSource>,
+    width: u64,
+    height: u64,
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    let count = usize::try_from(width * height)?;
+    let mut samples = vec![0.0_f64; count];
+    file.read_window_into_typed::<f64>(0, 0, 0, 0, width, height, &mut samples)?;
+    Ok(samples)
 }
 
 #[test]
@@ -212,14 +296,10 @@ fn ctb_extents_and_export_work_as_processes() -> Result<(), Box<dyn std::error::
             fallback_export.display()
         )
     );
-    let fallback = GeoTiffFile::open(&fallback_export)?;
-    let fallback_sample = fallback
-        .read_band_window::<i16>(0, 0, 0, 1, 1)?
-        .iter()
-        .copied()
-        .next()
-        .ok_or("fallback GeoTIFF did not contain a sample")?;
-    assert_eq!(fallback_sample, 0);
+    let fallback = open_geotiff(&fallback_export)?;
+    let mut fallback_samples = vec![0_i16; 1];
+    fallback.read_window_into_typed::<i16>(0, 0, 0, 0, 1, 1, &mut fallback_samples)?;
+    assert_eq!(fallback_samples, [0]);
     fs::remove_dir_all(directory)?;
     Ok(())
 }
@@ -261,6 +341,79 @@ fn ctb_extents_honours_geodetic_zoom_options() -> Result<(), Box<dyn std::error:
     assert!(missing_directory.status.success());
     assert!(String::from_utf8(missing_directory.stderr)?.contains("File could not be opened:"));
 
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
+fn ctb_tile_and_extents_accept_vrt_input() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = temporary_directory("vrt-input")?;
+    let source = directory.join("dem.tif");
+    let vrt = directory.join("dem.vrt");
+    write_small_geotiff(&source)?;
+    VrtBuilder::with_size(2, 2)
+        .with_srs("EPSG:4326")
+        .with_geo_transform(GeoTransform::north_up(-1.0, 1.0, 1.0, -1.0))
+        .add_band(VrtBand::simple(
+            1,
+            RasterDataType::Float64,
+            VrtSource::simple(&source, 1).with_window(SourceWindow::identity(2, 2)),
+        ))?
+        .build_file(&vrt)?;
+
+    let terrain = directory.join("terrain");
+    fs::create_dir(&terrain)?;
+    let tile = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-s", "0", "-e", "0", "-o"])
+        .arg(&terrain)
+        .arg(&vrt)
+        .output()?;
+    assert!(tile.status.success(), "{:?}", tile.stderr);
+    assert!(terrain.join("0/0/0.terrain").exists());
+
+    let extents = directory.join("extents");
+    fs::create_dir(&extents)?;
+    let extents_output = Command::new(env!("CARGO_BIN_EXE_ctb-extents"))
+        .args(["-s", "0", "-e", "0", "-o"])
+        .arg(&extents)
+        .arg(&vrt)
+        .output()?;
+    assert!(
+        extents_output.status.success(),
+        "{:?}",
+        extents_output.stderr
+    );
+    assert!(extents.join("0.geojson").exists());
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
+fn ctb_tile_rejects_non_geotiff_raster_formats() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = temporary_directory("unsupported-raster")?;
+    for extension in ["nc", "h5", "jp2"] {
+        let input = directory.join(format!("dem.{extension}"));
+        let output = directory.join(format!("output-{extension}"));
+        fs::write(&input, [0_u8])?;
+        fs::create_dir(&output)?;
+
+        let result = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+            .args(["-s", "0", "-e", "0", "-o"])
+            .arg(&output)
+            .arg(&input)
+            .output()?;
+        assert!(
+            !result.status.success(),
+            "{extension} input must be rejected before tiles are written"
+        );
+        assert!(
+            String::from_utf8(result.stderr)?.contains("OxiGeo 0.2.3"),
+            "{extension} should be rejected by the OxiGeo capability guard"
+        );
+        assert!(!output.join("0/0/0.terrain").exists());
+        assert!(!output.join("0/0/0.tif").exists());
+    }
     fs::remove_dir_all(directory)?;
     Ok(())
 }
@@ -344,11 +497,11 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
     assert!(result.status.success(), "{:?}", result.stderr);
     let tile = output.join("0/0/0.tif");
     assert!(tile.exists());
-    let file = GeoTiffFile::open(&tile)?;
+    let file = open_geotiff(&tile)?;
     assert_eq!(file.width(), 4);
     assert_eq!(file.height(), 4);
-    assert_eq!(file.epsg(), Some(4326));
-    let transform = file.transform().ok_or("missing GeoTIFF transform")?;
+    assert_eq!(file.epsg_code(), Some(4326));
+    let transform = file.geo_transform().ok_or("missing GeoTIFF transform")?;
     assert_eq!(transform.origin_x, -180.0);
     assert_eq!(transform.origin_y, 90.0);
     assert_eq!(transform.pixel_width, 45.0);
@@ -366,7 +519,7 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         "{:?}",
         deflate_option.stderr
     );
-    let deflate_file = GeoTiffFile::open(deflate_output.join("0/0/0.tif"))?;
+    let deflate_file = open_geotiff(&deflate_output.join("0/0/0.tif"))?;
     assert_eq!(deflate_file.width(), 65);
 
     let lzw_output = directory.join("lzw");
@@ -377,7 +530,7 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         .arg(&input)
         .output()?;
     assert!(lzw_option.status.success(), "{:?}", lzw_option.stderr);
-    let lzw_file = GeoTiffFile::open(lzw_output.join("0/0/0.tif"))?;
+    let lzw_file = open_geotiff(&lzw_output.join("0/0/0.tif"))?;
     assert_eq!(lzw_file.width(), 65);
 
     let zstd_output = directory.join("zstd");
@@ -388,9 +541,9 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         .arg(&input)
         .output()?;
     assert!(zstd_option.status.success(), "{:?}", zstd_option.stderr);
-    let zstd_file = GeoTiffFile::open(zstd_output.join("0/0/0.tif"))?;
+    let zstd_file = open_geotiff(&zstd_output.join("0/0/0.tif"))?;
     assert_eq!(zstd_file.width(), 65);
-    assert_eq!(zstd_file.epsg(), Some(4326));
+    assert_eq!(zstd_file.epsg_code(), Some(4326));
 
     let byte_input = directory.join("byte-dem.tif");
     write_u8_geotiff(&byte_input)?;
@@ -401,11 +554,8 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         .arg(&jpeg_output)
         .arg(&byte_input)
         .output()?;
-    assert!(jpeg_option.status.success(), "{:?}", jpeg_option.stderr);
-    let jpeg_file = GeoTiffFile::open(jpeg_output.join("0/0/0.tif"))?;
-    assert_eq!(jpeg_file.width(), 65);
-    let jpeg_samples = jpeg_file.read_band_window::<u8>(0, 0, 0, 1, 1)?;
-    assert_eq!(jpeg_samples.len(), 1);
+    assert!(!jpeg_option.status.success());
+    assert!(!jpeg_output.join("0/0/0.tif").exists());
 
     let lerc_output = directory.join("lerc");
     fs::create_dir(&lerc_output)?;
@@ -414,9 +564,8 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         .arg(&lerc_output)
         .arg(&input)
         .output()?;
-    assert!(lerc_option.status.success(), "{:?}", lerc_option.stderr);
-    let lerc_file = GeoTiffFile::open(lerc_output.join("0/0/0.tif"))?;
-    assert_eq!(lerc_file.width(), 65);
+    assert!(!lerc_option.status.success());
+    assert!(!lerc_output.join("0/0/0.tif").exists());
 
     let invalid_jpeg_output = directory.join("invalid-jpeg");
     fs::create_dir(&invalid_jpeg_output)?;
@@ -445,6 +594,35 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         Some([b'I', b'I', 43, 0].as_slice())
     );
 
+    for (label, bigtiff_value, expected_header) in [
+        ("classic", "NO", &[b'I', b'I', 42, 0][..]),
+        ("auto", "IF_NEEDED", &[b'I', b'I', 42, 0][..]),
+    ] {
+        let output = directory.join(format!("bigtiff-{label}"));
+        fs::create_dir(&output)?;
+        let option = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+            .args([
+                "-f",
+                "GTiff",
+                "-n",
+                &format!("BIGTIFF={bigtiff_value}"),
+                "-o",
+            ])
+            .arg(&output)
+            .arg(&input)
+            .output()?;
+        assert!(
+            option.status.success(),
+            "BIGTIFF={bigtiff_value}: {:?}",
+            option.stderr
+        );
+        assert_eq!(
+            fs::read(output.join("0/0/0.tif"))?.get(..4),
+            Some(expected_header),
+            "BIGTIFF={bigtiff_value} header"
+        );
+    }
+
     let predictor_output = directory.join("predictor");
     fs::create_dir(&predictor_output)?;
     let predictor_option = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
@@ -465,7 +643,7 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         "{:?}",
         predictor_option.stderr
     );
-    let predictor_file = GeoTiffFile::open(predictor_output.join("0/0/0.tif"))?;
+    let predictor_file = open_geotiff(&predictor_output.join("0/0/0.tif"))?;
     assert_eq!(predictor_file.width(), 65);
 
     let tiled_output = directory.join("tiled");
@@ -506,6 +684,71 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
     assert!(!invalid_predictor.status.success());
     assert!(!invalid_predictor_output.join("0/0/0.tif").exists());
 
+    let integer_predictor_2_output = directory.join("integer-predictor-2");
+    fs::create_dir(&integer_predictor_2_output)?;
+    let integer_predictor_2 = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args([
+            "-f",
+            "GTiff",
+            "-n",
+            "COMPRESS=DEFLATE",
+            "-n",
+            "PREDICTOR=2",
+            "-t",
+            "4",
+            "-s",
+            "0",
+            "-e",
+            "0",
+            "-o",
+        ])
+        .arg(&integer_predictor_2_output)
+        .arg(&byte_input)
+        .output()?;
+    assert!(
+        integer_predictor_2.status.success(),
+        "{:?}",
+        integer_predictor_2.stderr
+    );
+    let integer_predictor_2_file = open_geotiff(&integer_predictor_2_output.join("0/0/0.tif"))?;
+    assert_eq!(integer_predictor_2_file.width(), 4);
+
+    let integer_predictor_3_output = directory.join("integer-predictor-3");
+    fs::create_dir(&integer_predictor_3_output)?;
+    let integer_predictor_3 = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args([
+            "-f",
+            "GTiff",
+            "-n",
+            "COMPRESS=DEFLATE",
+            "-n",
+            "PREDICTOR=3",
+            "-o",
+        ])
+        .arg(&integer_predictor_3_output)
+        .arg(&byte_input)
+        .output()?;
+    assert!(!integer_predictor_3.status.success());
+    assert!(!integer_predictor_3_output.join("0/0/0.tif").exists());
+
+    let predictor_4_output = directory.join("predictor-4");
+    fs::create_dir(&predictor_4_output)?;
+    let predictor_4 = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args([
+            "-f",
+            "GTiff",
+            "-n",
+            "COMPRESS=DEFLATE",
+            "-n",
+            "PREDICTOR=4",
+            "-o",
+        ])
+        .arg(&predictor_4_output)
+        .arg(&input)
+        .output()?;
+    assert!(!predictor_4.status.success());
+    assert!(!predictor_4_output.join("0/0/0.tif").exists());
+
     let incompatible_profile_output = directory.join("incompatible-mercator");
     fs::create_dir(&incompatible_profile_output)?;
     let incompatible_profile = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
@@ -520,8 +763,8 @@ fn ctb_tile_writes_geotiff_rastertiler_tiles() -> Result<(), Box<dyn std::error:
         "4326 to 3857 reprojection failed: {:?}",
         incompatible_profile.stderr
     );
-    let reprojected = GeoTiffFile::open(incompatible_profile_output.join("0/0/0.tif"))?;
-    assert_eq!(reprojected.epsg(), Some(3857));
+    let reprojected = open_geotiff(&incompatible_profile_output.join("0/0/0.tif"))?;
+    assert_eq!(reprojected.epsg_code(), Some(3857));
 
     fs::remove_dir_all(directory)?;
     Ok(())
@@ -543,15 +786,15 @@ fn ctb_tile_writes_mercator_direct_source_gtiff() -> Result<(), Box<dyn std::err
         .arg(&input)
         .output()?;
     assert!(result.status.success(), "{:?}", result.stderr);
-    let file = GeoTiffFile::open(output.join("0/0/0.tif"))?;
-    assert_eq!(file.epsg(), Some(3857));
-    let transform = file.transform().ok_or("missing GeoTIFF transform")?;
+    let file = open_geotiff(&output.join("0/0/0.tif"))?;
+    assert_eq!(file.epsg_code(), Some(3857));
+    let transform = file.geo_transform().ok_or("missing GeoTIFF transform")?;
     let origin_shift = std::f64::consts::PI * 6_378_137.0;
     assert_eq!(transform.origin_x, -origin_shift);
     assert_eq!(transform.origin_y, origin_shift);
     assert_eq!(transform.pixel_width, origin_shift / 2.0);
     assert_eq!(transform.pixel_height, -origin_shift / 2.0);
-    let values = file.read_band_window::<f64>(0, 0, 0, 4, 4)?;
+    let values = read_f64_window(&file, 4, 4)?;
     assert!(values.iter().all(|value| *value == 7.0));
 
     fs::remove_dir_all(directory)?;
@@ -592,11 +835,11 @@ fn ctb_tile_reprojects_arbitrary_epsg_input() -> Result<(), Box<dyn std::error::
         "{:?}",
         mercator_result.stderr
     );
-    let tile = GeoTiffFile::open(mercator_output.join("6/31/32.tif"))?;
-    assert_eq!(tile.epsg(), Some(3857));
-    let values = tile.read_band_window::<f64>(0, 0, 0, 4, 4)?;
+    let tile = open_geotiff(&mercator_output.join("6/31/32.tif"))?;
+    assert_eq!(tile.epsg_code(), Some(3857));
+    let values = read_f64_window(&tile, 4, 4)?;
     assert!(
-        values.iter().any(|value| *value == 9.0),
+        values.contains(&9.0),
         "reprojected Mercator tile did not sample the UTM fixture: {values:?}"
     );
 
@@ -617,11 +860,11 @@ fn ctb_tile_gtiff_nearest_uses_strict_source_bounds() -> Result<(), Box<dyn std:
         .arg(&input)
         .output()?;
     assert!(result.status.success(), "{:?}", result.stderr);
-    let file = GeoTiffFile::open(output.join("0/0/0.tif"))?;
-    let samples = file.read_band_window::<f64>(0, 0, 0, 65, 65)?;
+    let file = open_geotiff(&output.join("0/0/0.tif"))?;
+    let samples = read_f64_window(&file, 65, 65)?;
     // The final z0 column is centred at -1.3846°, outside the [-1, 1]
     // source bounds. RasterTiler must retain its initial destination 0.
-    assert_eq!(samples[[32, 64]], 0.0);
+    assert_eq!(samples[32 * 65 + 64], 0.0);
     fs::remove_dir_all(directory)?;
     Ok(())
 }

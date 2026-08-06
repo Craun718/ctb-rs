@@ -18,13 +18,16 @@ struct CacheState {
 
 /// A bounded, thread-safe read-through block cache for a raster source.
 ///
-/// Sources declaring NoData keep exact source windows, because the current
-/// RasterSource contract reports NoData at window granularity rather than
-/// providing a per-pixel validity mask.
+/// Sources declaring NoData keep exact source windows by default, because the
+/// current RasterSource contract reports NoData at window granularity rather
+/// than providing a per-pixel validity mask. CTB's OxiGeo direct source keeps
+/// NoData sentinels as ordinary f64 samples, so it can opt into block caching
+/// through [`Self::new_with_nodata_cache`].
 pub struct CachedRasterSource<S> {
     source: S,
     capacity: usize,
     block_size: u32,
+    cache_nodata: bool,
     state: Mutex<CacheState>,
 }
 
@@ -34,6 +37,17 @@ impl<S> CachedRasterSource<S> {
             source,
             capacity,
             block_size: block_size.max(1),
+            cache_nodata: false,
+            state: Mutex::new(CacheState::default()),
+        }
+    }
+
+    pub fn new_with_nodata_cache(source: S, capacity: usize, block_size: u32) -> Self {
+        Self {
+            source,
+            capacity,
+            block_size: block_size.max(1),
+            cache_nodata: true,
             state: Mutex::new(CacheState::default()),
         }
     }
@@ -46,13 +60,13 @@ impl<S> CachedRasterSource<S> {
 impl<S: RasterSource> CachedRasterSource<S> {
     fn block_request(
         &self,
-        metadata: &RasterMetadata,
+        level: &SamplingLevel,
         request: WindowRequest,
     ) -> Result<WindowRequest, CtbError> {
         let x = request.x / self.block_size * self.block_size;
         let y = request.y / self.block_size * self.block_size;
-        let width = self.block_size.min(metadata.width.saturating_sub(x));
-        let height = self.block_size.min(metadata.height.saturating_sub(y));
+        let width = self.block_size.min(level.data_width.saturating_sub(x));
+        let height = self.block_size.min(level.data_height.saturating_sub(y));
         if width == 0 || height == 0 {
             return Err(CtbError::InvalidRasterWindow);
         }
@@ -70,7 +84,7 @@ impl<S: RasterSource> CachedRasterSource<S> {
         level: &SamplingLevel,
         request: WindowRequest,
     ) -> Result<CachedBlock, CtbError> {
-        let block_request = self.block_request(&level.metadata, request)?;
+        let block_request = self.block_request(level, request)?;
         if let Ok(mut state) = self.state.lock()
             && let Some(position) = state
                 .blocks
@@ -125,7 +139,7 @@ impl<S: RasterSource> RasterSource for CachedRasterSource<S> {
         level: &SamplingLevel,
         request: WindowRequest,
     ) -> Result<RasterWindow, CtbError> {
-        if self.capacity == 0 || level.metadata.no_data.is_some() {
+        if self.capacity == 0 || (level.metadata.no_data.is_some() && !self.cache_nodata) {
             return self.source.read_sampling_window(level, request);
         }
         let end_x = request
@@ -138,8 +152,8 @@ impl<S: RasterSource> RasterSource for CachedRasterSource<S> {
             .ok_or(CtbError::InvalidRasterWindow)?;
         if request.width == 0
             || request.height == 0
-            || end_x > level.metadata.width
-            || end_y > level.metadata.height
+            || end_x > level.data_width
+            || end_y > level.data_height
         {
             return Err(CtbError::InvalidRasterWindow);
         }
@@ -295,6 +309,59 @@ mod tests {
             })?;
         }
         assert_eq!(reads.load(Ordering::Relaxed), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn caches_nodata_blocks_when_direct_source_opt_in() -> Result<(), CtbError> {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let source = CachedRasterSource::new_with_nodata_cache(
+            CountingRaster::new(Arc::clone(&reads), Some(-9999.0))?,
+            2,
+            4,
+        );
+        for (x, y) in [(1, 1), (2, 2)] {
+            source.read_window(WindowRequest {
+                x,
+                y,
+                width: 1,
+                height: 1,
+                overview: 0,
+            })?;
+        }
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn uses_data_dimensions_for_overview_block_requests() -> Result<(), CtbError> {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let source = CachedRasterSource::new_with_nodata_cache(
+            CountingRaster::new(Arc::clone(&reads), Some(-9999.0))?,
+            2,
+            4,
+        );
+        let mut metadata = source.metadata().clone();
+        metadata.width = 4;
+        metadata.height = 4;
+        let level = SamplingLevel {
+            level: 0,
+            data_width: 8,
+            data_height: 8,
+            metadata,
+        };
+        let window = source.read_sampling_window(
+            &level,
+            WindowRequest {
+                x: 6,
+                y: 6,
+                width: 1,
+                height: 1,
+                overview: 0,
+            },
+        )?;
+        assert_eq!(window.samples, vec![54.0]);
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
         Ok(())
     }
 }
