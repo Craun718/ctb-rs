@@ -318,3 +318,15 @@ Node.js 24 主版本 `actions/checkout@v5`、`actions/upload-artifact@v5` 后，
 - 检查 `actions/checkout@v4`、`actions/upload-artifact@v4` 不再出现。
 - 保持 CI 的触发事件、矩阵、构建命令与 artifact 上传行为不变。
 - 不运行 Rust 测试，也不执行 C++ oracle；本变更不涉及采样或栅格行为。
+
+## 12. P12 全部 GitHub Actions 升级到当前最新主版本
+
+`actions/checkout` 与 `actions/upload-artifact` 升级到当前最新主版本 `v7`；
+`dtolnay/rust-toolchain@stable` 按官方 README 保留为最新 stable Rust 引用。
+验证范围限定为 workflow 配置：
+
+- 确认 `.github/workflows/ci.yml` 可被 YAML 解析。
+- 检查 `actions/checkout` 与 `actions/upload-artifact` 均引用 `v7`。
+- 核对 v7 action 的输入定义与当前 `name`、`path`、`if-no-files-found` 用法兼容。
+- 保持 CI 的触发事件、矩阵、构建命令与 artifact 上传行为不变。
+- 不运行 Rust 测试，也不执行 C++ oracle；本变更不涉及采样或栅格行为。

@@ -302,3 +302,14 @@
       `actions/upload-artifact@v5`。
 - [x] 本地验证 workflow YAML 可解析，并确认两个 action 官方仓库存在 v5 tag。
 - [x] 回写验证证据。
+
+## P12：全部 GitHub Actions 升级到当前最新主版本
+
+- [x] 在 `TECHNICAL_PLAN.md`、`TEST_STRATEGY.md`、`TODO.md` 登记 P12 范围与实施规则。
+- [x] 将 `.github/workflows/ci.yml` 的 `actions/checkout@v5` 升级为
+      `actions/checkout@v7`。
+- [x] 将 `.github/workflows/ci.yml` 的 `actions/upload-artifact@v5` 升级为
+      `actions/upload-artifact@v7`。
+- [x] 确认 `dtolnay/rust-toolchain@stable` 为官方推荐的最新 stable Rust 引用并保留。
+- [x] 本地验证 workflow YAML 可解析，并核对 v7 action 定义兼容。
+- [x] 回写验证证据。

@@ -1505,3 +1505,41 @@ deprecation warning；现有构建与上传行为不变。
   `https://github.com/actions/upload-artifact.git` 均确认存在 v5 tag。
 - `.github/workflows/ci.yml` 通过 YAML 解析。
 - 工作流中已无 `actions/checkout@v4` / `actions/upload-artifact@v4`。
+
+### P12：全部 GitHub Actions 升级到当前最新主版本（已完成）
+
+用户在 P11 之后要求把工作流中的全部 action 换成当前最新版。经查询：
+`actions/checkout` 最新主版本为 `v7`，`actions/upload-artifact` 最新主版本为
+`v7`；`dtolnay/rust-toolchain` 官方 README 推荐使用 `@stable`，该 ref 表示安装
+最新 stable Rust toolchain，不是可替换为其它 action 版本号的发布版本。
+
+实施规则：
+
+1. 将 `.github/workflows/ci.yml` 中 `actions/checkout@v5` 升级为
+   `actions/checkout@v7`。
+2. 将 `.github/workflows/ci.yml` 中 `actions/upload-artifact@v5` 升级为
+   `actions/upload-artifact@v7`。
+3. 保留 `dtolnay/rust-toolchain@stable`，因为该引用同时表示 action 的官方稳定
+   入口与最新 stable Rust toolchain。
+4. 不改变触发事件、矩阵、构建命令、artifact 名称或上传路径。
+5. 本地验证 workflow 可被 YAML 解析，并核对 v7 的 action 定义与当前输入兼容。
+
+完成标准：工作流中除 `dtolnay/rust-toolchain@stable` 外的 action 全部使用当前
+最新主版本；现有构建与上传行为不变。
+
+#### P12 实施记录 1：全部 GitHub Actions 升级到最新主版本（已完成）
+
+将 `.github/workflows/ci.yml` 中的 `actions/checkout@v5` 升级为
+`actions/checkout@v7`，`actions/upload-artifact@v5` 升级为
+`actions/upload-artifact@v7`。`dtolnay/rust-toolchain@stable` 按官方 README
+保留，该 ref 表示最新 stable Rust toolchain；触发事件、runner 矩阵、Rust
+toolchain、`cargo build --all-targets --locked` 与 artifact 上传路径保持不变。
+
+验证：
+
+- `git ls-remote --tags` 确认 `actions/checkout` 最新 tag 为 `v7.0.1`，
+  `actions/upload-artifact` 最新 tag 为 `v7.0.1`。
+- v7 的 `action.yml` 输入定义与当前 `name`、`path`、`if-no-files-found`
+  用法兼容。
+- `.github/workflows/ci.yml` 通过 YAML 解析，`git diff --check` 通过。
+- 工作流中已无 `actions/checkout@v5` / `actions/upload-artifact@v5`。
