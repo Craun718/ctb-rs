@@ -102,7 +102,7 @@ fn parse_block_size(option: &str, value: &str) -> Result<u32, Box<dyn Error>> {
 
 #[derive(Debug, Parser)]
 #[command(
-    about = "Create CTB heightmap terrain tiles from an EPSG:4326 GeoTIFF DEM",
+    about = "Create CTB heightmap terrain tiles from an EPSG GeoTIFF DEM",
     version = env!("CARGO_PKG_VERSION")
 )]
 struct Arguments {
@@ -162,7 +162,7 @@ struct Arguments {
     #[arg(short = 'm', long = "warp-memory", default_value_t = 0.0_f64)]
     warp_memory_limit: f64,
 
-    /// Input single-band, north-up EPSG:4326 GeoTIFF DEM.
+    /// Input single-band, north-up EPSG GeoTIFF DEM.
     input: PathBuf,
 }
 

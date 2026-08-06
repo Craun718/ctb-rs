@@ -8,7 +8,8 @@
 
 实现必须同时满足：
 
-- 不链接 GDAL、PROJ 或其他 C/C++ GIS FFI；GDAL 职责以纯 Rust/GeoRust 依赖实现。
+- 不链接 GDAL、PROJ 或其他 C/C++ GIS FFI；GDAL 职责以纯 Rust/GeoRust 依赖实现，
+  通用 EPSG 坐标变换使用纯 Rust `proj4rs`。
 - 不新增 C++ 原版没有的算法、接口、命令行语义或架构层次；Rust 模块、类型和调用顺序
   应一一映射原版类与函数。仅为所有权、错误传播和内存安全所必需的差异可以存在。
 - 不以 Rust 语法糖改变算法或默认值：数值公式、迭代顺序、边界包含规则、默认参数、
@@ -45,7 +46,7 @@ Rust 的 `RasterSource`、缓存和 writer 只能作为 GDAL dataset/VRT 的内�
 | --- | --- | --- |
 | Dataset 打开、波段、GeoTransform、NoData、TIFF tag | 纯 Rust TIFF/GeoTIFF reader/writer（当前 `geotiff-reader`/`geotiff-writer`） | `GDALTiler` 和工具实际读取的 metadata；每种样本类型、压缩、strip/tile、BigTIFF、overview 都须有 fixture。 |
 | `GDALCreateWarpedVRT` / RasterIO | 显式的同顺序坐标映射、核函数、destination 初始化和样本转换 | `GDALTiler::createRasterTile`、`TerrainTiler::createRasterTile` 与 GDAL oracle。 |
-| SRS 比较和 `OGRCoordinateTransformation` | 纯 Rust CRS 解析与登记式 EPSG 变换 | 先 EPSG:4326 与 3857；之后只按原版实测输入 CRS 增量实现，不把未知 CRS 当作 4326。 |
+| SRS 比较和 `OGRCoordinateTransformation` | 纯 Rust CRS 解析与 EPSG 变换（`proj4rs` 的 `crs-definitions`） | 保留 EPSG:4326 与 3857 内建控制点；其它 EPSG 输入由 `proj4rs::Proj::from_epsg_code` 解析和变换，不把未知 CRS 当作 4326。 |
 | overview dataset | 纯 Rust TIFF 内部/外部 overview 表示和 C++ 选择公式 | `getOverviewDataset` 及 SuggestedWarp oracle。 |
 | `CreateCopy` driver | 每个原版实际支持且需要兼容的格式分别实现 writer/creation-option 映射 | 先 GTiff；其余 driver 以 C++ oracle 建立清单后按优先级翻译，不能静默降级。 |
 
@@ -1361,3 +1362,49 @@ CLI 的 clap `version` 与手动 `--version`/`-V` 输出统一改为
 `ctb-binaries-windows-x64`、`ctb-binaries-macos-arm64`、
 `ctb-binaries-linux-arm64` 或 `ctb-binaries-linux-x64`，并设置
 `if-no-files-found: error` 避免静默缺少产物。
+
+### P9：任意 EPSG 输入 CRS 重投影（proj4rs）（已完成）
+
+用户确认采用 `proj4rs`，并指出原版 C++ CTB 通过 GDAL 支持其它投影，Rust 版也应当支持。
+实现范围是 GeoTIFF 输入 CRS 从仅 EPSG:4326/3857 扩展为
+`proj4rs::Proj::from_epsg_code` 可解析的 EPSG code；输出仍固定为 CTB 的两种 Grid
+profile（EPSG:4326 与 EPSG:3857），不新增任意输出 CRS。
+
+实施规则：
+
+1. 通过 Cargo CLI 添加 `proj4rs@0.1.10`，启用 `crs-definitions`，不启用默认功能。
+2. `Crs` 增加 `Epsg(u16)`；EPSG:4326↔3857 的内建公式保持不变，避免破坏既有 oracle。
+3. 通用路径按 `proj4rs` 的弧度约定调用 `transform_xy`：源为 `latlong` 时先转弧度，
+   目标为 `latlong` 时再把结果转回度。
+4. `GeoTiffRasterSource::open` 对非 4326/3857 的 EPSG 调用 `from_epsg_code`；解析或
+   变换失败继续返回 `CtbError::UnsupportedCrs`。
+5. `proj4rs` 不解析任意 WKT，NTV2 grid shift 仍为实验性；这部分保持明确的限制。
+6. CLI help 与 README 改为“支持任意 proj4rs 可解析的 EPSG 输入 CRS”。
+
+完成标准：`cargo fmt --check`、`cargo test`、`cargo clippy --all-targets -- -D warnings`
+通过；既有 4326↔3857 oracle 行为不回归；新增任意 EPSG 单元与 CLI 覆盖。
+
+#### P9 实施记录 1：proj4rs 通用 EPSG 输入（已完成）
+
+已通过 Cargo CLI 添加 `proj4rs@0.1.10`，关闭默认功能并启用
+`crs-definitions`。`Crs` 新增 `Epsg(u16)`，EPSG:4326 与 EPSG:3857 的内建公式保持
+不变；其它 EPSG 经 `transform_with_proj4rs` 按 `is_latlong()` 做度/弧度转换后调用
+`transform_xy`，变换失败统一返回 `UnsupportedCrs`。
+
+`GeoTiffRasterSource::open` 对非 4326/3857 的 EPSG 先调用
+`proj4rs::Proj::from_epsg_code`，可解析的输入正常打开，未知 EPSG 返回
+`UnsupportedCrs`。`ctb-tile`、`ctb-extents` 的 help 与 `README.md` 已改为接受
+proj4rs 可解析的 EPSG 输入，同时保留“零 GDAL/PROJ 依赖”说明：只使用纯 Rust proj4rs，
+不链接 GDAL、PROJ 或 C/C++ GIS FFI。
+
+测试覆盖：
+
+- `raster.rs`：EPSG:32630 `(500000, 0)` 与 EPSG:4326 `(-3, 0)` 控制点互换，
+  EPSG:27700 原点控制点反向 roundtrip，未知 EPSG 返回 `UnsupportedCrs`。
+- `geotiff.rs`：EPSG:32630 GeoTIFF 打开成功，未知 EPSG fixture 拒绝。
+- `tests/cli.rs`：EPSG:32630 的 32×32、8 km pixel、约 256 km 局部范围 fixture 在
+  z6 生成 geodetic terrain 与 mercator GTiff。局部切片避免把大范围目标 tile 反转到
+  UTM 投影域之外；Mercator 输出断言 EPSG:3857 且能采样到源值 9.0。
+
+验证门禁：`cargo fmt --check`、`cargo test --all-targets`、
+`cargo clippy --all-targets -- -D warnings` 全部通过。

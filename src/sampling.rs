@@ -52,7 +52,7 @@ fn round_clamped(value: f64, min: f64, max: f64) -> f64 {
     }
 }
 
-/// Sample an EPSG:4326, north-up source at a world coordinate.
+/// Sample a north-up raster source at a world coordinate.
 ///
 /// The source affine transform maps pixel corners. This function converts that
 /// coordinate system to pixel centres only for bilinear interpolation.

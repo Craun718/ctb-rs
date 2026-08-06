@@ -4,6 +4,7 @@ use crate::{CtbError, grid::Bounds};
 pub enum Crs {
     Epsg4326,
     Epsg3857,
+    Epsg(u16),
 }
 
 const WEB_MERCATOR_RADIUS: f64 = 6_378_137.0;
@@ -38,10 +39,63 @@ pub fn transform_coordinate(
             (2.0 * (y / WEB_MERCATOR_RADIUS).exp().atan() - std::f64::consts::FRAC_PI_2)
                 .to_degrees(),
         )),
-        _ => Err(CtbError::UnsupportedCrs(format!(
-            "cannot transform {source:?} to {target:?}"
-        ))),
+        _ => transform_with_proj4rs(x, y, source, target),
     }
+}
+
+fn epsg_code(crs: &Crs) -> u16 {
+    match crs {
+        Crs::Epsg4326 => 4326,
+        Crs::Epsg3857 => 3857,
+        Crs::Epsg(code) => *code,
+    }
+}
+
+fn projection_for_crs(crs: &Crs) -> Result<proj4rs::Proj, CtbError> {
+    let code = epsg_code(crs);
+    proj4rs::Proj::from_epsg_code(code).map_err(|error| {
+        CtbError::UnsupportedCrs(format!(
+            "EPSG:{code} cannot be resolved by proj4rs: {error}"
+        ))
+    })
+}
+
+fn transform_with_proj4rs(
+    x: f64,
+    y: f64,
+    source: &Crs,
+    target: &Crs,
+) -> Result<(f64, f64), CtbError> {
+    let source_projection = projection_for_crs(source)?;
+    let target_projection = projection_for_crs(target)?;
+    let source_code = epsg_code(source);
+    let target_code = epsg_code(target);
+    let (mut projected_x, mut projected_y) = (x, y);
+    if source_projection.is_latlong() {
+        projected_x = projected_x.to_radians();
+        projected_y = projected_y.to_radians();
+    }
+    let (mut result_x, mut result_y) = proj4rs::adaptors::transform_xy(
+        &source_projection,
+        &target_projection,
+        projected_x,
+        projected_y,
+    )
+    .map_err(|error| {
+        CtbError::UnsupportedCrs(format!(
+            "cannot transform EPSG:{source_code} to EPSG:{target_code}: {error}"
+        ))
+    })?;
+    if target_projection.is_latlong() {
+        result_x = result_x.to_degrees();
+        result_y = result_y.to_degrees();
+    }
+    if !result_x.is_finite() || !result_y.is_finite() {
+        return Err(CtbError::UnsupportedCrs(format!(
+            "cannot transform EPSG:{source_code} to EPSG:{target_code}: result is not finite"
+        )));
+    }
+    Ok((result_x, result_y))
 }
 
 /// Transform an axis-aligned bounds rectangle by transforming all four corners.
@@ -294,5 +348,41 @@ mod tests {
         assert!(north_pole.is_finite());
         assert!(south_pole.is_finite());
         Ok(())
+    }
+
+    #[test]
+    fn transforms_utm_zone_30_control_point_to_geodetic_and_back() -> Result<(), CtbError> {
+        let (longitude, latitude) =
+            transform_coordinate(500_000.0, 0.0, &Crs::Epsg(32630), &Crs::Epsg4326)?;
+        assert!((longitude + 3.0).abs() < 1e-9);
+        assert!(latitude.abs() < 1e-9);
+
+        let (easting, northing) =
+            transform_coordinate(longitude, latitude, &Crs::Epsg4326, &Crs::Epsg(32630))?;
+        assert!((easting - 500_000.0).abs() < 1e-6);
+        assert!(northing.abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn transforms_osgb_origin_control_point_and_roundtrips() -> Result<(), CtbError> {
+        let (longitude, latitude) =
+            transform_coordinate(400_000.0, -100_000.0, &Crs::Epsg(27700), &Crs::Epsg4326)?;
+        assert!((longitude + 2.0).abs() < 1e-6);
+        assert!((latitude - 49.0).abs() < 1e-6);
+
+        let (easting, northing) =
+            transform_coordinate(longitude, latitude, &Crs::Epsg4326, &Crs::Epsg(27700))?;
+        assert!((easting - 400_000.0).abs() < 1e-6);
+        assert!((northing + 100_000.0).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_unknown_epsg_in_the_generic_transform_path() {
+        assert!(matches!(
+            transform_coordinate(0.0, 0.0, &Crs::Epsg(9999), &Crs::Epsg4326),
+            Err(CtbError::UnsupportedCrs(_))
+        ));
     }
 }

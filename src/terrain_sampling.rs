@@ -85,8 +85,8 @@ impl TerrainSamplePlan {
         source: &dyn RasterSource,
         method: ResamplingMethod,
     ) -> Result<Vec<f64>, CtbError> {
-        // In the restricted EPSG:4326, no-reprojection path this is the
-        // `GDALSuggestedWarpOutput2` ratio used by CTB's overview chooser.
+        // This mirrors the `GDALSuggestedWarpOutput2` ratio used by CTB's
+        // overview chooser after reprojection to the source CRS.
         let target_ratio = 1.0 / source.metadata().transform.pixel_width;
         let level = source.sampling_level_for_ratio(target_ratio)?;
         let mut heights = Vec::new();

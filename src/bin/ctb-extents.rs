@@ -35,7 +35,7 @@ struct Arguments {
     #[arg(short = 'e', long)]
     end_zoom: Option<u8>,
 
-    /// Input single-band, north-up EPSG:4326 GeoTIFF DEM.
+    /// Input single-band, north-up EPSG GeoTIFF DEM.
     input: PathBuf,
 }
 

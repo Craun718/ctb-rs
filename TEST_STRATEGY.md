@@ -247,6 +247,32 @@ Cargo 命令必须在禁用沙盒的环境执行。生产代码和测试均不�
  
 - 根因 F（average footprint 来源）：average_at 的 footprint 来源从世界坐标像元边界改为
   source_center±0.5（GDAL padfX±0.5），确保 footprint 始终恰好 1 个 source pixel 宽。
- 
+
 根因 D 已在工作树中实现。根因 E 和 F 尚待实现；实现后须运行 cargo test + cargo clippy
 -D warnings，再以 C++ oracle 差分复核 144 组是否全绿。
+
+## 9. P9 任意 EPSG 输入 CRS 重投影（proj4rs）
+
+P9 使用 `proj4rs@0.1.10` 的 `crs-definitions` 功能解析 GeoTIFF 输入 CRS。EPSG:4326 与
+EPSG:3857 仍走既有内建公式，避免破坏 P0–P6 的 oracle；其它 EPSG 输入经 proj4rs 转换到
+目标 CTB profile。proj4rs 不解析任意 WKT，NTV2 grid shift 仍为实验性，因此任意 WKT 输入
+和带本地 grid shift 文件的 CRS 不作为 P9 的接受范围。
+
+测试策略：
+
+- `raster.rs` 单元测试覆盖 `Crs::Epsg(u16)`：
+  - EPSG:32630 `(500000, 0)` 与 EPSG:4326 `(-3, 0)` 的控制点互换；
+  - EPSG:27700 `(400000, -100000)` 逆变换到 EPSG:4326 后在合理容差内回到原坐标；
+  - 未知 EPSG 和无法解析的坐标变换返回 `UnsupportedCrs`。
+- `geotiff.rs` 单元测试覆盖任意 EPSG 打开：
+  - 使用 `GeoTiffBuilder::epsg(32630)` 生成投影坐标 fixture，打开后
+    `metadata().crs == Crs::Epsg(32630)`；
+  - 使用未知 EPSG fixture，打开返回 `UnsupportedCrs`。
+- CLI 集成测试覆盖投影坐标 GeoTIFF 输入：
+  - 写入 EPSG:32630 的 32×32、8 km pixel、约 256 km 局部范围北向上 GeoTIFF，
+    固定 z6 后 `ctb-tile -p geodetic` 能生成 terrain 切片；
+  - 同一 fixture 在 `ctb-tile -p mercator` 下能生成 GTiff 切片，输出 tile 的
+    EPSG 为 3857，且能采样到源值；局部切片避免把大范围目标 tile 反转到 UTM 投影域之外。
+
+完成门禁沿用 P7：`cargo fmt --check`、`cargo test`、`cargo clippy --all-targets -- -D
+warnings` 全部通过；既有 4326↔3857 oracle 行为不回归。

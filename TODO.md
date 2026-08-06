@@ -253,3 +253,19 @@
       `ctb-binaries-*` artifact，并设置 `if-no-files-found: error`。
 - [x] 将构建 runner 扩展为 Windows x64、macOS ARM、Linux ARM、Linux x64 矩阵，
       并按平台上传唯一 artifact。
+
+## P9：任意 EPSG 输入 CRS 重投影（proj4rs）
+
+- [x] 在 `TECHNICAL_PLAN.md` 登记 P9 范围与实施规则。
+- [x] 在 `TEST_STRATEGY.md` 登记 P9 测试策略。
+- [x] 通过 Cargo CLI 添加 `proj4rs@0.1.10`，启用 `crs-definitions`，不启用默认功能。
+- [x] 为 `Crs` 增加 `Epsg(u16)`，保留 EPSG:4326↔3857 内建公式，并接入 `proj4rs`
+      通用 EPSG 变换（按 `is_latlong()` 做度/弧度转换）。
+- [x] `GeoTiffRasterSource::open` 接受 `from_epsg_code` 可解析的任意 EPSG 输入；
+      未知或变换失败的 EPSG 仍返回 `UnsupportedCrs`。
+- [x] 更新 `ctb-tile`、`ctb-extents` 的 CLI help 与 `README.md` 输入 CRS 描述。
+- [x] 新增 `raster.rs` 单元测试：EPSG:27700、EPSG:32630 控制点与反向 roundtrip。
+- [x] 新增 `geotiff.rs` 测试：任意 EPSG 打开成功、未知 EPSG 拒绝。
+- [x] 新增 CLI 集成测试：投影坐标 GeoTIFF 输入能生成对应 CTB profile 的切片。
+- [x] 运行 `cargo fmt --check`、`cargo test`、`cargo clippy --all-targets -- -D warnings`
+      并回写验证证据。

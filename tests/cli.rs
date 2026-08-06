@@ -58,6 +58,16 @@ fn write_mercator_world_geotiff(path: &Path) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+fn write_utm_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let samples = Array2::from_elem((32, 32), 9.0_f64);
+    GeoTiffBuilder::new(32, 32)
+        .epsg(32630)
+        .pixel_scale(8_000.0, 8_000.0)
+        .origin(400_000.0, 100_000.0)
+        .write_2d(path, samples.view())?;
+    Ok(())
+}
+
 #[test]
 fn ctb_cli_versions_match_cargo_package_version() -> Result<(), Box<dyn std::error::Error>> {
     let binaries = [
@@ -543,6 +553,52 @@ fn ctb_tile_writes_mercator_direct_source_gtiff() -> Result<(), Box<dyn std::err
     assert_eq!(transform.pixel_height, -origin_shift / 2.0);
     let values = file.read_band_window::<f64>(0, 0, 0, 4, 4)?;
     assert!(values.iter().all(|value| *value == 7.0));
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
+fn ctb_tile_reprojects_arbitrary_epsg_input() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = temporary_directory("tile-projected-epsg")?;
+    let input = directory.join("dem-32630.tif");
+    write_utm_geotiff(&input)?;
+
+    let terrain_output = directory.join("terrain");
+    fs::create_dir(&terrain_output)?;
+    let terrain_result = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args(["-p", "geodetic", "-s", "6", "-e", "6", "-o"])
+        .arg(&terrain_output)
+        .arg(&input)
+        .output()?;
+    assert!(
+        terrain_result.status.success(),
+        "{:?}",
+        terrain_result.stderr
+    );
+    assert!(terrain_output.join("6/62/32.terrain").exists());
+
+    let mercator_output = directory.join("mercator");
+    fs::create_dir(&mercator_output)?;
+    let mercator_result = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args([
+            "-f", "GTiff", "-p", "mercator", "-t", "4", "-s", "6", "-e", "6", "-o",
+        ])
+        .arg(&mercator_output)
+        .arg(&input)
+        .output()?;
+    assert!(
+        mercator_result.status.success(),
+        "{:?}",
+        mercator_result.stderr
+    );
+    let tile = GeoTiffFile::open(mercator_output.join("6/31/32.tif"))?;
+    assert_eq!(tile.epsg(), Some(3857));
+    let values = tile.read_band_window::<f64>(0, 0, 0, 4, 4)?;
+    assert!(
+        values.iter().any(|value| *value == 9.0),
+        "reprojected Mercator tile did not sample the UTM fixture: {values:?}"
+    );
 
     fs::remove_dir_all(directory)?;
     Ok(())

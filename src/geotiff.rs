@@ -12,8 +12,9 @@ use crate::{
 
 /// A restricted, pure-Rust GeoTIFF source for the direct-source input contract.
 ///
-/// It accepts one north-up band in either CTB built-in grid CRS. Reprojection
-/// remains at the sampling-plan boundary; overview selection is level-aware.
+/// It accepts one north-up band in an EPSG CRS resolvable by proj4rs.
+/// Reprojection remains at the sampling-plan boundary; overview selection is
+/// level-aware.
 pub struct GeoTiffRasterSource {
     file: GeoTiffFile,
     metadata: RasterMetadata,
@@ -24,10 +25,20 @@ impl GeoTiffRasterSource {
         let file =
             GeoTiffFile::open(path).map_err(|error| CtbError::RasterRead(error.to_string()))?;
         let epsg = file.epsg().ok_or(CtbError::MissingCrs)?;
-        let crs = match epsg {
+        let code = u16::try_from(epsg).map_err(|_| {
+            CtbError::UnsupportedCrs(format!("EPSG:{epsg} is outside the supported code range"))
+        })?;
+        let crs = match code {
             4326 => Crs::Epsg4326,
             3857 => Crs::Epsg3857,
-            _ => return Err(CtbError::UnsupportedCrs(format!("EPSG:{epsg}"))),
+            _ => {
+                proj4rs::Proj::from_epsg_code(code).map_err(|error| {
+                    CtbError::UnsupportedCrs(format!(
+                        "EPSG:{code} cannot be resolved by proj4rs: {error}"
+                    ))
+                })?;
+                Crs::Epsg(code)
+            }
         };
         if file.band_count() != 1 {
             return Err(CtbError::UnsupportedRaster(format!(
@@ -365,6 +376,16 @@ mod tests {
         Ok(())
     }
 
+    fn write_projected_fixture(path: &Path, epsg: u16) -> Result<(), Box<dyn std::error::Error>> {
+        let samples = array![[10.0_f64, 11.0], [12.0, 13.0]];
+        GeoTiffBuilder::new(2, 2)
+            .epsg(epsg)
+            .pixel_scale(1.0, 1.0)
+            .origin(500_000.0, 0.0)
+            .write_2d(path, samples.view())?;
+        Ok(())
+    }
+
     fn write_overview_fixture(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let samples = Array2::from_shape_fn((8, 8), |(row, column)| (row * 8 + column) as f64);
         let builder = GeoTiffBuilder::new(8, 8)
@@ -409,6 +430,28 @@ mod tests {
         write_fixture(&path, 3857, None)?;
         let source = GeoTiffRasterSource::open(&path)?;
         assert_eq!(source.metadata().crs, Crs::Epsg3857);
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn opens_an_arbitrary_epsg_geotiff() -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("epsg32630");
+        write_projected_fixture(&path, 32630)?;
+        let source = GeoTiffRasterSource::open(&path)?;
+        assert_eq!(source.metadata().crs, Crs::Epsg(32630));
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_an_unknown_epsg_geotiff() -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("epsg-unknown");
+        write_projected_fixture(&path, 9999)?;
+        assert!(matches!(
+            GeoTiffRasterSource::open(&path),
+            Err(CtbError::UnsupportedCrs(_))
+        ));
         fs::remove_file(path)?;
         Ok(())
     }

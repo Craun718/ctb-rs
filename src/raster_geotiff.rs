@@ -114,6 +114,11 @@ pub fn write_raster_tile_as_geotiff_with_options(
     builder = match metadata.crs {
         Crs::Epsg4326 => builder.geographic_epsg(4326),
         Crs::Epsg3857 => builder.projected_epsg(3857),
+        Crs::Epsg(code) => {
+            return Err(CtbError::UnsupportedCrs(format!(
+                "output raster CRS EPSG:{code} is not a CTB grid CRS"
+            )));
+        }
     }
     .pixel_scale(plan.resolution(), plan.resolution())
     .origin(bounds.min_x, bounds.max_y)

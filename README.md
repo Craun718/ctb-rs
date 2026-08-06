@@ -11,9 +11,9 @@
 
 ## 特性
 
-- **零 GDAL/PROJ 依赖**：不链接 GDAL、PROJ 或任何 C/C++ GIS FFI。原版由 GDAL 承担的
-  数据集读写、坐标变换、overview 选择、重采样等职责，全部用纯 Rust（GeoRust 生态与本项目
-  内部 codec）实现。
+- **零 GDAL/PROJ 依赖**：不链接 GDAL、PROJ 或任何 C/C++ GIS FFI；通用 EPSG 坐标变换
+  使用纯 Rust proj4rs。原版由 GDAL 承担的数据集读写、坐标变换、overview 选择、重采样等
+  职责，全部用纯 Rust（GeoRust 生态与本项目内部 codec）实现。
 - **行为基准对齐**：数值公式、迭代顺序、边界包含规则、默认参数、数据类型转换和错误条件均以
   C++ CTB 为唯一基准，不新增原版没有的算法、接口或命令行语义。
 - **TMS 双 profile**：Global Geodetic（EPSG:4326）与 Global Mercator（EPSG:3857），
@@ -29,8 +29,10 @@
 
 ### `ctb-tile`
 
-从 EPSG:4326 GeoTIFF DEM 生成 `{z}/{x}/{y}.terrain` 切片，计算与源分辨率匹配的最大 zoom，
-并自顶向下生成所有重叠切片；也支持以 GeoTIFF（GTiff）作为输出格式。
+从 proj4rs 可解析 EPSG 的 GeoTIFF DEM 生成 `{z}/{x}/{y}.terrain` 切片，计算与源分辨率
+匹配的最大 zoom，并自顶向下生成所有重叠切片；也支持以 GeoTIFF（GTiff）作为输出格式。
+EPSG:4326 与 EPSG:3857 使用内建公式，其它 EPSG 输入通过 proj4rs 重投影到目标 CTB
+profile；任意 WKT 输入不在当前支持范围内。
 
 ```sh
 ctb-tile --output-dir ./terrain-tiles dem.tif
