@@ -1881,7 +1881,111 @@ Rust 修复方向（P13 记录 4 的落地范围）：
   个编码为 0 的样本。Rust 已通过 `GeoTiffWindowRaster` 回归测试覆盖空 pooled
   window 返回全 0，且不会向 GeoTIFF reader 发起 0 高度窗口请求；生产
   `ctb-tile -s 0 -e 0` 输出解压后与 C++ 六个 `.terrain` payload 完全一致。
-- Mercator 仍是开放问题：C++ Mercator Terrain 的 VRT 为 256×256，`RasterIO`
-  只读左上 65×65；GDAL VRT block 为 `min(nXSize,512) × min(nYSize,128)`，
-  pooled `ComputeSourceWindow` 的目标尺寸可能不是编译期 `TILE_SIZE=65`。在
-  建立 C++ Mercator oracle 前不得据此修改当前 geodetic 实现。
+- Mercator Terrain 的 VRT block pooled 路径已转到 P15 处理并关闭：C++ 的 VRT
+  为 256×256、`RasterIO` 只读左上 65×65、GDAL VRT block 为
+  `min(nXSize,512) × min(nYSize,128)`，Rust 已按该 block 尺寸复现 pooled
+  window、margin 和 `GDALApproxTransform` 行坐标，最终 38 个 Mercator
+  Terrain payload 与 C++ oracle 完全一致。
+
+### P15：Mercator Terrain VRT block pooled 路径对齐（已完成）
+
+本阶段只修复 Mercator Terrain 的 pooled Average 路径，不改变 geodetic 已收敛
+行为，也不扩大至 RasterTiler。
+
+#### P15 根因
+
+C++ `TerrainTiler::createTile` 用 `mGrid.tileSize()` 创建 VRT，Mercator 默认
+`256×256`，随后只 `RasterIO` 读左上 `65×65`。`VRTWarpedDataset` 的默认 block
+尺寸为 `min(nXSize,512) × min(nYSize,128)`，因此 Mercator VRT 实际 warp 的
+destination 是 `256×128`，而不是 `TILE_SIZE=65`。
+
+2026-08-07 用 `world3857/source.tif`（720×720、EPSG:3857）建立 C++ Mercator
+oracle。GDAL debug 捕获到首个 block：
+
+```text
+GDALWarpKernel()::GWKAverageOrMode() Src=0,0,720x359 Dst=0,0,256x128
+```
+
+C++/Rust 均生成 38 个 Terrain 路径，其中 10 个 payload 不同：
+
+```text
+0/0/0、2/0/0、2/0/1、2/0/2、2/1/0、2/1/1、
+2/1/2、2/1/3、2/2/0、2/2/2
+```
+
+当前 Rust `compute_source_window` 和 `average_margin` 均按 65×65 destination
+计算，所以 Mercator 的 pooled source window 和 margin 与 C++ 不一致。
+
+按 block 尺寸修正后路径集合仍为 38 个，但 10 个 payload 仍不同。剩余根因是
+`GDALTiler::createRasterTile` 默认使用
+`GDALCreateApproxTransformer(..., 0.125)`（GDALTiler.cpp:344），
+`GWKAverageOrModeComputeLineCoords` 对整行 256 个 destination 像素调用
+`GDALApproxTransform`（gdalwarpkernel.cpp:6760-6780）。Rust 当前逐像素调用
+精确 `GDALGenImgProjTransform`，因此过渡像素的 source 坐标比 C++ 近似行坐标
+多 ~1e-14 级误差，在 0.5 边界上表现为 ±1 舍入。`mercator-coord-diag` 已捕获
+`z2/0/0 pos15,46` 的 exact `9.8823529411764746` 与 approx
+`9.8823529411764497`。
+
+#### P15 实施范围
+
+1. `TerrainSamplePlan` 保存 `warp_block_width/warp_block_height`，按
+   `min(grid_tile_size, 512)`、`min(grid_tile_size, 128)` 推导，对应
+   `VRTWarpedDataset` 默认 block。
+2. `compute_source_window` 改为接受独立的 destination X/Y 尺寸；Mercator
+   block 使用 `256×128`，geodetic 仍使用 `65×65`。
+3. `average_margin` 的 destination 尺寸也使用 block X/Y，而不是
+   `HEIGHTMAP_TILE_SIZE`。
+4. `sample_average_with_gdal_window` 按完整 block 计算 pooled window 和
+   margin，但只遍历 `0..heightmap_size`（65），与 `TerrainTiler` 的
+   `RasterIO(0,0,TILE_SIZE,TILE_SIZE)` 读取一致。
+5. 空 source window 语义保持现有实现：直接返回全 0，不发起 0 尺寸读取。
+6. Average 路径按 `GWKAverageOrModeComputeLineCoords` 对整行 `warp_block_width`
+   个 destination 像素调用等价 `GDALApproxTransform`，然后只取左上
+   65×65 的坐标参与采样；geodetic 65×65 block 的近似行退化仍应与现有精确结果
+   一致。
+
+#### P15 验证门禁
+
+- 单元测试断言 geodetic plan 的 warp block 为 `65×65`、Mercator plan 为
+  `256×128`。
+- 单元测试覆盖 `256×128` 矩形 pooled window 和对应 margin
+  （例如 `src=720×359` 时 X/Y margin 均为 6）。
+- 重建 release 后用同一 `world3857/source.tif` 重跑 C++/Rust Mercator
+  Terrain，38 个路径和全部解压后 payload 必须一致。
+- 重跑真实 Copernicus DEM geodetic 回归，确认 65×65 路径不回归。
+
+#### P15 实施记录 1：实现与差分收敛（已实现）
+
+2026-08-07 落地 P15 实施范围并关闭：
+
+1. `TerrainSamplePlan` 新增 `warp_block_width/warp_block_height`：
+   geodetic 为 `65×65`，Mercator 为 `256×128`，分别对应
+   `min(grid_tile_size, 512)` 与 `min(grid_tile_size, 128)`。
+2. `compute_source_window` 改为接受独立的 destination X/Y 尺寸；Mercator
+   pooled window 与 margin 按 `256×128` block 计算，而不是按
+   `HEIGHTMAP_TILE_SIZE=65`。720×720 首 block oracle 为
+   `Src=0,0,720x359`、X/Y margin 均为 6。
+3. `sample_average_with_gdal_window` 保持按完整 block 计算 pooled window
+   和 margin，但只遍历左上 `65×65` heightmap，对应 `TerrainTiler` 的
+   `RasterIO(0,0,TILE_SIZE,TILE_SIZE)`。
+4. 移植 `GWKAverageOrModeComputeLineCoords` 对应的整行
+   `GDALApproxTransform`：新增 `compute_average_line_coords`、
+   `gdal_approx_transform_row`、`gdal_approx_transform_internal` 和
+   `fallback_approx_transform_halves`。Mercator 行长度为 256，因此递归近似
+   分支会实际执行；geodetic 65 行仍走精确退化路径。
+5. FMA 发现：本机 C++ GDAL 构建把 `origin + pixel * pixel_size` 以及
+   `GDALApproxTransformInternal` 的插值/误差表达式收缩为 FMA。Rust 若用
+   普通 `+`/`*`，递归近似坐标会在部分 0.5 边界上产生 ±1 的整数舍入；改为
+   `mul_add` 后，264/264 个诊断坐标与 C++ oracle 逐位一致。
+6. 新增/更新单元测试：warp block 尺寸、矩形 Mercator pooled window/margin、
+   real oracle 近似行坐标（z2/0/0 row46 col49）、geodetic pooled 回归。
+7. 对齐 `GDALApproxTransformInternal` 的 base-transform 切片：half-2 与
+   fallback 使用 `nPoints - nMiddle - 2` 个点
+   （`dst_x[n_middle + 1..n_points - 1]`），末点由 SME 结果覆盖，避免把
+   C++ 随后覆盖的点当作独立精确变换输入。
+
+重建 release 后差分结果：
+
+- Mercator：`world3857/source.tif` 38/38 路径一致，解压后 payload 差异为 0。
+- Copernicus geodetic：11391/11391 路径一致，解压后 payload 差异为 0，
+  确认 65×65 路径无回归。

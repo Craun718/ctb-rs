@@ -358,4 +358,32 @@
 - [x] 用真实 Copernicus DEM 的四个 oracle 坐标回归，确认 oracle vs Rust 为 0。
 - [x] 修正 margin 后重建 release，重跑真实 DEM 全量 payload 差分：11391/11391
       路径一致，解压后 payload 差异为 0；P14 geodetic 范围关闭。
-- [ ] Mercator Terrain pooled 路径需 C++ oracle 后另行确认；P14 未修改该路径。
+- [x] 建立 Mercator Terrain pooled oracle：`world3857/source.tif`（720×720、
+      EPSG:3857），C++/Rust 均生成 38 个 Terrain 路径，GDAL debug 确认
+      `Src=0,0,720x359 Dst=0,0,256x128`，10 个 payload 差异待修复
+      （TECHNICAL_PLAN P15 根因）。
+- [x] 定位根因：Mercator VRT 为 256×256，VRT block 为 256×128，
+      Rust 仍按 65×65 计算 pooled source window 和 margin。
+
+## P15：Mercator Terrain VRT block pooled 路径对齐
+
+- [x] 在 `TECHNICAL_PLAN.md`、`TEST_STRATEGY.md`、`TODO.md` 登记 P15 范围。
+- [x] `TerrainSamplePlan` 保存 `warp_block_width/warp_block_height`，
+      geodetic=65×65、mercator=256×128。
+- [x] `compute_source_window` 支持矩形 destination 尺寸，Mercator 按 block
+      尺寸计算 pooled source window。
+- [x] `sample_average_with_gdal_window` 按 block 尺寸计算 margin，仍只输出
+      65×65 heightmap。
+- [x] 新增矩形 pooled window/margin 单元测试，保留 geodetic oracle 测试。
+- [x] 实现 `GWKAverageOrModeComputeLineCoords` 对应的整行
+      `GDALApproxTransform`，替换 Mercator Average 的逐像素精确坐标
+      （`gdalwarpkernel.cpp:6760-6780`、`gdaltransformer.cpp:4050-4438`；
+      `mercator-coord-diag` 已证明 approx/exact 有 1e-14 级坐标差）。
+- [x] 定位并复现本机 C++ 构建的 FMA 收缩：`GDALGenImgProjTransform` 正向
+      `origin + pixel * pixel_size` 和 `GDALApproxTransformInternal` 插值
+      表达式必须使用 `mul_add` 才能与 C++ oracle 逐位一致。
+- [x] 对齐 `GDALApproxTransformInternal` 的 half-2/fallback base-transform
+      切片长度，末点由 SME 结果覆盖，避免多变换一个点。
+- [x] `cargo fmt`、`cargo test`、`cargo clippy --all-targets -- -D warnings`。
+- [x] 重建 release，重跑 Mercator 38-file payload 差分，路径与 payload 全部
+      一致；重跑 Copernicus geodetic 回归：11391/11391、payload 差为 0。

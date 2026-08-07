@@ -152,7 +152,7 @@ struct Arguments {
     #[arg(short, long, default_value = "geodetic")]
     profile: String,
 
-    /// Tile edge length. Terrain requires 65; RasterTiler accepts CTB grid sizes.
+    /// Tile edge length. Terrain uses profile defaults 65/256; its heightmap read stays 65.
     #[arg(short, long)]
     tile_size: Option<u32>,
 

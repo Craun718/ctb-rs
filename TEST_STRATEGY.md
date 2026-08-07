@@ -483,3 +483,49 @@ z3/z4/z5/z6/z9 overlap 像素宽分别为
   payload 差异为 0。
 - 65×65 全世界合成输入跑生产 `ctb-tile -s 0 -e 0`，六个 `.terrain` 解压后
   与 C++ CTB oracle 逐字节一致，覆盖上边界空 pooled source window。
+
+### 13.5 Mercator Terrain VRT block pooled 测试
+
+2026-08-07 建立 Mercator oracle：
+
+- 输入：`/private/tmp/ctb-mercator-pooled-check/world3857/source.tif`，
+  720×720、EPSG:3857、Int32，由 EPSG:4326 世界数据 `gdalwarp` 生成。
+- C++：`/private/tmp/ctb-oracle-wrapper.sh` 调
+  `/Users/sander/coding/cesium-terrain-builder/build-gdal-v3.11.4/tools/ctb-tile`
+  （GDAL 3.11.4），输出 `/private/tmp/ctb-mercator-pooled-check/woc`。
+- Rust：`/Users/sander/coding/ctb-rs/target/release/ctb-tile`，输出
+  `/private/tmp/ctb-mercator-pooled-check/wrc`。
+- 路径清单：`wo.txt` / `wr.txt`，38 个文件一致；block 修正前有 10 个 payload
+  差异，详见 TECHNICAL_PLAN P15。
+
+测试断言：
+
+- `TerrainSamplePlan` 的 warp block 尺寸：geodetic 65×65、Mercator
+  256×128，由 `min(grid_tile_size, 512)` 与 `min(grid_tile_size, 128)`
+  推导。
+- `compute_source_window` 对矩形 destination 使用 `nDstXSize/nDstYSize`
+  分别采样；Mercator 首 block 在 720×720 源上得到
+  `(0,0,720,359)`，与 GDAL debug 一致。
+- `average_margin` 对 `(destination=256, source=720)` 与
+  `(destination=128, source=359)` 均得到 6，避免继续使用 65 导致错误 margin。
+- `sample_average_with_gdal_window` 按 block 计算 window 和 margin，但输出
+  仍固定为 65×65，对应 `TerrainTiler` 的
+  `RasterIO(0,0,TILE_SIZE,TILE_SIZE)`。
+- `GWKAverageOrModeComputeLineCoords` 的近似行坐标：Mercator Average 对
+  `warp_block_width`（256）个点调用 `GDALApproxTransform`，Rust 必须复现
+  整行递归近似，不能退回逐像素精确变换；`mercator-coord-diag` 在
+  `z2/0/0 pos15,46` 上 exact/approx 的 X 坐标分别为
+  `9.8823529411764746` / `9.8823529411764497`。
+- 开发环境门禁：重跑 38 个 Mercator Terrain，路径与解压后 payload 必须全部
+  一致；重跑 Copernicus geodetic 全量差分确认 11391/11391 且 payload 差为 0。
+
+2026-08-07 完成 P15 实现后的最终结果：
+
+- `TerrainSamplePlan` warp block：geodetic 65×65、Mercator 256×128。
+- `compute_source_window` 使用矩形 destination 尺寸；Mercator 首 block 仍为
+  `Src=0,0,720x359`，X/Y margin 均为 6。
+- `GWKAverageOrModeComputeLineCoords` 的整行 `GDALApproxTransform` 已移植，
+  并通过 z2/0/0 row46 col49 的 C++ oracle 行坐标测试。
+- 重建 release 后 Mercator 38/38 路径一致、解压后 payload 差异为 0。
+- 重建 release 后 Copernicus geodetic 11391/11391 路径一致、解压后 payload
+  差异为 0，确认 65×65 路径无回归。
