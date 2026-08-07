@@ -634,9 +634,16 @@ mod tests {
         }
 
         fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError> {
+            let width =
+                usize::try_from(request.width).map_err(|_| CtbError::InvalidRasterWindow)?;
+            let height =
+                usize::try_from(request.height).map_err(|_| CtbError::InvalidRasterWindow)?;
+            let count = width
+                .checked_mul(height)
+                .ok_or(CtbError::InvalidRasterWindow)?;
             Ok(RasterWindow {
                 request,
-                samples: vec![self.value],
+                samples: vec![self.value; count],
             })
         }
     }

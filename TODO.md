@@ -313,3 +313,49 @@
 - [x] 确认 `dtolnay/rust-toolchain@stable` 为官方推荐的最新 stable Rust 引用并保留。
 - [x] 本地验证 workflow YAML 可解析，并核对 v7 action 定义兼容。
 - [x] 回写验证证据。
+
+## P13：真实 Copernicus DEM 差分审计
+
+- [x] 在 `TECHNICAL_PLAN.md`、`TEST_STRATEGY.md`、`TODO.md` 登记 P13 范围与
+      实施规则。
+- [x] 记录真实 DEM 文件元数据：EPSG:4326、3600×3600、Float32、
+      COMPRESS=DEFLATE、PREDICTOR=3、三级 overview。
+- [x] 构建最新 Rust release 二进制，并确认 C++ oracle 可执行文件与动态库
+      搜索路径可用。
+- [x] 用同一真实 DEM 运行 C++/Rust `ctb-tile`，比较 Terrain 路径集合和解压后
+      payload；至少覆盖高 zoom 代表性层。
+- [x] 用同一真实 DEM 运行 C++/Rust `ctb-extents`，比较 GeoJSON 输出。
+- [x] 回写实测差异统计、失败证据和后续任务。
+- [x] 建立真实 COG source-window/overview 采样 oracle：用实际
+      `ctb::GlobalGeodetic(65)` / `ctb::TerrainTiler` 在四个坐标输出 raw/u16，
+      与 C++ `ctb-tile` 解压 payload 完全一致，并捕获 selected overview 与
+      GDAL warp `Src=` windows（TECHNICAL_PLAN P13 记录 3）。
+- [x] 定位 Rust 与 oracle 的剩余 source-window/读取差异：修正 margin 后，
+      四个坐标的 overlap GT + pooled ComputeSourceWindow + per-pixel
+      GWKAverageOrModeComputeSourceCoords 与 oracle 逐字节一致
+      （TECHNICAL_PLAN P13 记录 4）。
+- [x] 确认 overview 兼容策略：严格复刻 C++ `hSrcDS` 读取行为，`level: 0` +
+      overview metadata 保持不变；技术方案已更新后再动生产代码。
+- [ ] 建立可重复性能基准：P13 首轮 Rust 全范围 z14->z0 为 113.79 s，
+      C++ 为 2.82 s；P14 修正后复测 Rust 为 1:33.75（user 276.08 s）。
+      后续优化前先记录机器、输入、命令和耗时基线。
+
+## P14：Terrain GRA_Average warp 对齐实现
+
+- [x] 在 `TECHNICAL_PLAN.md`、`TEST_STRATEGY.md`、`TODO.md` 登记 P14 范围。
+- [x] `TerrainSamplePlan::sample_heights` Average 路径改为 overlap GT +
+      pooled ComputeSourceWindow + per-pixel GWKAverageOrMode 权重。
+- [x] `average_margin` 改为按 GDAL `PerformWarp` pooled source window 推导：
+      `dfXScale = nDstXSize / nSrcXSize`、
+      `dfYScale = nDstYSize / nSrcYSize`，并分别计算 X/Y margin；真实 COG
+      已知值 z0/z1/z2=112、z3/z4/z5=64x8、z6=24x8、z9 row 321=4x2、
+      z14=2x2，并替换旧的 transform-ratio 测试。
+- [x] 新增合成单元测试：overlap GT、pooled window、margin gate、average 权重。
+- [x] 空 pooled source window 兼容：65×65 world C++ oracle 已确认上边界
+      `y=1` 越界 tile 输出 4225 个 0；Rust 必须在空窗口上直接返回全 0，
+      不得向 `read_sampling_window` 发起 0 尺寸请求。
+- [x] `cargo fmt`、`cargo test`、`cargo clippy --all-targets -- -D warnings`。
+- [x] 用真实 Copernicus DEM 的四个 oracle 坐标回归，确认 oracle vs Rust 为 0。
+- [x] 修正 margin 后重建 release，重跑真实 DEM 全量 payload 差分：11391/11391
+      路径一致，解压后 payload 差异为 0；P14 geodetic 范围关闭。
+- [ ] Mercator Terrain pooled 路径需 C++ oracle 后另行确认；P14 未修改该路径。

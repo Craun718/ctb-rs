@@ -1543,3 +1543,345 @@ toolchain、`cargo build --all-targets --locked` 与 artifact 上传路径保持
   用法兼容。
 - `.github/workflows/ci.yml` 通过 YAML 解析，`git diff --check` 通过。
 - 工作流中已无 `actions/checkout@v5` / `actions/upload-artifact@v5`。
+
+### P13：真实 Copernicus DEM 差分审计（进行中）
+
+用户提供一份真实 Copernicus DSM COG，用于测量 Rust 版与 C++ CTB oracle 在
+非合成输入上的差距。本轮不修改生产代码和配置；只执行差分审计并记录证据。
+
+实施规则：
+
+1. 使用 `/Users/sander/coding/ demo/download-data/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif`
+   作为唯一输入；不复制、裁剪或改写该文件。
+2. 固定 C++ oracle 为
+   `/Users/sander/coding/cesium-terrain-builder/build-gdal-v3.11.4/tools/ctb-tile`
+   与同目录 `ctb-extents`，运行前记录 binary 动态库依赖和版本/help。
+3. Rust 使用当前 `target/release` 构建产物；若源码新于产物则先重新构建。
+4. 对比范围包括 `ctb-tile` 默认 Terrain 路径中可实际执行的代表性 zoom，以及
+   `ctb-extents` 的 GeoJSON 文件。Terrain 比较必须解 gzip 后逐字节比较 payload，
+   不能只比较压缩字节。
+5. 若真实数据使默认范围过大，先跑 `ctb-extents` 得到 zoom 范围，再选定
+   高 zoom 层做 payload 差分；任何缩减都必须记录在 TODO 和本节证据中。
+6. 遇到 Rust/C++ 差异时先登记可复现证据，再判断是否属于已知容器差异或
+   需要后续修复；不擅自修改算法和接口。
+
+完成标准：本轮至少得到一份真实 DEM 的路径集合、样本比较或明确失败证据，
+并回写 TODO 和测试策略。
+
+#### P13 实施记录 1：真实 Copernicus DEM 元数据与执行准备（已记录）
+
+输入文件为 EPSG:4326 WGS 84 的 COG：3600×3600、Float32、
+`Origin = (107.999861111111116, 23.000138888888888)`、
+`Pixel Size = (0.000277777777778, -0.000277777777778)`、
+`COMPRESSION=DEFLATE`、`PREDICTOR=3`、三级 overview（1800×1800、
+900×900、450×450）。文件大小 50,434,984 字节，MD5
+`6de035f523ed325945108641b4056415`。
+
+#### P13 实施记录 2：实测差分结果（已回写）
+
+2026-08-06 在 macOS arm64 上使用同一输入执行 C++ CTB oracle 与 Rust 当前
+release 二进制。C++ `ctb-tile` / `ctb-extents` 为 `0.4.1`，Rust 为 `0.0.1`；
+Rust `target/release/ctb-tile` 与 `ctb-extents` 在执行前已确认不早于源码。
+C++ 运行前设置：
+
+```sh
+DYLD_LIBRARY_PATH=/Users/sander/coding/cesium-terrain-builder/build-gdal-v3.11.4/src
+GDAL_DATA=/Users/sander/coding/cesium-terrain-builder/.deps/gdal-install-v3.11.4/share/gdal
+```
+
+执行内容：
+
+```sh
+INPUT='/Users/sander/coding/ demo/download-data/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif'
+CPP=/Users/sander/coding/cesium-terrain-builder/build-gdal-v3.11.4/tools
+RUST=/Users/sander/coding/ctb-rs/target/release
+
+# extents：默认 zoom 范围，各生成 0..14.geojson
+"$CPP/ctb-extents" -o /private/tmp/ctb-rs-real-extents-cpp.H3W9tw "$INPUT"
+"$RUST/ctb-extents" -o /private/tmp/ctb-rs-real-extents-rs.OoXYZg "$INPUT"
+
+# 代表性高 zoom：z14
+time "$CPP/ctb-tile" -q -c 4 -s 14 -e 14 -o /private/tmp/ctb-rs-real-tile14-cpp.Zc5Ko5 "$INPUT"
+time "$RUST/ctb-tile" -q -c 4 -s 14 -e 14 -o /private/tmp/ctb-rs-real-tile14-rs.s4oOWn "$INPUT"
+
+# 全范围：z14 -> z0
+time "$CPP/ctb-tile" -q -c 4 -s 14 -e 0 -o /private/tmp/ctb-rs-real-all-cpp.Wjh2tS "$INPUT"
+time "$RUST/ctb-tile" -q -c 4 -s 14 -e 0 -o /private/tmp/ctb-rs-real-all-rs.uDxE3S "$INPUT"
+```
+
+实测结果：
+
+- `ctb-extents`：C++ 与 Rust 的 15 个 `{zoom}.geojson` 逐字节一致
+  （`diff -rq` 无输出）。feature 数分别为 z0-z6 每层 1/1/1/2/2/2/2，
+  z7=4、z8=6、z9=16、z10=42、z11=156、z12=576、z13=2116、z14=8464，
+  总计 11,391。
+- Terrain 路径集合：C++ 与 Rust 全范围输出均 11,391 个 `.terrain`，
+  相对路径完全一致。
+- Terrain payload：解 gzip 后比较，`11391` 个文件中仅 `32` 个完整 payload
+  相同，其余 `11359` 个存在高度样本差异；每个文件的最后 2 字节
+  （child flag + water mask byte）全部一致。
+- 高度样本按 65×65=4225 个 u16 比较，总计
+  `11,163,089 / 48,126,975`（约 23.2%）个样本不同。最大 u16 差 `1919`，
+  按 CTB 0.2 m 编码换算最大高度差 `383.8 m`。
+
+逐 zoom 统计：
+
+| zoom | files | payload same | payload diff | height samples diff | max u16 diff | max meters |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 1 | 0 | 1 | 12 | 1468 | 293.6 |
+| 1 | 1 | 0 | 1 | 25 | 1919 | 383.8 |
+| 2 | 1 | 0 | 1 | 17 | 1557 | 311.4 |
+| 3 | 2 | 0 | 2 | 54 | 1360 | 272.0 |
+| 4 | 2 | 0 | 2 | 256 | 1562 | 312.4 |
+| 5 | 2 | 0 | 2 | 810 | 1688 | 337.6 |
+| 6 | 2 | 0 | 2 | 1112 | 857 | 171.4 |
+| 7 | 4 | 0 | 4 | 2641 | 5 | 1.0 |
+| 8 | 6 | 0 | 6 | 9169 | 11 | 2.2 |
+| 9 | 16 | 0 | 16 | 30230 | 736 | 147.2 |
+| 10 | 42 | 0 | 42 | 89221 | 18 | 3.6 |
+| 11 | 156 | 0 | 156 | 323785 | 21 | 4.2 |
+| 12 | 576 | 0 | 576 | 952836 | 41 | 8.2 |
+| 13 | 2116 | 0 | 2116 | 2543559 | 84 | 16.8 |
+| 14 | 8464 | 32 | 8432 | 7209362 | 605 | 121.0 |
+| total | 11391 | 32 | 11359 | 11163089 | 1919 | 383.8 |
+
+gzip 压缩后总字节数为 C++ `5,478,483`、Rust `5,460,231`；本审计以解压后
+payload 为行为比较，不把压缩字节差异视为功能差异。
+
+性能（同一台机器、`time` shell 计时，非隔离基准）：
+
+| 范围 | C++ real | Rust real | Rust/C++ |
+|---|---:|---:|---:|
+| z14 | 1.82 s | 6.32 s | 3.47x |
+| z14 -> z0 | 2.82 s | 113.79 s | 40.35x |
+
+残余结论：真实 COG 的 Terrain 高度差异不是容器/路径/mask 差异，且不能由
+P0 记录 4 的合成 `high-resolution-overview` fixture 解释。当前
+`sampling_level_for_ratio` 返回 `level: 0` 加 overview metadata 的修复只覆盖
+了该合成用例的坐标语义；真实输入在低 zoom 也出现 293.6-383.8 m 级最大差异，
+说明 overview 选择、source window、目标分辨率或 warp 读取仍存在未定位差异。
+后续应在 `GDALTiler` / `gdaloverviewdataset` 的真实 COG 路径上建立
+source-window 与采样 oracle，再修改 Rust；本轮不修改生产代码。
+
+#### P13 实施记录 3：真实 COG source-window oracle 与根因证据（已记录）
+
+2026-08-06 使用实际 `ctb::GlobalGeodetic(65)` 与 `ctb::TerrainTiler` 构建
+`/private/tmp/ctb-p13-compare/ctb-p13-oracle.cpp`。oracle 通过派生类暴露
+`createRasterTile(coord)` 和 `terrainTileBounds(coord, resolution)`，读取 CTB
+实际创建的 65×65 VRT，写出 `float` 原始值和 CTB u16 编码
+（`(height + 1000) * 5`），并用 `CPL_DEBUG=GDAL` 捕获 GDAL warp kernel 的
+source window。
+
+构建/运行命令：
+
+```sh
+/usr/bin/c++ -std=c++11 -O2 -arch arm64 \
+  -I/Users/sander/coding/cesium-terrain-builder/build-gdal-v3.11.4 \
+  -I/Users/sander/coding/cesium-terrain-builder/.deps/gdal-install-v3.11.4/include \
+  -I/Users/sander/coding/cesium-terrain-builder/src \
+  -DBANDMAP_TYPE="int*" \
+  /private/tmp/ctb-p13-compare/ctb-p13-oracle.cpp \
+  -L/Users/sander/coding/cesium-terrain-builder/build-gdal-v3.11.4/src -lctb \
+  -L/Users/sander/coding/cesium-terrain-builder/.deps/gdal-install-v3.11.4/lib -lgdal \
+  -o /private/tmp/ctb-p13-compare/ctb-p13-oracle
+
+DYLD_LIBRARY_PATH=/Users/sander/coding/cesium-terrain-builder/build-gdal-v3.11.4/src:/Users/sander/coding/cesium-terrain-builder/.deps/gdal-install-v3.11.4/lib
+GDAL_DATA=/Users/sander/coding/cesium-terrain-builder/.deps/gdal-install-v3.11.4/share/gdal
+```
+
+选定四个坐标，覆盖低、中、高 zoom：
+
+| coord | overview_count | overviews | suggested_output | target_ratio | selected_overview | overview GT | GDAL warp `Src=` |
+|---|---:|---:|---:|---:|---:|---|---|---:|
+| z0 tx=1 ty=0 | 3 | 1800/900/450 | 3600x3600 | 3600 | 2 | `108,0.00222222,0,23.0001,0,-0.00222222` | `0,0,3600x3600` |
+| z1 tx=3 ty=1 | 3 | 1800/900/450 | 3600x3600 | 3600 | 2 | `108,0.00222222,0,23.0001,0,-0.00222222` | `0,0,3600x3600` |
+| z9 tx=819 ty=318 | 3 | 1800/900/450 | 3600x3600 | 3600 | 2 | `108,0.00222222,0,23.0001,0,-0.00222222` | `0,380,127x162` |
+| z14 tx=26214 ty=10194 | 3 | 1800/900/450 | 3600x3600 | 3600 | 2 | `108,0.00222222,0,23.0001,0,-0.00222222` | `0,447,4x6` |
+
+oracle 输出与 C++ `ctb-tile` 解压 payload 的前 8450 字节逐样本比较：
+
+| coord | oracle vs C++ | oracle vs Rust | max u16 diff | index | oracle u16 | Rust u16 |
+|---|---:|---:|---:|---:|---:|---:|
+| z0 tx=1 ty=0 | 0 | 12 | 1468 | 1794 | 5000 | 6468 |
+| z1 tx=3 ty=1 | 0 | 25 | 1919 | 3524 | 5000 | 6919 |
+| z9 tx=819 ty=318 | 0 | 785 | 3 | 3249 | 5527 | 5524 |
+| z14 tx=26214 ty=10194 | 0 | 454 | 447 | 4185 | 5447 | 5000 |
+
+oracle 与 C++ 四个坐标全部一致，证明该 oracle 抓到的正是 CTB/GDAL 实际输出；
+Rust 与 oracle 的差异可以继续缩小范围，而不是由合成 fixture 猜测。
+
+根因证据：
+
+- `GDALTiler.cpp:304` 设置 `psWarpOptions->hSrcDS = hSrcDS`，即主数据集。
+- `getOverviewDataset` 返回 `hWrkSrcDS` 后，`GDALTiler.cpp:324-330` 用
+  `hWrkSrcDS` 重建 transformer，但没有更新 `psWarpOptions->hSrcDS`。
+- `GDALCreateWarpedVRT(hWrkSrcDS, ...)` 的 warp options 仍持有主数据集；
+  `gdalwarpoperation.cpp:3140-3141` 用 `psOptions->hSrcDS` 的主尺寸夹取
+  source window，`gdalwarpoperation.cpp:2074-2095` 也从主数据集读取窗口。
+- 因此 C++ 实际语义是：用 overview GeoTransform 计算像素坐标，但从 base
+  3600×3600 数据集读取这些坐标和尺寸。四个坐标的 `Src=` 窗口正是
+  overview 坐标空间、base 尺寸空间混合后的结果。
+- `getOverviewDataset` 在 destination tile transform 设置前调用；
+  `GDALSuggestedWarpOutput2` 对当前 3600×3600 源始终建议 3600×3600，
+  `target_ratio=3600`，所以本输入始终选择 overview 2（450×450），
+  与 tile zoom 无关。
+
+Rust `sampling_level_for_ratio` 已按 P0 记录 4 返回 `level: 0` 加 overview
+metadata，理论上对应上述“overview 坐标、base 数据”行为；四组坐标仍出现差异，
+说明 source-window 或读取的数值实现仍与 GDAL warp 不一致。下一步需要先逐
+destination 像元对照 GDAL source-window/权重，再决定修复方向：严格复刻 C++
+的 `hSrcDS` 读取行为，还是修正 overview 数据读取。该选择属于技术方案设计
+决策，未经确认不得直接修改生产代码。
+
+#### P13 实施记录 4：GDAL warp 数值路径确认与 Rust 修复方向（已记录）
+
+2026-08-06 用 `/private/tmp/ctb-p13-diag/src/main.rs` 直接按 GDAL 3.11.4
+`gdalwarpoperation.cpp:3037 ComputeSourceWindow` 与
+`gdalwarpkernel.cpp:6919 GWKAverageOrModeComputeSourceCoords` 重放四个 oracle
+坐标。修正 margin 公式后，四个坐标的 float raw 与 oracle 全部逐字节一致：
+
+| coord | oracle vs 修正后 Rust |
+|---:|---:|
+| z0 tx=1 ty=0 | diff_count=0 |
+| z1 tx=3 ty=1 | diff_count=0 |
+| z9 tx=819 ty=318 | diff_count=0 |
+| z14 tx=26214 ty=10194 | diff_count=0 |
+
+结论：
+
+1. CTB `TerrainTiler::terrainTileBounds` 的目标 GT 是 overlap GT：
+   `origin=(min_x - resolution, max_y + resolution)`，
+   `pixel=(resolution, -resolution)`，其中
+   `resolution = (tile_bounds.max_x - tile_bounds.min_x) / (grid_tile_size - 1)`。
+   `TerrainSamplePlan.cell_width/cell_height` 已按 `grid_tile_size - 1` 计算，
+   与 C++ 一致。最终 VRT 的 public GT 改回普通 tile GT 只影响 VRT 元数据，
+   warp kernel 仍使用 overlap GT，因此“按 overlap GT 采样”是正确语义。
+2. `SamplingLevel { level: 0, overview metadata, data_width/height: base }`
+   已经表达 C++ 的混合行为：overview GT 用于坐标数学，base 数据用于窗口读取。
+   不需要改为按 overview IFD 读取。
+3. source window 必须按 GDAL `ComputeSourceWindow` 计算：
+   - 沿目标边缘 21 个步进点（`ratio = step / 20`），每个点取
+     `(x,0) (x,DST) (0,y) (D,y)` 四角做 dst GT 正变换 + src overview GT
+     逆变换；
+   - 原始 min/max 与整数距离小于 `1e-6` 时取整；
+   - 用 base 数据集尺寸夹取；
+   - 夹取后的跨度超过 `0.9 * base_size` 时直接读取整个 base 数据集；
+   - `GRA_Average` 的 kernel radius 为 0，窗口没有额外扩张。
+4. 逐 destination 像元必须按 `GWKAverageOrModeComputeSourceCoords`：
+   - 用 overlap GT 对 `(col,row)` 与 `(col+1,row+1)` 两角求 src 像素坐标；
+   - 先做 margin gate：相对 pooled window 的 offset/size，四个角都在
+     `[-margin, size + margin]` 内才继续；
+   - 再做 `[0, src_size]` 交集检查（epsilon `1e-10`）；
+   - 按 `COMPUTE_WEIGHT_Y` / `COMPUTE_WEIGHT` 计算边界权重；
+   - 用 weighted incremental average：
+     `total_weight += w; value = ratio.mul_add(sample - value, value)`。
+5. margin 来自 `GDALWarpKernel::PerformWarp` 的 `dfXScale/dfYScale`
+   （`gdalwarpkernel.cpp:1037-1060, 6681-6684`）。`PerformWarp` 使用当前
+   pooled source window 的尺寸计算
+   `dfXScale = nDstXSize / nSrcXSize`、
+   `dfYScale = nDstYSize / nSrcYSize`，并做 GDAL 的 near-integer reciprocal
+   修正；margin 为 `2 * max(1, ceil(1 / dfScale))`。不能用 overview 与
+   overlap 的 transform 像素宽度比例替代 pooled window 尺寸。真实 COG
+   Src window 与 margin 为：
+
+   | coord | GDAL warp `Src=` | nXMargin | nYMargin |
+   |---|---:|---:|---:|
+   | z0/z1/z2 | `0,0,3600x3600` | 112 | 112 |
+   | z3/z4/z5 | `0,0,2026x226` | 64 | 8 |
+   | z6 | `0,0,760x226` | 24 | 8 |
+   | z9 row 321 | `0/124/282/440,0,127/161/162/162 x67` | 4 | 2 |
+   | z14 | `0,447,4x6` | 2 | 2 |
+
+   `nSrcSize > nDstSize` 时 margin 才可能大于 2；`nSrcSize <= nDstSize`
+   （1:1 或上采样）时 `dfScale >= 1`，margin 恒为 2。
+6. 四个 oracle 坐标上 exact transformer 与 ApproxTransformer 均产生相同
+   source 坐标；不需要在 Rust 中引入 ApproxTransformer 的近似误差。
+
+#### P13 实施记录 5：真实全量差分推翻 transform-ratio margin 假设（已记录）
+
+2026-08-07 对真实 Copernicus DEM 全量 11,391 个 Terrain 文件做解压后
+payload 比较。P14 实现初版使用 `overview_pixel_width / overlap_pixel_width`
+推导 margin，得到 11 个差异文件：
+
+```text
+0/1/0, 1/3/1, 2/6/2, 3/12/5, 4/25/10,
+5/51/20, 6/102/40, 9/819/321, 9/820/321,
+9/821/321, 9/822/321
+```
+
+所有差异均为 C++ 输出编码 `5000`（原始 0.0），Rust 输出真实高度。逐像元
+位置与 C++ oracle 对照后确认：GDAL `PerformWarp` 的 margin 使用当前 pooled
+source window 尺寸，而不是 overview/目标 transform 比例。修正 margin 后
+重建 release 并重跑全量差分，11391/11391 个 Terrain 文件路径一致、解压后
+payload 差异为 0，P14 geodetic 范围关闭。
+
+Rust 修复方向（P13 记录 4 的落地范围）：
+
+- `TerrainSamplePlan::sample_heights` 在 `ResamplingMethod::Average` 路径改为
+  CTB Terrain 实际使用的 GRA_Average warp 语义：
+  overlap GT + pooled `ComputeSourceWindow` + per-pixel
+  `GWKAverageOrModeComputeSourceCoords`。
+- 其余 resampling method 保留现有逐像元 footprint 路径，避免扩大本次行为面。
+- 新增 focused 单元测试覆盖 overlap GT、pooled window、margin gate 和
+  average 权重；再用真实 COG oracle 四个坐标做回归。
+
+### P14：Terrain GRA_Average warp 对齐实现（geodetic 已完成）
+
+本阶段把 P13 记录 4 的修复方向落到生产代码，目标只改变
+`TerrainSamplePlan::sample_heights` 的 `ResamplingMethod::Average` 路径，不扩大
+到其它采样算法或 RasterTiler。
+
+#### P14 实施范围
+
+1. `TerrainSamplePlan` 保存 overlap destination GT：`origin_x =
+   bounds.min_x - cell_width`、`origin_y = bounds.max_y + cell_height`，
+   `pixel_width = cell_width`、`pixel_height = -cell_height`。该 GT 对应 C++
+   `TerrainTiler::terrainTileBounds` 构造的 warp destination，后续 VRT public
+   GeoTransform 被改回普通 tile bounds 不影响 warp kernel。
+2. Average 路径按 CTB 实际 `GDALCreateWarpedVRT` 语义选择
+   `sampling_level_for_ratio`，并保留 `SamplingLevel { level: 0, overview
+   metadata, base data size }`：overview GeoTransform 用于坐标数学，base
+   数据集用于窗口夹取和读取。
+3. 用 GDAL `ComputeSourceWindow` 的 pooled 窗口规则计算一次 source window：
+   沿目标边缘 21 点、`(x,0)/(x,DST)/(0,y)/(DST,y)` 四角、`1e-6` 取整、base
+   尺寸夹取、跨度超过 `0.9 * base_size` 时读整幅。
+4. margin 按 GDAL `PerformWarp` 的 pooled source window 推导：
+   `dfXScale = nDstXSize / nSrcXSize`、
+   `dfYScale = nDstYSize / nSrcYSize`，再做 GDAL near-integer reciprocal
+   修正；`margin = 2 * max(1, ceil(1 / dfScale))`。X/Y margin 必须分别按
+   source window 的宽/高计算，不能按 overview 与 overlap 的 transform 像素
+   宽度比例推导。
+5. 每个 destination 像元按 `GWKAverageOrModeComputeSourceCoords` 计算两个角点
+   的 overview 像素坐标，先做相对 pooled window 的 margin gate，再做
+   `[0, window_size]` 交集检查，最后按 GDAL `COMPUTE_WEIGHT_Y` /
+   `COMPUTE_WEIGHT` 和 weighted incremental average 求值；结果按 warp
+   working data type 做 GDAL 整数舍入。
+6. 仅对 `target_crs == source.crs` 启用 pooled Average 路径；重投影 Average
+   继续走既有逐像元路径，避免在 P14 引入未验证的坐标变换行为。
+
+#### 当前实现状态与待办
+
+- 工作树已加入 `sample_average_with_gdal_window`、`compute_source_window`、
+  `average_margin`、`sample_average_pixel` 和辅助权重函数。生产
+  `TerrainSamplePlan::sample_heights` 已用真实 Copernicus DEM 的四个 oracle
+  坐标回归，float raw 均为 `diff_count=0`。
+- 真实 Copernicus DEM 全量比较已收敛：初版 transform-ratio margin 的 11 个
+  payload 差异全部是 C++ 输出 `5000`（原始 0.0）而 Rust 输出真实高度；根因
+  是 `average_margin` 未按 GDAL `PerformWarp` 的 pooled source window
+  宽/高推导。修正后的 release 重跑 11391/11391 个 Terrain 文件，路径与
+  解压后 payload 均完全一致；同一全量范围复测 Rust real 为 1:33.75
+  （user 276.08 s），P13 首轮基线为 113.79 s。
+- `tileset` 测试辅助源已改为按 `width * height` 返回样本，满足 pooled window
+  长度契约。
+- 65×65 全世界合成 GeoTIFF 的 C++ oracle 已确认：输入上边界正好等于
+  `90` 时，CTB 会像 Rust 一样把上右边界映射到 `y=1`，生成
+  `{0,0,1}.terrain`、`{0,1,1}.terrain`、`{0,2,1}.terrain` 三个越界 tile。
+  这些 tile 的 pooled source window 高度为 0；GDAL `WarpRegion` 在
+  `nSrcXSize == 0` 时跳过 warp 并保留已初始化的目标缓冲，因此 C++ 输出 4225
+  个编码为 0 的样本。Rust 已通过 `GeoTiffWindowRaster` 回归测试覆盖空 pooled
+  window 返回全 0，且不会向 GeoTIFF reader 发起 0 高度窗口请求；生产
+  `ctb-tile -s 0 -e 0` 输出解压后与 C++ 六个 `.terrain` payload 完全一致。
+- Mercator 仍是开放问题：C++ Mercator Terrain 的 VRT 为 256×256，`RasterIO`
+  只读左上 65×65；GDAL VRT block 为 `min(nXSize,512) × min(nYSize,128)`，
+  pooled `ComputeSourceWindow` 的目标尺寸可能不是编译期 `TILE_SIZE=65`。在
+  建立 C++ Mercator oracle 前不得据此修改当前 geodetic 实现。

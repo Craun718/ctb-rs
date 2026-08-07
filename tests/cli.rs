@@ -195,7 +195,11 @@ fn ctb_tile_and_info_work_as_processes() -> Result<(), Box<dyn std::error::Error
         ])
         .arg(&input)
         .output()?;
-    assert!(tile.status.success());
+    assert!(
+        tile.status.success(),
+        "ctb-tile failed: {}",
+        String::from_utf8_lossy(&tile.stderr)
+    );
     let terrain = output.join("0/0/0.terrain");
     assert!(terrain.exists());
 

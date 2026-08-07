@@ -1,10 +1,14 @@
 use crate::{
     CtbError,
     grid::{Bounds, GlobalGeodeticGrid, TileCoord, TileGrid},
-    raster::{RasterSource, transform_bounds, transform_coordinate},
+    raster::{AffineTransform, RasterSource, RasterWindow, transform_bounds, transform_coordinate},
     sampling::{ResamplingMethod, sample_with_footprint_level},
-    terrain::HEIGHTMAP_TILE_SIZE,
+    terrain::{HEIGHTMAP_SAMPLE_COUNT, HEIGHTMAP_TILE_SIZE},
 };
+
+const SOURCE_WINDOW_STEP_COUNT: usize = 21;
+const SOURCE_WINDOW_EPS: f64 = 1e-6;
+const COORD_EPS: f64 = 1e-10;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerrainSample {
@@ -89,6 +93,9 @@ impl TerrainSamplePlan {
         // overview chooser after reprojection to the source CRS.
         let target_ratio = 1.0 / source.metadata().transform.pixel_width;
         let level = source.sampling_level_for_ratio(target_ratio)?;
+        if method == ResamplingMethod::Average && self.target_crs == source.metadata().crs {
+            return self.sample_average_with_gdal_window(source, &level);
+        }
         let mut heights = Vec::new();
         for row in 0..self.heightmap_size {
             for column in 0..self.heightmap_size {
@@ -109,6 +116,373 @@ impl TerrainSamplePlan {
             }
         }
         Ok(heights)
+    }
+
+    /// C++ TerrainTiler keeps the overlap destination transform even though it
+    /// later overwrites the VRT's public GeoTransform. The warp kernel then
+    /// computes one pooled base-dataset window from that overlap transform and
+    /// averages each destination pixel against the pooled source window.
+    fn sample_average_with_gdal_window(
+        self,
+        source: &dyn RasterSource,
+        level: &crate::raster::SamplingLevel,
+    ) -> Result<Vec<f64>, CtbError> {
+        let overlap =
+            overlap_destination_transform(self.bounds, self.cell_width, self.cell_height)?;
+        let source_transform = &level.metadata.transform;
+        let (src_x_off, src_y_off, src_x_size, src_y_size) = compute_source_window(
+            &overlap,
+            source_transform,
+            level.data_width,
+            level.data_height,
+        );
+        let margin_x = average_margin(HEIGHTMAP_TILE_SIZE as i32, src_x_size);
+        let margin_y = average_margin(HEIGHTMAP_TILE_SIZE as i32, src_y_size);
+        if src_x_size == 0 || src_y_size == 0 {
+            // GDAL WarpRegion skips the warp entirely for an empty source
+            // window and leaves the destination buffer initialized to zero.
+            return Ok(vec![0.0; HEIGHTMAP_SAMPLE_COUNT]);
+        }
+        let width = usize::try_from(src_x_size).map_err(|_| CtbError::InvalidRasterWindow)?;
+        let height = usize::try_from(src_y_size).map_err(|_| CtbError::InvalidRasterWindow)?;
+        let count = width
+            .checked_mul(height)
+            .ok_or(CtbError::InvalidRasterWindow)?;
+        let window = source.read_sampling_window(
+            level,
+            crate::raster::WindowRequest {
+                x: u32::try_from(src_x_off).map_err(|_| CtbError::InvalidRasterWindow)?,
+                y: u32::try_from(src_y_off).map_err(|_| CtbError::InvalidRasterWindow)?,
+                width: u32::try_from(src_x_size).map_err(|_| CtbError::InvalidRasterWindow)?,
+                height: u32::try_from(src_y_size).map_err(|_| CtbError::InvalidRasterWindow)?,
+                overview: level.level,
+            },
+        )?;
+        if window.samples.len() != count {
+            return Err(CtbError::RasterRead(format!(
+                "source window returned {} samples, expected {count}",
+                window.samples.len()
+            )));
+        }
+        let mut heights = Vec::with_capacity(HEIGHTMAP_SAMPLE_COUNT);
+        for row in 0..self.heightmap_size {
+            for column in 0..self.heightmap_size {
+                let value = sample_average_pixel(
+                    &window,
+                    f64::from(column),
+                    f64::from(row),
+                    &overlap,
+                    source_transform,
+                    margin_x,
+                    margin_y,
+                );
+                heights.push(round_to_working_type(value, level.metadata.sample_type));
+            }
+        }
+        Ok(heights)
+    }
+}
+
+fn overlap_destination_transform(
+    bounds: Bounds,
+    cell_width: f64,
+    cell_height: f64,
+) -> Result<AffineTransform, CtbError> {
+    AffineTransform::north_up(
+        bounds.min_x - cell_width,
+        bounds.max_y + cell_height,
+        cell_width,
+        -cell_height,
+    )
+}
+
+fn dst_to_src(
+    dst_x: f64,
+    dst_y: f64,
+    dst_gt: &AffineTransform,
+    src_gt: &AffineTransform,
+) -> (f64, f64) {
+    let world_x = dst_x.mul_add(dst_gt.pixel_width, dst_gt.origin_x);
+    let world_y = dst_y.mul_add(dst_gt.pixel_height, dst_gt.origin_y);
+    (
+        src_gt.world_to_pixel_x(world_x),
+        src_gt.world_to_pixel_y(world_y),
+    )
+}
+
+fn round_if_close(value: f64) -> f64 {
+    let rounded = value.round();
+    if (rounded - value).abs() < SOURCE_WINDOW_EPS {
+        rounded
+    } else {
+        value
+    }
+}
+
+/// GDALWarpOperation::ComputeSourceWindow for GRA_Average
+/// (gdalwarpoperation.cpp:3037). The transformer uses the overview
+/// GeoTransform, but psWarpOptions->hSrcDS remains the base dataset, so the
+/// final clamp and window size use level.data_width/data_height.
+fn compute_source_window(
+    dst_gt: &AffineTransform,
+    src_gt: &AffineTransform,
+    base_width: u32,
+    base_height: u32,
+) -> (i32, i32, i32, i32) {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+
+    for step in 0..SOURCE_WINDOW_STEP_COUNT {
+        let ratio = step as f64 / (SOURCE_WINDOW_STEP_COUNT - 1) as f64;
+        let destination_size = f64::from(HEIGHTMAP_TILE_SIZE as u32);
+        let x = ratio * destination_size;
+        let y = x;
+        for (dst_x, dst_y) in [
+            (x, 0.0),
+            (x, destination_size),
+            (0.0, y),
+            (destination_size, y),
+        ] {
+            let (src_x, src_y) = dst_to_src(dst_x, dst_y, dst_gt, src_gt);
+            if !src_x.is_finite() || !src_y.is_finite() {
+                continue;
+            }
+            min_x = min_x.min(src_x);
+            min_y = min_y.min(src_y);
+            max_x = max_x.max(src_x);
+            max_y = max_y.max(src_y);
+        }
+    }
+
+    if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
+        return (0, 0, 0, 0);
+    }
+
+    let min_x = round_if_close(min_x);
+    let min_y = round_if_close(min_y);
+    let max_x = round_if_close(max_x);
+    let max_y = round_if_close(max_y);
+
+    let base_width_f = f64::from(base_width);
+    let base_height_f = f64::from(base_height);
+    let min_x_clamped = min_x.max(0.0) as i32;
+    let min_y_clamped = min_y.max(0.0) as i32;
+    let max_x_clamped = max_x.ceil().min(base_width_f) as i32;
+    let max_y_clamped = max_y.ceil().min(base_height_f) as i32;
+
+    let (src_x_off, src_x_size) = if f64::from(max_x_clamped - min_x_clamped) > 0.9 * base_width_f {
+        (0i32, base_width as i32)
+    } else {
+        let offset = min_x_clamped.max(0).min(base_width as i32);
+        (
+            offset,
+            (max_x_clamped - offset)
+                .max(0)
+                .min(base_width as i32 - offset),
+        )
+    };
+    let (src_y_off, src_y_size) = if f64::from(max_y_clamped - min_y_clamped) > 0.9 * base_height_f
+    {
+        (0i32, base_height as i32)
+    } else {
+        let offset = min_y_clamped.max(0).min(base_height as i32);
+        (
+            offset,
+            (max_y_clamped - offset)
+                .max(0)
+                .min(base_height as i32 - offset),
+        )
+    };
+
+    (src_x_off, src_y_off, src_x_size, src_y_size)
+}
+
+/// GDALWarpKernel::PerformWarp margin verified against the real COG oracle.
+///
+/// GDAL computes `df_scale` from the current pooled source window size, not
+/// from the source/destination pixel-size ratio. X and Y margins use their
+/// own window dimensions.
+fn average_margin(destination_size: i32, source_size: i32) -> i32 {
+    let df_scale = warp_scale(destination_size, source_size);
+    2i32.saturating_mul(1i32.max((1.0 / df_scale).ceil() as i32))
+}
+
+fn warp_scale(destination_size: i32, source_size: i32) -> f64 {
+    let destination = f64::from(destination_size);
+    let source = f64::from(source_size);
+    let source_extra = 0.0;
+    let mut df_scale = destination / (source - source_extra);
+    if source >= destination && source <= destination + source_extra {
+        df_scale = 1.0;
+    }
+    if df_scale < 1.0 {
+        let df_reciprocal = 1.0 / df_scale;
+        let n_reciprocal = (df_reciprocal + 0.5) as i32;
+        if (df_reciprocal - f64::from(n_reciprocal)).abs() < 0.05 {
+            df_scale = 1.0 / f64::from(n_reciprocal);
+        }
+    }
+    df_scale
+}
+
+/// GWKAverageOrModeComputeSourceCoords plus the GRA_Average weighted
+/// incremental average loop (gdalwarpkernel.cpp:6919, 7140).
+fn sample_average_pixel(
+    window: &RasterWindow,
+    dst_x: f64,
+    dst_y: f64,
+    dst_gt: &AffineTransform,
+    src_gt: &AffineTransform,
+    margin_x: i32,
+    margin_y: i32,
+) -> f64 {
+    let window_width = usize::try_from(window.request.width).expect(
+        "RasterWindow width is a u32 from a validated request and fits usize on supported targets",
+    );
+    let (x1, y1) = dst_to_src(dst_x, dst_y, dst_gt, src_gt);
+    let (x2, y2) = dst_to_src(dst_x + 1.0, dst_y + 1.0, dst_gt, src_gt);
+    let margin_x_f = f64::from(margin_x);
+    let margin_y_f = f64::from(margin_y);
+    let offset_x = f64::from(window.request.x);
+    let offset_y = f64::from(window.request.y);
+    let window_width_f = f64::from(window.request.width);
+    let window_height_f = f64::from(window.request.height);
+
+    if !(x1 - offset_x >= -margin_x_f
+        && x2 - offset_x >= -margin_x_f
+        && y1 - offset_y >= -margin_y_f
+        && y2 - offset_y >= -margin_y_f
+        && x1 - offset_x - window_width_f <= margin_x_f
+        && x2 - offset_x - window_width_f <= margin_x_f
+        && y1 - offset_y - window_height_f <= margin_y_f
+        && y2 - offset_y - window_height_f <= margin_y_f)
+    {
+        return 0.0;
+    }
+
+    let df_x_min = x1.min(x2) - offset_x;
+    let df_x_max = x1.max(x2) - offset_x;
+    let df_y_min = y1.min(y2) - offset_y;
+    let df_y_max = y1.max(y2) - offset_y;
+
+    if !(df_x_max > -COORD_EPS && df_x_min < window_width_f + COORD_EPS) {
+        return 0.0;
+    }
+    if !(df_y_max > -COORD_EPS && df_y_min < window_height_f + COORD_EPS) {
+        return 0.0;
+    }
+
+    let i_src_x_min = ((df_x_min + COORD_EPS).max(0.0)).floor() as i32;
+    let mut i_src_x_max = ((df_x_max - COORD_EPS).ceil().min(window_width_f)) as i32;
+    if i_src_x_min == i_src_x_max && f64::from(i_src_x_max) < window_width_f {
+        i_src_x_max += 1;
+    }
+    let i_src_y_min = ((df_y_min + COORD_EPS).max(0.0)).floor() as i32;
+    let mut i_src_y_max = ((df_y_max - COORD_EPS).ceil().min(window_height_f)) as i32;
+    if i_src_y_min == i_src_y_max && f64::from(i_src_y_max) < window_height_f {
+        i_src_y_max += 1;
+    }
+
+    let mut value = 0.0;
+    let mut total_weight = 0.0;
+    for i_src_y in i_src_y_min..i_src_y_max {
+        let df_weight_y = compute_weight_y(i_src_y, i_src_y_min, i_src_y_max, df_y_min, df_y_max);
+        for i_src_x in i_src_x_min..i_src_x_max {
+            let df_weight = compute_weight(
+                i_src_x,
+                df_weight_y,
+                i_src_x_min,
+                i_src_x_max,
+                df_x_min,
+                df_x_max,
+            );
+            if df_weight <= 0.0 {
+                continue;
+            }
+            let local_x = usize::try_from(i_src_x).expect(
+                "loop index is clamped to [0, src_x_size), and the window length was validated",
+            );
+            let local_y = usize::try_from(i_src_y).expect(
+                "loop index is clamped to [0, src_y_size), and the window length was validated",
+            );
+            let sample = window.samples[local_y * window_width + local_x];
+            if !sample.is_finite() {
+                continue;
+            }
+            total_weight += df_weight;
+            let ratio = df_weight / total_weight;
+            value = ratio.mul_add(sample - value, value);
+        }
+    }
+    value
+}
+
+fn compute_weight_y(
+    i_src_y: i32,
+    i_src_y_min: i32,
+    i_src_y_max: i32,
+    df_y_min: f64,
+    df_y_max: f64,
+) -> f64 {
+    if i_src_y == i_src_y_min {
+        if i_src_y_min + 1 == i_src_y_max {
+            1.0
+        } else {
+            1.0 - (df_y_min - f64::from(i_src_y_min))
+        }
+    } else if i_src_y + 1 == i_src_y_max {
+        1.0 - (f64::from(i_src_y_max) - df_y_max)
+    } else {
+        1.0
+    }
+}
+
+fn compute_weight(
+    i_src_x: i32,
+    df_weight_y: f64,
+    i_src_x_min: i32,
+    i_src_x_max: i32,
+    df_x_min: f64,
+    df_x_max: f64,
+) -> f64 {
+    if i_src_x == i_src_x_min {
+        if i_src_x_min + 1 == i_src_x_max {
+            df_weight_y
+        } else {
+            df_weight_y * (1.0 - (df_x_min - f64::from(i_src_x_min)))
+        }
+    } else if i_src_x + 1 == i_src_x_max {
+        df_weight_y * (1.0 - (f64::from(i_src_x_max) - df_x_max))
+    } else {
+        df_weight_y
+    }
+}
+
+fn round_to_working_type(value: f64, sample_type: crate::raster::RasterSampleType) -> f64 {
+    match sample_type {
+        crate::raster::RasterSampleType::Float32 | crate::raster::RasterSampleType::Float64 => {
+            value
+        }
+        crate::raster::RasterSampleType::Signed8 => round_clamped(value, -128.0, 127.0),
+        crate::raster::RasterSampleType::Unsigned8 => round_clamped(value, 0.0, 255.0),
+        crate::raster::RasterSampleType::Signed16 => round_clamped(value, -32768.0, 32767.0),
+        crate::raster::RasterSampleType::Unsigned16 => round_clamped(value, 0.0, 65535.0),
+        crate::raster::RasterSampleType::Signed32 => {
+            round_clamped(value, -2147483648.0, 2147483647.0)
+        }
+        crate::raster::RasterSampleType::Unsigned32 => round_clamped(value, 0.0, 4294967295.0),
+    }
+}
+
+fn round_clamped(value: f64, min: f64, max: f64) -> f64 {
+    if value < min {
+        min
+    } else if value > max {
+        max
+    } else {
+        (value + 0.5).floor()
     }
 }
 
@@ -142,6 +516,68 @@ mod tests {
             Ok(RasterWindow {
                 request,
                 samples: vec![value],
+            })
+        }
+    }
+
+    struct ConstantRaster {
+        metadata: RasterMetadata,
+        value: f64,
+    }
+
+    struct GeoTiffWindowRaster {
+        metadata: RasterMetadata,
+    }
+
+    impl RasterSource for ConstantRaster {
+        fn metadata(&self) -> &RasterMetadata {
+            &self.metadata
+        }
+
+        fn overview_count(&self) -> u16 {
+            0
+        }
+
+        fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError> {
+            let width =
+                usize::try_from(request.width).map_err(|_| CtbError::InvalidRasterWindow)?;
+            let height =
+                usize::try_from(request.height).map_err(|_| CtbError::InvalidRasterWindow)?;
+            let count = width
+                .checked_mul(height)
+                .ok_or(CtbError::InvalidRasterWindow)?;
+            Ok(RasterWindow {
+                request,
+                samples: vec![self.value; count],
+            })
+        }
+    }
+
+    impl RasterSource for GeoTiffWindowRaster {
+        fn metadata(&self) -> &RasterMetadata {
+            &self.metadata
+        }
+
+        fn overview_count(&self) -> u16 {
+            0
+        }
+
+        fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError> {
+            // GeoTiffRasterSource::validate_window rejects empty windows before
+            // reading; the warp path must therefore avoid issuing them.
+            if request.width == 0 || request.height == 0 {
+                return Err(CtbError::InvalidRasterWindow);
+            }
+            let width =
+                usize::try_from(request.width).map_err(|_| CtbError::InvalidRasterWindow)?;
+            let height =
+                usize::try_from(request.height).map_err(|_| CtbError::InvalidRasterWindow)?;
+            let count = width
+                .checked_mul(height)
+                .ok_or(CtbError::InvalidRasterWindow)?;
+            Ok(RasterWindow {
+                request,
+                samples: vec![0.0; count],
             })
         }
     }
@@ -277,6 +713,263 @@ mod tests {
             )?,
             2.0,
         );
+        Ok(())
+    }
+
+    #[test]
+    fn overlap_destination_transform_matches_ctb() -> Result<(), CtbError> {
+        let bounds = Bounds::new(-10.0, -5.0, 10.0, 5.0)?;
+        assert_eq!(
+            overlap_destination_transform(bounds, 2.0, 2.0)?,
+            AffineTransform::north_up(-12.0, 7.0, 2.0, -2.0)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn compute_source_window_matches_real_cog_oracle() -> Result<(), CtbError> {
+        let grid = GlobalGeodeticGrid::new(65)?;
+        let source_transform = AffineTransform::north_up(
+            108.0 - 1.0 / 7200.0,
+            23.0 + 1.0 / 7200.0,
+            1.0 / 450.0,
+            -1.0 / 450.0,
+        )?;
+        for (coord, expected) in [
+            (
+                TileCoord {
+                    zoom: 0,
+                    x: 1,
+                    y: 0,
+                },
+                (0, 0, 3600, 3600),
+            ),
+            (
+                TileCoord {
+                    zoom: 1,
+                    x: 3,
+                    y: 1,
+                },
+                (0, 0, 3600, 3600),
+            ),
+            (
+                TileCoord {
+                    zoom: 2,
+                    x: 6,
+                    y: 2,
+                },
+                (0, 0, 3600, 3600),
+            ),
+            (
+                TileCoord {
+                    zoom: 3,
+                    x: 12,
+                    y: 5,
+                },
+                (0, 0, 2026, 226),
+            ),
+            (
+                TileCoord {
+                    zoom: 4,
+                    x: 25,
+                    y: 10,
+                },
+                (0, 0, 2026, 226),
+            ),
+            (
+                TileCoord {
+                    zoom: 5,
+                    x: 51,
+                    y: 20,
+                },
+                (0, 0, 2026, 226),
+            ),
+            (
+                TileCoord {
+                    zoom: 6,
+                    x: 102,
+                    y: 40,
+                },
+                (0, 0, 760, 226),
+            ),
+            (
+                TileCoord {
+                    zoom: 9,
+                    x: 819,
+                    y: 321,
+                },
+                (0, 0, 127, 67),
+            ),
+            (
+                TileCoord {
+                    zoom: 9,
+                    x: 820,
+                    y: 321,
+                },
+                (124, 0, 161, 67),
+            ),
+            (
+                TileCoord {
+                    zoom: 9,
+                    x: 821,
+                    y: 321,
+                },
+                (282, 0, 162, 67),
+            ),
+            (
+                TileCoord {
+                    zoom: 9,
+                    x: 822,
+                    y: 321,
+                },
+                (440, 0, 162, 67),
+            ),
+            (
+                TileCoord {
+                    zoom: 14,
+                    x: 26214,
+                    y: 10194,
+                },
+                (0, 447, 4, 6),
+            ),
+        ] {
+            let plan = TerrainSamplePlan::new(grid, coord)?;
+            let overlap =
+                overlap_destination_transform(plan.bounds, plan.cell_width, plan.cell_height)?;
+            assert_eq!(
+                compute_source_window(&overlap, &source_transform, 3600, 3600),
+                expected,
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn average_margin_matches_gdal_warp_scale() {
+        for (destination_size, source_size, expected) in [
+            (65, 3600, 112),
+            (65, 2026, 64),
+            (65, 226, 8),
+            (65, 127, 4),
+            (65, 67, 2),
+            (65, 4, 2),
+            (65, 6, 2),
+            (65, 16, 2),
+        ] {
+            assert_eq!(average_margin(destination_size, source_size), expected,);
+        }
+        assert_eq!(average_margin(65, 65), 2);
+    }
+
+    #[test]
+    fn margin_gate_rejects_pixels_outside_the_pooled_window() -> Result<(), CtbError> {
+        let window = RasterWindow {
+            request: WindowRequest {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                overview: 0,
+            },
+            samples: vec![7.0],
+        };
+        let source = AffineTransform::north_up(0.0, 0.0, 1.0, -1.0)?;
+        let far = AffineTransform::north_up(10.0, 10.0, 1.0, -1.0)?;
+        assert_eq!(
+            sample_average_pixel(&window, 0.0, 0.0, &far, &source, 2, 2),
+            0.0,
+        );
+        assert_eq!(
+            sample_average_pixel(&window, 0.0, 0.0, &source, &source, 2, 2),
+            7.0,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn average_weighted_incremental_loop_matches_gdal() -> Result<(), CtbError> {
+        let window = RasterWindow {
+            request: WindowRequest {
+                x: 0,
+                y: 0,
+                width: 3,
+                height: 3,
+                overview: 0,
+            },
+            samples: vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 100.0, 200.0, 300.0],
+        };
+        let source = AffineTransform::north_up(0.0, 0.0, 1.0, -1.0)?;
+        let destination = AffineTransform::north_up(0.0, 0.0, 2.0, -2.0)?;
+        let value = sample_average_pixel(&window, 0.25, 0.25, &destination, &source, 2, 2);
+        assert!((value - 60.5).abs() < 1e-12, "value was {value}");
+        Ok(())
+    }
+
+    #[test]
+    fn compute_weight_functions_match_gdal_boundaries() {
+        assert!((compute_weight_y(0, 0, 3, 0.2, 2.8) - 0.8).abs() < 1e-12);
+        assert_eq!(compute_weight_y(1, 0, 3, 0.2, 2.8), 1.0);
+        assert!((compute_weight_y(2, 0, 3, 0.2, 2.8) - 0.8).abs() < 1e-12);
+        assert!((compute_weight(0, 0.5, 0, 3, 0.2, 2.8) - 0.4).abs() < 1e-12);
+        assert_eq!(compute_weight(1, 0.5, 0, 3, 0.2, 2.8), 0.5);
+        assert!((compute_weight(2, 0.5, 0, 3, 0.2, 2.8) - 0.4).abs() < 1e-12);
+    }
+
+    #[test]
+    fn average_pooled_path_reads_a_full_constant_source() -> Result<(), CtbError> {
+        let source = ConstantRaster {
+            metadata: RasterMetadata {
+                width: 65,
+                height: 65,
+                band_count: 1,
+                crs: Crs::Epsg4326,
+                transform: AffineTransform::north_up(-180.0, 90.0, 360.0 / 65.0, -180.0 / 65.0)?,
+                no_data: None,
+                sample_type: RasterSampleType::Float64,
+            },
+            value: 100.0,
+        };
+        let grid = GlobalGeodeticGrid::new(65)?;
+        let plan = TerrainSamplePlan::new(
+            grid,
+            TileCoord {
+                zoom: 0,
+                x: 0,
+                y: 0,
+            },
+        )?;
+        let heights = plan.sample_heights(&source, ResamplingMethod::Average)?;
+        assert_eq!(heights.len(), HEIGHTMAP_TILE_SIZE * HEIGHTMAP_TILE_SIZE);
+        assert!(heights.iter().all(|value| (*value - 100.0).abs() < 1e-12));
+        Ok(())
+    }
+
+    #[test]
+    fn empty_average_window_returns_zeros_without_a_zero_read() -> Result<(), CtbError> {
+        let source = GeoTiffWindowRaster {
+            metadata: RasterMetadata {
+                width: 65,
+                height: 65,
+                band_count: 1,
+                crs: Crs::Epsg4326,
+                transform: AffineTransform::north_up(-180.0, 90.0, 360.0 / 65.0, -180.0 / 65.0)?,
+                no_data: None,
+                sample_type: RasterSampleType::Float32,
+            },
+        };
+        let grid = GlobalGeodeticGrid::new(65)?;
+        let plan = TerrainSamplePlan::new(
+            grid,
+            TileCoord {
+                zoom: 0,
+                x: 0,
+                y: 1,
+            },
+        )?;
+
+        let heights = plan.sample_heights(&source, ResamplingMethod::Average)?;
+        assert_eq!(heights.len(), HEIGHTMAP_SAMPLE_COUNT);
+        assert!(heights.iter().all(|value| *value == 0.0));
         Ok(())
     }
 }

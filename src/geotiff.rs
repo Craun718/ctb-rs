@@ -3,7 +3,7 @@ use std::path::Path;
 use oxigeo::{
     DatasetFormat, RasterDataType,
     core_types::io::FileDataSource,
-    geotiff::GeoTiffReader,
+    geotiff::{CogReader, GeoTiffReader, RasterType},
     open::open,
     vrt::{PixelRect, VrtReader, resolve_crs},
 };
@@ -41,7 +41,7 @@ impl GeoTiffRasterSource {
                     .map_err(|error| CtbError::RasterRead(error.to_string()))?;
                 let file = GeoTiffReader::open(data_source)
                     .map_err(|error| CtbError::RasterRead(error.to_string()))?;
-                Self::from_geotiff(file)
+                Self::from_geotiff(file, path)
             }
             DatasetFormat::Vrt => {
                 let file = VrtReader::open(path)
@@ -55,7 +55,7 @@ impl GeoTiffRasterSource {
         }
     }
 
-    fn from_geotiff(file: GeoTiffReader<FileDataSource>) -> Result<Self, CtbError> {
+    fn from_geotiff(file: GeoTiffReader<FileDataSource>, path: &Path) -> Result<Self, CtbError> {
         if file.band_count() != 1 {
             return Err(CtbError::UnsupportedRaster(format!(
                 "expected one elevation band, found {} bands",
@@ -65,6 +65,17 @@ impl GeoTiffRasterSource {
         let transform = file.geo_transform().ok_or_else(|| {
             CtbError::UnsupportedRaster("missing GeoTIFF affine transform".to_owned())
         })?;
+        let source =
+            FileDataSource::open(path).map_err(|error| CtbError::RasterRead(error.to_string()))?;
+        let cog =
+            CogReader::open(source).map_err(|error| CtbError::RasterRead(error.to_string()))?;
+        let pixel_is_point =
+            cog.geo_keys().and_then(|keys| keys.raster_type()) == Some(RasterType::PixelIsPoint);
+        let transform = if pixel_is_point {
+            &shift_pixel_is_point_transform(transform)
+        } else {
+            transform
+        };
         let sample_type = raster_sample_type(file.data_type().ok_or_else(|| {
             CtbError::UnsupportedRaster("GeoTIFF has no sample type".to_owned())
         })?)?;
@@ -330,6 +341,19 @@ fn raster_dimensions(width: u64, height: u64) -> Result<(u32, u32), CtbError> {
     ))
 }
 
+/// GDAL applies the GeoTIFF `PixelIsPoint` half-pixel offset on read
+/// (`gtiffdataset_read.cpp` `LoadGeoreferencingAndPamIfNeeded`), so the affine
+/// origin becomes the upper-left corner of the first pixel instead of its
+/// center.
+fn shift_pixel_is_point_transform(transform: &oxigeo::GeoTransform) -> oxigeo::GeoTransform {
+    oxigeo::GeoTransform::north_up(
+        transform.origin_x - transform.pixel_width * 0.5,
+        transform.origin_y - transform.pixel_height * 0.5,
+        transform.pixel_width,
+        transform.pixel_height,
+    )
+}
+
 fn build_metadata(
     width: u32,
     height: u32,
@@ -401,9 +425,10 @@ mod tests {
 
     use oxigeo::{
         GeoTransform, RasterDataType,
-        core_types::types::NoDataValue,
+        core_types::{io::FileDataSource, types::NoDataValue},
         geotiff::{
-            GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling, WriterConfig,
+            CogReader, GeoKey, GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling, TiffTag,
+            WriterConfig,
             tiff::{Compression, Predictor},
         },
         vrt::{SourceWindow, VrtBand, VrtBuilder, VrtSource},
@@ -413,6 +438,49 @@ mod tests {
 
     fn fixture_path(name: &str) -> std::path::PathBuf {
         env::temp_dir().join(format!("ctb-rs-{name}-{}.tif", std::process::id()))
+    }
+
+    fn mark_pixel_is_point(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let source = FileDataSource::open(path)?;
+        let cog = CogReader::open(source)?;
+        let byte_order = cog.tiff().byte_order();
+        let entry = cog
+            .tiff()
+            .ifds
+            .first()
+            .and_then(|ifd| ifd.get_entry(TiffTag::GeoKeyDirectory))
+            .ok_or("GeoKeyDirectory tag missing")?;
+        let source = FileDataSource::open(path)?;
+        let directory = entry.get_value_bytes(&source, cog.tiff().header.variant)?;
+        let word_at = |offset: usize| -> usize {
+            usize::from(byte_order.read_u16(&directory[offset..offset + 2]))
+        };
+        let keys = cog.geo_keys().ok_or("GeoKeyDirectory tag missing")?;
+        let raster_type_position = keys
+            .entries
+            .iter()
+            .position(|key| key.key_id == GeoKey::GtRasterType as u16)
+            .ok_or("fixture geokey directory lacks GTRasterType")?;
+        let raster_type_index = 8 + raster_type_position * 8 + 6;
+        assert_eq!(
+            word_at(raster_type_index),
+            1,
+            "fixture must start as PixelIsArea"
+        );
+
+        let mut bytes = fs::read(path)?;
+        let value_offset = usize::try_from(entry.value_offset)?;
+        let directory_end = value_offset
+            .checked_add(directory.len())
+            .ok_or("directory offset overflow")?;
+        assert!(
+            directory_end <= bytes.len(),
+            "GeoKeyDirectory lies outside fixture"
+        );
+        let target = value_offset + raster_type_index;
+        byte_order.write_u16(&mut bytes[target..target + 2], 2);
+        fs::write(path, bytes)?;
+        Ok(())
     }
 
     #[derive(Default)]
@@ -595,6 +663,36 @@ mod tests {
         write_fixture(&path, 3857, None)?;
         let source = GeoTiffRasterSource::open(&path)?;
         assert_eq!(source.metadata().crs, Crs::Epsg3857);
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn shifts_pixel_is_point_origin_like_gdal() -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("pixel-is-point");
+        write_fixture(&path, 4326, None)?;
+        mark_pixel_is_point(&path)?;
+        let source = GeoTiffRasterSource::open(&path)?;
+        assert_eq!(source.metadata().transform.origin_x, -180.25);
+        assert_eq!(source.metadata().transform.origin_y, 90.25);
+        assert_eq!(source.metadata().transform.pixel_width, 0.5);
+        assert_eq!(source.metadata().transform.pixel_height, -0.5);
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn keeps_pixel_is_point_shift_in_overview_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("pixel-is-point-overviews");
+        write_overview_fixture(&path)?;
+        mark_pixel_is_point(&path)?;
+        let source = GeoTiffRasterSource::open(&path)?;
+        let half = source.sampling_level_for_ratio(2.0)?;
+        assert_eq!(half.metadata.width, 4);
+        assert_eq!(half.metadata.transform.origin_x, -0.5);
+        assert_eq!(half.metadata.transform.origin_y, 8.5);
+        assert_eq!(half.metadata.transform.pixel_width, 2.0);
+        assert_eq!(half.metadata.transform.pixel_height, -2.0);
         fs::remove_file(path)?;
         Ok(())
     }
