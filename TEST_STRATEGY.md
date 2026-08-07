@@ -334,7 +334,8 @@ Node.js 24 主版本 `actions/checkout@v5`、`actions/upload-artifact@v5` 后，
 ## 13. P13 真实 Copernicus DEM 差分审计
 
 真实输入为 Copernicus DSM COG：
-`/Users/sander/coding/ demo/download-data/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif`。
+`tests/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif`（Git LFS；原始路径
+`/Users/sander/coding/demo/download-data/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif`）。
 其元数据为 EPSG:4326、3600×3600、Float32、DEFLATE、PREDICTOR=3、三级 overview。
 
 对比策略：
@@ -529,3 +530,18 @@ z3/z4/z5/z6/z9 overlap 像素宽分别为
 - 重建 release 后 Mercator 38/38 路径一致、解压后 payload 差异为 0。
 - 重建 release 后 Copernicus geodetic 11391/11391 路径一致、解压后 payload
   差异为 0，确认 65×65 路径无回归。
+
+## 14. LFS fixture 管理
+
+真实 Copernicus DEM 已归档到仓库内
+`tests/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif`，由 Git LFS 管理。它
+不是合成 fixture，常规 `cargo test` 不读取；后续 oracle 脚本如需使用该输入，
+应使用仓库内路径，并确保 clone/checkout 后已拉取 LFS 对象。
+
+- SHA-256：
+  `7670186b097b61e7fd7b6b9310783d0dfec564c2faa167f28560b1e375fc17ca`。
+- 元数据：EPSG:4326、3600×3600、Float32、
+  `Origin=(107.999861111111116, 23.000138888888888)`、
+  `Pixel Size=(0.000277777777778, -0.000277777777778)`、
+  DEFLATE、PREDICTOR=3、三级 overview。
+- 清单：见 `tests/fixtures/MANIFEST.md` 的 LFS 清单。

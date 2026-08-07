@@ -387,3 +387,14 @@
 - [x] `cargo fmt`、`cargo test`、`cargo clippy --all-targets -- -D warnings`。
 - [x] 重建 release，重跑 Mercator 38-file payload 差分，路径与 payload 全部
       一致；重跑 Copernicus geodetic 回归：11391/11391、payload 差为 0。
+
+## P16：真实 Copernicus DEM LFS 归档
+
+- [x] 在 `TECHNICAL_PLAN.md`、`TEST_STRATEGY.md`、`TODO.md` 登记 LFS 归档
+      范围。
+- [x] 使用 `git lfs track` 将
+      `tests/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif` 挂到 Git LFS，
+      并生成 `.gitattributes`。
+- [x] 将 P13-P15 文档和 `Cpp_diff.md` 中的外部输入路径统一改为仓库内路径。
+- [x] 在 `tests/fixtures/MANIFEST.md` 登记 SHA-256、来源、元数据和预期。
+- [x] 校验 `git lfs ls-files` 指向同一 SHA-256，并提交。

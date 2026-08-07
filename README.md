@@ -109,6 +109,10 @@ cargo install --path .
 cargo test
 ```
 
+真实 Copernicus DEM fixture 由 Git LFS 管理，位于
+`tests/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif`；克隆后若 LFS 对象未
+自动拉取，执行 `git lfs pull`。
+
 `scripts/` 下提供与 C++ oracle 对比的验证脚本：
 
 - `verify-ctb-oracle.zsh`：对照 C++ CTB 输出做切片差分。

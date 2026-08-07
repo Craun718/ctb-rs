@@ -1551,8 +1551,10 @@ toolchain、`cargo build --all-targets --locked` 与 artifact 上传路径保持
 
 实施规则：
 
-1. 使用 `/Users/sander/coding/ demo/download-data/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif`
-   作为唯一输入；不复制、裁剪或改写该文件。
+1. 使用 `tests/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif` 作为归档后的
+   唯一输入；该文件由用户原始
+   `/Users/sander/coding/demo/download-data/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif`
+   原样复制，只通过 Git LFS 保存，不裁剪或改写。
 2. 固定 C++ oracle 为
    `/Users/sander/coding/cesium-terrain-builder/build-gdal-v3.11.4/tools/ctb-tile`
    与同目录 `ctb-extents`，运行前记录 binary 动态库依赖和版本/help。
@@ -1592,7 +1594,7 @@ GDAL_DATA=/Users/sander/coding/cesium-terrain-builder/.deps/gdal-install-v3.11.4
 执行内容：
 
 ```sh
-INPUT='/Users/sander/coding/ demo/download-data/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif'
+INPUT='tests/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif'
 CPP=/Users/sander/coding/cesium-terrain-builder/build-gdal-v3.11.4/tools
 RUST=/Users/sander/coding/ctb-rs/target/release
 
@@ -1989,3 +1991,24 @@ C++/Rust 均生成 38 个 Terrain 路径，其中 10 个 payload 不同：
 - Mercator：`world3857/source.tif` 38/38 路径一致，解压后 payload 差异为 0。
 - Copernicus geodetic：11391/11391 路径一致，解压后 payload 差异为 0，
   确认 65×65 路径无回归。
+
+### P16：真实 Copernicus DEM LFS 归档（已完成）
+
+用户要求把 P13-P15 使用的真实 Copernicus DSM COG 保留在仓库中，并通过 Git
+LFS 管理。该文件是真实公开数据，不参与无 GDAL 的常规单元测试，只作为后续
+oracle 和文档引用的一致输入。
+
+#### P16 实施记录 1：LFS 跟踪与文档同步（已完成）
+
+- `git lfs track "tests/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif"`，新增
+  `.gitattributes` 的 LFS 规则，提交内容为 Git LFS pointer，原 TIFF 对象随
+  push 上传。
+- 仓库内文件 SHA-256：
+  `7670186b097b61e7fd7b6b9310783d0dfec564c2faa167f28560b1e375fc17ca`。
+- 元数据保持 P13 记录 1：EPSG:4326、3600×3600、Float32、
+  `Origin=(107.999861111111116, 23.000138888888888)`、
+  `Pixel Size=(0.000277777777778, -0.000277777777778)`、
+  `COMPRESSION=DEFLATE`、`PREDICTOR=3`、三级 overview
+  （1800×1800、900×900、450×450）。
+- 本文档、`TEST_STRATEGY.md`、`TODO.md`、`Cpp_diff.md` 与
+  `tests/fixtures/MANIFEST.md` 中涉及该输入的位置统一改为仓库内路径。
