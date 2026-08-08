@@ -10,10 +10,10 @@ use std::{
 
 use crate::{
     CtbError,
-    grid::{GlobalGeodeticGrid, TileCoord, TileGrid},
-    raster::{RasterMetadata, RasterSource},
+    grid::{Bounds, GlobalGeodeticGrid, TileCoord, TileGrid},
+    raster::{RasterMetadata, RasterSource, transform_bounds},
     sampling::ResamplingMethod,
-    terrain::{ChildMask, HEIGHTMAP_TILE_SIZE, HeightmapTerrain},
+    terrain::{ChildMask, HeightmapTerrain},
     terrain_sampling::TerrainSamplePlan,
 };
 
@@ -98,23 +98,26 @@ impl TilesetPlan {
         Ok(Self { max_zoom, levels })
     }
 
-    /// Plan direct-source RasterTiler coverage against any cpp-CTB Grid
-    /// profile. Reprojection is intentionally outside this domain boundary.
+    /// Plan RasterTiler coverage against any built-in CTB Grid profile,
+    /// transforming the source bounds through the supported CRS registry.
     pub fn from_raster_with_tile_grid(
         metadata: &RasterMetadata,
         grid: &dyn TileGrid,
         start_zoom: Option<u8>,
         end_zoom: Option<u8>,
     ) -> Result<Self, CtbError> {
-        if metadata.crs != grid.crs() {
-            return Err(CtbError::UnsupportedCrs(format!(
-                "source CRS {:?} does not match target grid CRS {:?}",
-                metadata.crs,
-                grid.crs()
-            )));
-        }
-        let bounds = metadata.transform.bounds(metadata.width, metadata.height)?;
-        let available_maximum = grid.zoom_for_resolution(metadata.transform.pixel_width.abs())?;
+        let source_bounds = metadata.transform.bounds(metadata.width, metadata.height)?;
+        let transformed_bounds =
+            crate::raster::transform_bounds(source_bounds, &metadata.crs, &grid.crs())?;
+        let bounds = transformed_bounds
+            .intersection(grid_bounds(grid)?)
+            .ok_or(CtbError::RasterOutsideGrid)?;
+        let source_resolution = if metadata.crs == grid.crs() {
+            metadata.transform.pixel_width.abs()
+        } else {
+            bounds.width() / f64::from(metadata.width)
+        };
+        let available_maximum = grid.zoom_for_resolution(source_resolution)?;
         let max_zoom = start_zoom.unwrap_or(available_maximum);
         let min_zoom = end_zoom.unwrap_or(0);
         if max_zoom > available_maximum || min_zoom > max_zoom {
@@ -150,6 +153,79 @@ impl TilesetPlan {
         let children = child_level.tiles.iter().copied().collect::<BTreeSet<_>>();
         child_mask_from_tiles(parent, &children)
     }
+}
+
+fn grid_bounds(grid: &dyn TileGrid) -> Result<crate::grid::Bounds, CtbError> {
+    let last_x = grid.tiles_x(0)?.saturating_sub(1);
+    let last_y = grid.tiles_y(0)?.saturating_sub(1);
+    let lower = grid.tile_bounds(TileCoord {
+        zoom: 0,
+        x: 0,
+        y: 0,
+    })?;
+    let upper = grid.tile_bounds(TileCoord {
+        zoom: 0,
+        x: last_x,
+        y: last_y,
+    })?;
+    crate::grid::Bounds::new(
+        lower.min_x.min(upper.min_x),
+        lower.min_y.min(upper.min_y),
+        lower.max_x.max(upper.max_x),
+        lower.max_y.max(upper.max_y),
+    )
+}
+
+/// Match the C++ TerrainTiler::createTile child mask computation: check
+/// whether the dataset bounds (in grid CRS) strictly overlap each quadrant
+/// of the tile bounds.  C++ `Bounds::overlaps` uses strict `<`, so bounds
+/// that merely touch at an edge do not count as overlapping.
+fn terrain_child_mask(
+    source_bounds: Bounds,
+    grid: &dyn TileGrid,
+    tile: TileCoord,
+    max_zoom: u8,
+) -> Result<ChildMask, CtbError> {
+    if tile.zoom >= max_zoom {
+        return Ok(ChildMask::empty());
+    }
+    let tile_bounds = grid.tile_bounds(tile)?;
+    if !strict_overlaps(source_bounds, tile_bounds) {
+        return Ok(ChildMask::empty());
+    }
+    let mid_x = (tile_bounds.min_x + tile_bounds.max_x) / 2.0;
+    let mid_y = (tile_bounds.min_y + tile_bounds.max_y) / 2.0;
+    let mut mask = ChildMask::empty();
+    if strict_overlaps(
+        source_bounds,
+        Bounds::new(tile_bounds.min_x, tile_bounds.min_y, mid_x, mid_y)?,
+    ) {
+        mask.set(ChildMask::SOUTH_WEST, true);
+    }
+    if strict_overlaps(
+        source_bounds,
+        Bounds::new(mid_x, tile_bounds.min_y, tile_bounds.max_x, mid_y)?,
+    ) {
+        mask.set(ChildMask::SOUTH_EAST, true);
+    }
+    if strict_overlaps(
+        source_bounds,
+        Bounds::new(tile_bounds.min_x, mid_y, mid_x, tile_bounds.max_y)?,
+    ) {
+        mask.set(ChildMask::NORTH_WEST, true);
+    }
+    if strict_overlaps(
+        source_bounds,
+        Bounds::new(mid_x, mid_y, tile_bounds.max_x, tile_bounds.max_y)?,
+    ) {
+        mask.set(ChildMask::NORTH_EAST, true);
+    }
+    Ok(mask)
+}
+
+/// C++ `Bounds::overlaps` semantics: strict `<` on all four comparisons.
+fn strict_overlaps(a: Bounds, b: Bounds) -> bool {
+    a.min_x < b.max_x && b.min_x < a.max_x && a.min_y < b.max_y && b.min_y < a.max_y
 }
 
 /// Write CTB heightmap terrain tiles, processing child levels before parents.
@@ -192,18 +268,19 @@ pub fn write_heightmap_tileset_with_progress(
     options: HeightmapTilesetOptions,
     progress: Option<&(dyn Fn(TileWriteProgress) + Sync)>,
 ) -> Result<TilesetPlan, CtbError> {
-    if grid.tile_size() != HEIGHTMAP_TILE_SIZE as u32 {
-        return Err(CtbError::UnsupportedRaster(format!(
-            "CTB heightmap tiles require a {HEIGHTMAP_TILE_SIZE} pixel grid"
-        )));
-    }
+    let metadata = source.metadata();
     let plan = TilesetPlan::from_raster_with_zoom_range(
-        source.metadata(),
+        metadata,
         grid,
         options.start_zoom,
         options.end_zoom,
     )?;
-    let coverage_plan = TilesetPlan::from_raster(source.metadata(), grid)?;
+    let source_pixel_bounds = metadata.transform.bounds(metadata.width, metadata.height)?;
+    let source_bounds = transform_bounds(source_pixel_bounds, &metadata.crs, &grid.crs())?;
+    // C++ TerrainTiler::createTile gates child masks on maxZoomLevel(),
+    // which is the dataset's natural max zoom, independent of any
+    // user-specified zoom range.  Compute it the same way.
+    let max_zoom = grid.zoom_for_resolution(metadata.transform.pixel_width)?;
     let output_directory = output_directory.as_ref();
     let tiles = plan
         .levels
@@ -233,14 +310,13 @@ pub fn write_heightmap_tileset_with_progress(
                         Ok(())
                     } else {
                         let heights = TerrainSamplePlan::new(grid, tile).and_then(|sample_plan| {
-                            sample_plan.sample_heights(source, options.resampling)
+                            sample_plan.sample_heights(source, ResamplingMethod::Average)
                         });
                         heights
                             .and_then(|heights| {
-                                HeightmapTerrain::from_sampled_meters(
-                                    &heights,
-                                    coverage_plan.child_mask_for(tile),
-                                )
+                                let child_mask =
+                                    terrain_child_mask(source_bounds, &grid, tile, max_zoom)?;
+                                HeightmapTerrain::from_sampled_meters(&heights, child_mask)
                             })
                             .and_then(|terrain| write_terrain_atomically(&terrain, &path))
                     };
@@ -278,24 +354,34 @@ pub fn write_heightmap_tileset_with_progress(
 /// original CTB, whose worker threads each call `GDALOpen` for the input.
 pub fn write_heightmap_tileset_with_factory(
     source_factory: &(dyn Fn() -> Result<Box<dyn RasterSource>, CtbError> + Sync),
-    grid: GlobalGeodeticGrid,
+    grid: &dyn TileGrid,
     output_directory: impl AsRef<Path>,
     options: HeightmapTilesetOptions,
     progress: Option<&(dyn Fn(TileWriteProgress) + Sync)>,
 ) -> Result<TilesetPlan, CtbError> {
-    if grid.tile_size() != HEIGHTMAP_TILE_SIZE as u32 {
-        return Err(CtbError::UnsupportedRaster(format!(
-            "CTB heightmap tiles require a {HEIGHTMAP_TILE_SIZE} pixel grid"
-        )));
-    }
     let metadata_source = source_factory()?;
-    let plan = TilesetPlan::from_raster_with_zoom_range(
-        metadata_source.metadata(),
+    let source_metadata = metadata_source.metadata();
+    let plan = TilesetPlan::from_raster_with_tile_grid(
+        source_metadata,
         grid,
         options.start_zoom,
         options.end_zoom,
     )?;
-    let coverage_plan = TilesetPlan::from_raster(metadata_source.metadata(), grid)?;
+    let source_pixel_bounds = source_metadata
+        .transform
+        .bounds(source_metadata.width, source_metadata.height)?;
+    let source_bounds = transform_bounds(source_pixel_bounds, &source_metadata.crs, &grid.crs())?;
+    // C++ TerrainTiler::createTile gates child masks on maxZoomLevel(),
+    // which is the dataset's natural max zoom from its resolution.  Match
+    // the same formula as TilesetPlan::from_raster_with_tile_grid.
+    let max_zoom = {
+        let grid_crs = grid.crs();
+        if source_metadata.crs == grid_crs {
+            grid.zoom_for_resolution(source_metadata.transform.pixel_width.abs())?
+        } else {
+            grid.zoom_for_resolution(source_bounds.width() / f64::from(source_metadata.width))?
+        }
+    };
     drop(metadata_source);
 
     let output_directory = output_directory.as_ref();
@@ -337,15 +423,16 @@ pub fn write_heightmap_tileset_with_factory(
                     let outcome = if options.resume && path.exists() {
                         Ok(())
                     } else {
-                        let heights = TerrainSamplePlan::new(grid, tile).and_then(|sample_plan| {
-                            sample_plan.sample_heights(source.as_ref(), options.resampling)
-                        });
+                        let heights =
+                            TerrainSamplePlan::from_grid(grid, tile).and_then(|sample_plan| {
+                                sample_plan
+                                    .sample_heights(source.as_ref(), ResamplingMethod::Average)
+                            });
                         heights
                             .and_then(|heights| {
-                                HeightmapTerrain::from_sampled_meters(
-                                    &heights,
-                                    coverage_plan.child_mask_for(tile),
-                                )
+                                let child_mask =
+                                    terrain_child_mask(source_bounds, grid, tile, max_zoom)?;
+                                HeightmapTerrain::from_sampled_meters(&heights, child_mask)
                             })
                             .and_then(|terrain| write_terrain_atomically(&terrain, &path))
                     };
@@ -503,16 +590,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_direct_plan_when_source_and_target_crs_differ() -> Result<(), CtbError> {
-        assert!(matches!(
-            TilesetPlan::from_raster_with_tile_grid(
-                &metadata()?,
-                &GlobalMercatorGrid::new(256)?,
-                Some(0),
-                Some(0),
-            ),
-            Err(CtbError::UnsupportedCrs(_))
-        ));
+    fn plans_reprojected_source_on_the_mercator_grid() -> Result<(), CtbError> {
+        let plan = TilesetPlan::from_raster_with_tile_grid(
+            &metadata()?,
+            &GlobalMercatorGrid::new(256)?,
+            Some(0),
+            Some(0),
+        )?;
+        assert_eq!(plan.max_zoom, 0);
+        assert!(!plan.levels[0].tiles.is_empty());
         Ok(())
     }
 
@@ -548,9 +634,16 @@ mod tests {
         }
 
         fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError> {
+            let width =
+                usize::try_from(request.width).map_err(|_| CtbError::InvalidRasterWindow)?;
+            let height =
+                usize::try_from(request.height).map_err(|_| CtbError::InvalidRasterWindow)?;
+            let count = width
+                .checked_mul(height)
+                .ok_or(CtbError::InvalidRasterWindow)?;
             Ok(RasterWindow {
                 request,
-                samples: vec![self.value],
+                samples: vec![self.value; count],
             })
         }
     }
@@ -701,9 +794,10 @@ mod tests {
             factory_opens.fetch_add(1, Ordering::Relaxed);
             FlatRaster::world().map(|source| Box::new(source) as Box<dyn RasterSource>)
         };
+        let grid = GlobalGeodeticGrid::new(65)?;
         write_heightmap_tileset_with_factory(
             &factory,
-            GlobalGeodeticGrid::new(65)?,
+            &grid,
             &directory,
             HeightmapTilesetOptions {
                 worker_count: 2,

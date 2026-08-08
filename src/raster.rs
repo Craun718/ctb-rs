@@ -1,9 +1,132 @@
 use crate::{CtbError, grid::Bounds};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Crs {
     Epsg4326,
     Epsg3857,
+    Epsg(u16),
+}
+
+const WEB_MERCATOR_RADIUS: f64 = 6_378_137.0;
+const WEB_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_779_806_6;
+
+/// Transform one coordinate between the two CRS representations built into CTB.
+pub fn transform_coordinate(
+    x: f64,
+    y: f64,
+    source: &Crs,
+    target: &Crs,
+) -> Result<(f64, f64), CtbError> {
+    if !x.is_finite() || !y.is_finite() {
+        return Err(CtbError::InvalidBounds);
+    }
+    if source == target {
+        return Ok((x, y));
+    }
+    match (source, target) {
+        (Crs::Epsg4326, Crs::Epsg3857) => {
+            let longitude = x.to_radians();
+            let latitude = y
+                .clamp(-WEB_MERCATOR_MAX_LATITUDE, WEB_MERCATOR_MAX_LATITUDE)
+                .to_radians();
+            Ok((
+                WEB_MERCATOR_RADIUS * longitude,
+                WEB_MERCATOR_RADIUS * (std::f64::consts::FRAC_PI_4 + latitude / 2.0).tan().ln(),
+            ))
+        }
+        (Crs::Epsg3857, Crs::Epsg4326) => Ok((
+            (x / WEB_MERCATOR_RADIUS).to_degrees(),
+            (2.0 * (y / WEB_MERCATOR_RADIUS).exp().atan() - std::f64::consts::FRAC_PI_2)
+                .to_degrees(),
+        )),
+        _ => transform_with_proj4rs(x, y, source, target),
+    }
+}
+
+fn epsg_code(crs: &Crs) -> u16 {
+    match crs {
+        Crs::Epsg4326 => 4326,
+        Crs::Epsg3857 => 3857,
+        Crs::Epsg(code) => *code,
+    }
+}
+
+fn projection_for_crs(crs: &Crs) -> Result<proj4rs::Proj, CtbError> {
+    let code = epsg_code(crs);
+    proj4rs::Proj::from_epsg_code(code).map_err(|error| {
+        CtbError::UnsupportedCrs(format!(
+            "EPSG:{code} cannot be resolved by proj4rs: {error}"
+        ))
+    })
+}
+
+fn transform_with_proj4rs(
+    x: f64,
+    y: f64,
+    source: &Crs,
+    target: &Crs,
+) -> Result<(f64, f64), CtbError> {
+    let source_projection = projection_for_crs(source)?;
+    let target_projection = projection_for_crs(target)?;
+    let source_code = epsg_code(source);
+    let target_code = epsg_code(target);
+    let (mut projected_x, mut projected_y) = (x, y);
+    if source_projection.is_latlong() {
+        projected_x = projected_x.to_radians();
+        projected_y = projected_y.to_radians();
+    }
+    let (mut result_x, mut result_y) = proj4rs::adaptors::transform_xy(
+        &source_projection,
+        &target_projection,
+        projected_x,
+        projected_y,
+    )
+    .map_err(|error| {
+        CtbError::UnsupportedCrs(format!(
+            "cannot transform EPSG:{source_code} to EPSG:{target_code}: {error}"
+        ))
+    })?;
+    if target_projection.is_latlong() {
+        result_x = result_x.to_degrees();
+        result_y = result_y.to_degrees();
+    }
+    if !result_x.is_finite() || !result_y.is_finite() {
+        return Err(CtbError::UnsupportedCrs(format!(
+            "cannot transform EPSG:{source_code} to EPSG:{target_code}: result is not finite"
+        )));
+    }
+    Ok((result_x, result_y))
+}
+
+/// Transform an axis-aligned bounds rectangle by transforming all four corners.
+pub fn transform_bounds(bounds: Bounds, source: &Crs, target: &Crs) -> Result<Bounds, CtbError> {
+    let corners = [
+        (bounds.min_x, bounds.min_y),
+        (bounds.min_x, bounds.max_y),
+        (bounds.max_x, bounds.min_y),
+        (bounds.max_x, bounds.max_y),
+    ];
+    let transformed = corners
+        .into_iter()
+        .map(|(x, y)| transform_coordinate(x, y, source, target))
+        .collect::<Result<Vec<_>, _>>()?;
+    let min_x = transformed
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::INFINITY, f64::min);
+    let min_y = transformed
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = transformed
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let max_y = transformed
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    Bounds::new(min_x, min_y, max_x, max_y)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -58,6 +181,26 @@ impl AffineTransform {
             self.origin_y,
         )
     }
+
+    /// Convert a world X coordinate to source pixel X using GDAL's
+    /// GDALInvGeoTransform reciprocal + FMA contraction
+    /// (gdaltransformer.cpp:4576-4588, 3162-3168). For north-up
+    /// transforms: `pixel = world / pw - origin / pw`, but GDAL
+    /// precomputes `1/pw` and `-origin/pw` then evaluates
+    /// `invGT[0] + world * invGT[1]` as a fused multiply-add.
+    pub fn world_to_pixel_x(&self, world_x: f64) -> f64 {
+        let inv_pixel_width = 1.0 / self.pixel_width;
+        let inv_origin_x = -self.origin_x / self.pixel_width;
+        world_x.mul_add(inv_pixel_width, inv_origin_x)
+    }
+
+    /// Convert a world Y coordinate to source pixel Y (see
+    /// [`world_to_pixel_x`](Self::world_to_pixel_x)).
+    pub fn world_to_pixel_y(&self, world_y: f64) -> f64 {
+        let inv_pixel_height = 1.0 / self.pixel_height;
+        let inv_origin_y = -self.origin_y / self.pixel_height;
+        world_y.mul_add(inv_pixel_height, inv_origin_y)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,10 +247,18 @@ pub struct RasterWindow {
 ///
 /// `metadata()` on a source always describes its base dataset for tile
 /// planning. A sampling level may instead describe one internal overview.
+///
+/// When the C++ warp selects an overview, it computes source pixel indices in
+/// overview coordinate space but reads from the base dataset (see
+/// TECHNICAL_PLAN P0 record 4). `metadata` carries the overview GeoTransform
+/// and dimensions for coordinate math; `data_width`/`data_height` carry the
+/// actual data source dimensions used for bounds clamping and window reads.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SamplingLevel {
     pub level: u16,
     pub metadata: RasterMetadata,
+    pub data_width: u32,
+    pub data_height: u32,
 }
 
 pub trait RasterSource: Send + Sync {
@@ -116,9 +267,12 @@ pub trait RasterSource: Send + Sync {
     fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError>;
 
     fn sampling_level_for_ratio(&self, _target_ratio: f64) -> Result<SamplingLevel, CtbError> {
+        let metadata = self.metadata().clone();
         Ok(SamplingLevel {
             level: 0,
-            metadata: self.metadata().clone(),
+            data_width: metadata.width,
+            data_height: metadata.height,
+            metadata,
         })
     }
 
@@ -148,5 +302,87 @@ mod tests {
             Bounds::new(-180.0, -90.0, 180.0, 90.0)?
         );
         Ok(())
+    }
+
+    #[test]
+    fn web_mercator_round_trip_uses_ctb_origin_shift() -> Result<(), CtbError> {
+        let (x, y) = transform_coordinate(0.0, 0.0, &Crs::Epsg4326, &Crs::Epsg3857)?;
+        assert!(x.abs() < 1e-12);
+        assert!(y.abs() < 1e-8);
+        let (longitude, latitude) = transform_coordinate(x, y, &Crs::Epsg3857, &Crs::Epsg4326)?;
+        assert!((longitude - 0.0).abs() < 1e-12);
+        assert!((latitude - 0.0).abs() < 1e-12);
+        let (_, north_pole_limit) =
+            transform_coordinate(0.0, 85.051_128_779_806_6, &Crs::Epsg4326, &Crs::Epsg3857)?;
+        assert!((north_pole_limit - std::f64::consts::PI * WEB_MERCATOR_RADIUS).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn transform_bounds_includes_all_projected_corners() -> Result<(), CtbError> {
+        let bounds = Bounds::new(-10.0, -10.0, 10.0, 10.0)?;
+        let projected = transform_bounds(bounds, &Crs::Epsg4326, &Crs::Epsg3857)?;
+        assert!(projected.min_x < 0.0 && projected.max_x > 0.0);
+        assert!(projected.min_y < 0.0 && projected.max_y > 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn web_mercator_clamps_latitudes_to_the_global_grid() -> Result<(), CtbError> {
+        let (_, north_pole) = transform_coordinate(0.0, 90.0, &Crs::Epsg4326, &Crs::Epsg3857)?;
+        let (_, north_edge) = transform_coordinate(
+            0.0,
+            WEB_MERCATOR_MAX_LATITUDE,
+            &Crs::Epsg4326,
+            &Crs::Epsg3857,
+        )?;
+        let (_, south_pole) = transform_coordinate(0.0, -90.0, &Crs::Epsg4326, &Crs::Epsg3857)?;
+        let (_, south_edge) = transform_coordinate(
+            0.0,
+            -WEB_MERCATOR_MAX_LATITUDE,
+            &Crs::Epsg4326,
+            &Crs::Epsg3857,
+        )?;
+        assert_eq!(north_pole, north_edge);
+        assert_eq!(south_pole, south_edge);
+        assert!(north_pole.is_finite());
+        assert!(south_pole.is_finite());
+        Ok(())
+    }
+
+    #[test]
+    fn transforms_utm_zone_30_control_point_to_geodetic_and_back() -> Result<(), CtbError> {
+        let (longitude, latitude) =
+            transform_coordinate(500_000.0, 0.0, &Crs::Epsg(32630), &Crs::Epsg4326)?;
+        assert!((longitude + 3.0).abs() < 1e-9);
+        assert!(latitude.abs() < 1e-9);
+
+        let (easting, northing) =
+            transform_coordinate(longitude, latitude, &Crs::Epsg4326, &Crs::Epsg(32630))?;
+        assert!((easting - 500_000.0).abs() < 1e-6);
+        assert!(northing.abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn transforms_osgb_origin_control_point_and_roundtrips() -> Result<(), CtbError> {
+        let (longitude, latitude) =
+            transform_coordinate(400_000.0, -100_000.0, &Crs::Epsg(27700), &Crs::Epsg4326)?;
+        assert!((longitude + 2.0).abs() < 1e-6);
+        assert!((latitude - 49.0).abs() < 1e-6);
+
+        let (easting, northing) =
+            transform_coordinate(longitude, latitude, &Crs::Epsg4326, &Crs::Epsg(27700))?;
+        assert!((easting - 400_000.0).abs() < 1e-6);
+        assert!((northing + 100_000.0).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_unknown_epsg_in_the_generic_transform_path() {
+        assert!(matches!(
+            transform_coordinate(0.0, 0.0, &Crs::Epsg(9999), &Crs::Epsg4326),
+            Err(CtbError::UnsupportedCrs(_))
+        ));
     }
 }

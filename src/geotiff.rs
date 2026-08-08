@@ -1,6 +1,12 @@
 use std::path::Path;
 
-use geotiff_reader::GeoTiffFile;
+use oxigeo::{
+    DatasetFormat, RasterDataType,
+    core_types::io::FileDataSource,
+    geotiff::{CogReader, GeoTiffReader, RasterType},
+    open::open,
+    vrt::{PixelRect, VrtReader, resolve_crs},
+};
 
 use crate::{
     CtbError,
@@ -10,76 +16,122 @@ use crate::{
     },
 };
 
-/// A restricted, pure-Rust GeoTIFF source for the direct-source input contract.
+enum RasterData {
+    GeoTiff(GeoTiffReader<FileDataSource>),
+    Vrt(VrtReader),
+}
+
+/// A restricted, pure-Rust GeoTIFF/VRT source for the direct-source input contract.
 ///
-/// It accepts one north-up band in either CTB built-in grid CRS. Reprojection,
-/// overview selection, and multi-band interpretation belong to later phases.
+/// It accepts one north-up band in an EPSG CRS resolvable by proj4rs.
+/// Reprojection remains at the sampling-plan boundary; overview selection is
+/// level-aware.
 pub struct GeoTiffRasterSource {
-    file: GeoTiffFile,
+    data: RasterData,
     metadata: RasterMetadata,
 }
 
 impl GeoTiffRasterSource {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, CtbError> {
-        let file =
-            GeoTiffFile::open(path).map_err(|error| CtbError::RasterRead(error.to_string()))?;
-        let epsg = file.epsg().ok_or(CtbError::MissingCrs)?;
-        let crs = match epsg {
-            4326 => Crs::Epsg4326,
-            3857 => Crs::Epsg3857,
-            _ => return Err(CtbError::UnsupportedCrs(format!("EPSG:{epsg}"))),
-        };
+        let path = path.as_ref();
+        let detected = open(path).map_err(|error| CtbError::RasterRead(error.to_string()))?;
+        match detected.format() {
+            DatasetFormat::GeoTiff => {
+                let data_source = FileDataSource::open(path)
+                    .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+                let file = GeoTiffReader::open(data_source)
+                    .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+                Self::from_geotiff(file, path)
+            }
+            DatasetFormat::Vrt => {
+                let file = VrtReader::open(path)
+                    .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+                Self::from_vrt(file)
+            }
+            format => Err(CtbError::UnsupportedRaster(format!(
+                "OxiGeo 0.2.3 detected {format:?} but has no pixel reader for it; \
+                 supported raster inputs are GeoTIFF and VRT"
+            ))),
+        }
+    }
+
+    fn from_geotiff(file: GeoTiffReader<FileDataSource>, path: &Path) -> Result<Self, CtbError> {
         if file.band_count() != 1 {
             return Err(CtbError::UnsupportedRaster(format!(
                 "expected one elevation band, found {} bands",
                 file.band_count()
             )));
         }
-
-        let transform = file.transform().ok_or_else(|| {
+        let transform = file.geo_transform().ok_or_else(|| {
             CtbError::UnsupportedRaster("missing GeoTIFF affine transform".to_owned())
         })?;
-        if transform.skew_x != 0.0 || transform.skew_y != 0.0 {
-            return Err(CtbError::UnsupportedRaster(
-                "rotated or sheared GeoTIFF transforms are not supported".to_owned(),
-            ));
-        }
-
-        let no_data = match file.nodata() {
-            Some(value) => Some(value.parse::<f64>().map_err(|_| {
-                CtbError::UnsupportedRaster(format!("cannot parse GeoTIFF NoData value {value:?}"))
-            })?),
-            None => None,
+        let source =
+            FileDataSource::open(path).map_err(|error| CtbError::RasterRead(error.to_string()))?;
+        let cog =
+            CogReader::open(source).map_err(|error| CtbError::RasterRead(error.to_string()))?;
+        let pixel_is_point =
+            cog.geo_keys().and_then(|keys| keys.raster_type()) == Some(RasterType::PixelIsPoint);
+        let transform = if pixel_is_point {
+            &shift_pixel_is_point_transform(transform)
+        } else {
+            transform
         };
-        let base_ifd = file
-            .tiff()
-            .ifd(file.base_ifd_index())
-            .map_err(|error| CtbError::RasterRead(error.to_string()))?;
-        let sample_type = raster_sample_type(
-            base_ifd
-                .sample_format()
-                .map_err(|error| CtbError::RasterRead(error.to_string()))?,
-            base_ifd
-                .bits_per_sample()
-                .map_err(|error| CtbError::RasterRead(error.to_string()))?,
-        )?;
-        let metadata = RasterMetadata {
-            width: file.width(),
-            height: file.height(),
-            band_count: 1,
-            crs,
-            transform: AffineTransform::north_up(
-                transform.origin_x,
-                transform.origin_y,
-                transform.pixel_width,
-                transform.pixel_height,
-            )?,
-            no_data,
+        let sample_type = raster_sample_type(file.data_type().ok_or_else(|| {
+            CtbError::UnsupportedRaster("GeoTIFF has no sample type".to_owned())
+        })?)?;
+        let epsg = file.epsg_code().ok_or(CtbError::MissingCrs)?;
+        let (width, height) = raster_dimensions(file.width(), file.height())?;
+        let metadata = build_metadata(
+            width,
+            height,
+            crs_from_epsg(epsg)?,
+            transform,
+            file.nodata().as_f64(),
             sample_type,
-        };
-        metadata.transform.bounds(metadata.width, metadata.height)?;
+        )?;
+        Ok(Self {
+            data: RasterData::GeoTiff(file),
+            metadata,
+        })
+    }
 
-        Ok(Self { file, metadata })
+    fn from_vrt(file: VrtReader) -> Result<Self, CtbError> {
+        if file.band_count() != 1 {
+            return Err(CtbError::UnsupportedRaster(format!(
+                "expected one elevation band, found {} bands",
+                file.band_count()
+            )));
+        }
+        let transform = file.geo_transform().ok_or_else(|| {
+            CtbError::UnsupportedRaster("missing VRT affine transform".to_owned())
+        })?;
+        let data_type = file
+            .band_data_type(1)
+            .or_else(|| file.primary_data_type())
+            .ok_or_else(|| CtbError::UnsupportedRaster("VRT has no band sample type".to_owned()))?;
+        let sample_type = raster_sample_type(data_type)?;
+        let srs = file.srs().ok_or(CtbError::MissingCrs)?;
+        let resolved = resolve_crs(srs).map_err(|error| {
+            CtbError::UnsupportedCrs(format!("VRT SRS {srs:?} cannot be resolved: {error}"))
+        })?;
+        let epsg = resolved.epsg_code().ok_or_else(|| {
+            CtbError::UnsupportedCrs(format!(
+                "VRT SRS {srs:?} does not expose an EPSG code usable by proj4rs"
+            ))
+        })?;
+        let (width, height) = raster_dimensions(file.width(), file.height())?;
+        let metadata = build_metadata(
+            width,
+            height,
+            crs_from_epsg(epsg)?,
+            transform,
+            file.band_nodata(1).as_f64(),
+            sample_type,
+        )?;
+        Ok(Self {
+            data: RasterData::Vrt(file),
+            metadata,
+        })
     }
 
     fn validate_window(
@@ -106,55 +158,54 @@ impl GeoTiffRasterSource {
     }
 
     fn read_samples(&self, level: u16, request: WindowRequest) -> Result<Vec<f64>, CtbError> {
-        macro_rules! decode_as {
-            ($sample_type:ty) => {
-                (if level == 0 {
-                    self.file.read_band_window::<$sample_type>(
-                        0,
-                        request.y as usize,
-                        request.x as usize,
-                        request.height as usize,
-                        request.width as usize,
-                    )
-                } else {
-                    self.file.read_overview_band_window::<$sample_type>(
-                        usize::from(level - 1),
-                        0,
-                        request.y as usize,
-                        request.x as usize,
-                        request.height as usize,
-                        request.width as usize,
-                    )
-                })
-                .ok()
-                .map(|samples| {
-                    samples
-                        .iter()
-                        .map(|sample| *sample as f64)
-                        .collect::<Vec<_>>()
-                })
-            };
+        let width = usize::try_from(request.width).map_err(|_| CtbError::InvalidRasterWindow)?;
+        let height = usize::try_from(request.height).map_err(|_| CtbError::InvalidRasterWindow)?;
+        let count = width
+            .checked_mul(height)
+            .ok_or(CtbError::InvalidRasterWindow)?;
+        let mut samples = vec![0.0_f64; count];
+        let x = u64::from(request.x);
+        let y = u64::from(request.y);
+        let width_u64 = u64::from(request.width);
+        let height_u64 = u64::from(request.height);
+        match &self.data {
+            RasterData::GeoTiff(file) => file
+                .read_window_into_typed::<f64>(
+                    usize::from(level),
+                    0,
+                    x,
+                    y,
+                    width_u64,
+                    height_u64,
+                    &mut samples,
+                )
+                .map_err(|error| CtbError::RasterRead(error.to_string()))?,
+            RasterData::Vrt(file) => {
+                if level != 0 {
+                    return Err(CtbError::UnsupportedRaster(
+                        "VRT inputs have no overview levels".to_owned(),
+                    ));
+                }
+                let buffer = file
+                    .read_window(1, PixelRect::new(x, y, width_u64, height_u64))
+                    .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+                buffer
+                    .copy_to_slice(&mut samples)
+                    .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+            }
         }
+        Ok(samples)
+    }
 
-        if let Some(samples) = [
-            decode_as!(f64),
-            decode_as!(f32),
-            decode_as!(u8),
-            decode_as!(i8),
-            decode_as!(u16),
-            decode_as!(i16),
-            decode_as!(u32),
-            decode_as!(i32),
-        ]
-        .into_iter()
-        .flatten()
-        .next()
-        {
-            return Ok(samples);
+    fn level_size(&self, level: usize) -> Result<(u64, u64), CtbError> {
+        match &self.data {
+            RasterData::GeoTiff(file) => file
+                .level_size(level)
+                .map_err(|error| CtbError::RasterRead(error.to_string())),
+            RasterData::Vrt(_) => Err(CtbError::UnsupportedRaster(
+                "VRT inputs have no overview levels".to_owned(),
+            )),
         }
-        Err(CtbError::RasterRead(
-            "the first GeoTIFF band is not a supported numeric sample type".to_owned(),
-        ))
     }
 }
 
@@ -164,21 +215,20 @@ impl RasterSource for GeoTiffRasterSource {
     }
 
     fn overview_count(&self) -> u16 {
-        u16::try_from(self.file.overview_count()).map_or(u16::MAX, |count| count)
+        match &self.data {
+            RasterData::GeoTiff(file) => {
+                u16::try_from(file.overview_count()).map_or(u16::MAX, |count| count)
+            }
+            RasterData::Vrt(_) => 0,
+        }
     }
 
     fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError> {
         self.validate_window(&self.metadata, request)?;
+        // GDALCreateWarpedVRT does not set padfSrcNoDataReal, so the warp
+        // kernel treats NoData pixels as regular values (density=1.0).
+        // We return raw pixel values without NaN conversion.
         let samples = self.read_samples(0, request)?;
-
-        if let Some(no_data) = self.metadata.no_data
-            && samples.iter().any(|sample| {
-                (no_data.is_nan() && sample.is_nan()) || (!no_data.is_nan() && *sample == no_data)
-            })
-        {
-            return Err(CtbError::NoDataEncountered);
-        }
-
         Ok(RasterWindow { request, samples })
     }
 
@@ -190,6 +240,8 @@ impl RasterSource for GeoTiffRasterSource {
         if !target_ratio.is_finite() || target_ratio <= 1.0 || overview_count == 0 {
             return Ok(crate::raster::SamplingLevel {
                 level: 0,
+                data_width: self.metadata.width,
+                data_height: self.metadata.height,
                 metadata: self.metadata.clone(),
             });
         }
@@ -199,21 +251,15 @@ impl RasterSource for GeoTiffRasterSource {
             let ratio = if overview < 0 {
                 1.0
             } else {
-                f64::from(self.metadata.width)
-                    / f64::from(
-                        self.file
-                            .overview_ifd(overview as usize)
-                            .map_err(|error| CtbError::RasterRead(error.to_string()))?
-                            .width(),
-                    )
+                let level = usize::try_from(overview)
+                    .map_err(|_| CtbError::RasterRead("overview index overflow".to_owned()))?
+                    + 1;
+                f64::from(self.metadata.width) / self.level_size(level)?.0 as f64
             };
-            let next_ratio = f64::from(self.metadata.width)
-                / f64::from(
-                    self.file
-                        .overview_ifd((overview + 1) as usize)
-                        .map_err(|error| CtbError::RasterRead(error.to_string()))?
-                        .width(),
-                );
+            let next_level = usize::try_from(overview + 1)
+                .map_err(|_| CtbError::RasterRead("overview index overflow".to_owned()))?
+                + 1;
+            let next_ratio = f64::from(self.metadata.width) / self.level_size(next_level)?.0 as f64;
             if (ratio < target_ratio && next_ratio > target_ratio)
                 || (ratio - target_ratio).abs() < 0.1
             {
@@ -225,22 +271,22 @@ impl RasterSource for GeoTiffRasterSource {
         if selected < 0 {
             return Ok(crate::raster::SamplingLevel {
                 level: 0,
+                data_width: self.metadata.width,
+                data_height: self.metadata.height,
                 metadata: self.metadata.clone(),
             });
         }
 
-        let index = selected as usize;
-        let overview = self
-            .file
-            .overview_ifd(index)
-            .map_err(|error| CtbError::RasterRead(error.to_string()))?;
-        let width = overview.width();
-        let height = overview.height();
+        let index = usize::try_from(selected)
+            .map_err(|_| CtbError::RasterRead("overview index overflow".to_owned()))?;
+        let (overview_width, overview_height) = self.level_size(index + 1)?;
+        let width = raster_dimension(overview_width, overview_height)?;
+        let height = raster_dimension(overview_height, overview_width)?;
         let metadata = RasterMetadata {
             width,
             height,
             band_count: self.metadata.band_count,
-            crs: self.metadata.crs.clone(),
+            crs: self.metadata.crs,
             transform: AffineTransform::north_up(
                 self.metadata.transform.origin_x,
                 self.metadata.transform.origin_y,
@@ -253,7 +299,14 @@ impl RasterSource for GeoTiffRasterSource {
             sample_type: self.metadata.sample_type,
         };
         Ok(crate::raster::SamplingLevel {
-            level: selected as u16 + 1,
+            // C++ GDALTiler::createRasterTile recreates the transformer from the
+            // overview dataset but never updates psWarpOptions->hSrcDS, so the
+            // warp kernel reads from the base dataset at overview pixel indices.
+            // level 0 (base IFD) preserves overview metadata for coordinate math
+            // while reading from the base band, matching the C++ oracle exactly.
+            level: 0,
+            data_width: self.metadata.width,
+            data_height: self.metadata.height,
             metadata,
         })
     }
@@ -263,41 +316,105 @@ impl RasterSource for GeoTiffRasterSource {
         level: &crate::raster::SamplingLevel,
         request: WindowRequest,
     ) -> Result<RasterWindow, CtbError> {
-        self.validate_window(&level.metadata, request)?;
+        let data_metadata = RasterMetadata {
+            width: level.data_width,
+            height: level.data_height,
+            ..level.metadata.clone()
+        };
+        self.validate_window(&data_metadata, request)?;
         let samples = self.read_samples(level.level, request)?;
-        if let Some(no_data) = level.metadata.no_data
-            && samples.iter().any(|sample| {
-                (no_data.is_nan() && sample.is_nan()) || (!no_data.is_nan() && *sample == no_data)
-            })
-        {
-            return Err(CtbError::NoDataEncountered);
-        }
         Ok(RasterWindow { request, samples })
     }
 }
 
-fn raster_sample_type(
-    sample_formats: Vec<u16>,
-    bits_per_sample: Vec<u16>,
-) -> Result<RasterSampleType, CtbError> {
-    let sample_format = sample_formats
-        .first()
-        .copied()
-        .ok_or_else(|| CtbError::UnsupportedRaster("GeoTIFF is missing SampleFormat".to_owned()))?;
-    let bits = bits_per_sample.first().copied().ok_or_else(|| {
-        CtbError::UnsupportedRaster("GeoTIFF is missing BitsPerSample".to_owned())
+fn raster_dimension(width: u64, height: u64) -> Result<u32, CtbError> {
+    u32::try_from(width).map_err(|_| CtbError::InvalidRasterDimensions {
+        width: u32::try_from(width).unwrap_or(u32::MAX),
+        height: u32::try_from(height).unwrap_or(u32::MAX),
+    })
+}
+
+fn raster_dimensions(width: u64, height: u64) -> Result<(u32, u32), CtbError> {
+    Ok((
+        raster_dimension(width, height)?,
+        raster_dimension(height, width)?,
+    ))
+}
+
+/// GDAL applies the GeoTIFF `PixelIsPoint` half-pixel offset on read
+/// (`gtiffdataset_read.cpp` `LoadGeoreferencingAndPamIfNeeded`), so the affine
+/// origin becomes the upper-left corner of the first pixel instead of its
+/// center.
+fn shift_pixel_is_point_transform(transform: &oxigeo::GeoTransform) -> oxigeo::GeoTransform {
+    oxigeo::GeoTransform::north_up(
+        transform.origin_x - transform.pixel_width * 0.5,
+        transform.origin_y - transform.pixel_height * 0.5,
+        transform.pixel_width,
+        transform.pixel_height,
+    )
+}
+
+fn build_metadata(
+    width: u32,
+    height: u32,
+    crs: Crs,
+    transform: &oxigeo::GeoTransform,
+    no_data: Option<f64>,
+    sample_type: RasterSampleType,
+) -> Result<RasterMetadata, CtbError> {
+    if transform.row_rotation != 0.0 || transform.col_rotation != 0.0 {
+        return Err(CtbError::UnsupportedRaster(
+            "rotated or sheared raster transforms are not supported".to_owned(),
+        ));
+    }
+    let metadata = RasterMetadata {
+        width,
+        height,
+        band_count: 1,
+        crs,
+        transform: AffineTransform::north_up(
+            transform.origin_x,
+            transform.origin_y,
+            transform.pixel_width,
+            transform.pixel_height,
+        )?,
+        no_data,
+        sample_type,
+    };
+    metadata.transform.bounds(width, height)?;
+    Ok(metadata)
+}
+
+fn crs_from_epsg(epsg: u32) -> Result<Crs, CtbError> {
+    let code = u16::try_from(epsg).map_err(|_| {
+        CtbError::UnsupportedCrs(format!("EPSG:{epsg} is outside the supported code range"))
     })?;
-    match (sample_format, bits) {
-        (1, 8) => Ok(RasterSampleType::Unsigned8),
-        (2, 8) => Ok(RasterSampleType::Signed8),
-        (1, 16) => Ok(RasterSampleType::Unsigned16),
-        (2, 16) => Ok(RasterSampleType::Signed16),
-        (1, 32) => Ok(RasterSampleType::Unsigned32),
-        (2, 32) => Ok(RasterSampleType::Signed32),
-        (3, 32) => Ok(RasterSampleType::Float32),
-        (3, 64) => Ok(RasterSampleType::Float64),
+    match code {
+        4326 => Ok(Crs::Epsg4326),
+        3857 => Ok(Crs::Epsg3857),
+        _ => {
+            proj4rs::Proj::from_epsg_code(code).map_err(|error| {
+                CtbError::UnsupportedCrs(format!(
+                    "EPSG:{code} cannot be resolved by proj4rs: {error}"
+                ))
+            })?;
+            Ok(Crs::Epsg(code))
+        }
+    }
+}
+
+fn raster_sample_type(data_type: RasterDataType) -> Result<RasterSampleType, CtbError> {
+    match data_type {
+        RasterDataType::UInt8 => Ok(RasterSampleType::Unsigned8),
+        RasterDataType::Int8 => Ok(RasterSampleType::Signed8),
+        RasterDataType::UInt16 => Ok(RasterSampleType::Unsigned16),
+        RasterDataType::Int16 => Ok(RasterSampleType::Signed16),
+        RasterDataType::UInt32 => Ok(RasterSampleType::Unsigned32),
+        RasterDataType::Int32 => Ok(RasterSampleType::Signed32),
+        RasterDataType::Float32 => Ok(RasterSampleType::Float32),
+        RasterDataType::Float64 => Ok(RasterSampleType::Float64),
         _ => Err(CtbError::UnsupportedRaster(format!(
-            "unsupported GeoTIFF sample encoding SampleFormat={sample_format}, BitsPerSample={bits}"
+            "unsupported raster sample encoding {data_type:?}"
         ))),
     }
 }
@@ -306,8 +423,16 @@ fn raster_sample_type(
 mod tests {
     use std::{env, fs};
 
-    use geotiff_writer::GeoTiffBuilder;
-    use ndarray::array;
+    use oxigeo::{
+        GeoTransform, RasterDataType,
+        core_types::{io::FileDataSource, types::NoDataValue},
+        geotiff::{
+            CogReader, GeoKey, GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling, TiffTag,
+            WriterConfig,
+            tiff::{Compression, Predictor},
+        },
+        vrt::{SourceWindow, VrtBand, VrtBuilder, VrtSource},
+    };
 
     use super::*;
 
@@ -315,51 +440,196 @@ mod tests {
         env::temp_dir().join(format!("ctb-rs-{name}-{}.tif", std::process::id()))
     }
 
+    fn mark_pixel_is_point(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let source = FileDataSource::open(path)?;
+        let cog = CogReader::open(source)?;
+        let byte_order = cog.tiff().byte_order();
+        let entry = cog
+            .tiff()
+            .ifds
+            .first()
+            .and_then(|ifd| ifd.get_entry(TiffTag::GeoKeyDirectory))
+            .ok_or("GeoKeyDirectory tag missing")?;
+        let source = FileDataSource::open(path)?;
+        let directory = entry.get_value_bytes(&source, cog.tiff().header.variant)?;
+        let word_at = |offset: usize| -> usize {
+            usize::from(byte_order.read_u16(&directory[offset..offset + 2]))
+        };
+        let keys = cog.geo_keys().ok_or("GeoKeyDirectory tag missing")?;
+        let raster_type_position = keys
+            .entries
+            .iter()
+            .position(|key| key.key_id == GeoKey::GtRasterType as u16)
+            .ok_or("fixture geokey directory lacks GTRasterType")?;
+        let raster_type_index = 8 + raster_type_position * 8 + 6;
+        assert_eq!(
+            word_at(raster_type_index),
+            1,
+            "fixture must start as PixelIsArea"
+        );
+
+        let mut bytes = fs::read(path)?;
+        let value_offset = usize::try_from(entry.value_offset)?;
+        let directory_end = value_offset
+            .checked_add(directory.len())
+            .ok_or("directory offset overflow")?;
+        assert!(
+            directory_end <= bytes.len(),
+            "GeoKeyDirectory lies outside fixture"
+        );
+        let target = value_offset + raster_type_index;
+        byte_order.write_u16(&mut bytes[target..target + 2], 2);
+        fs::write(path, bytes)?;
+        Ok(())
+    }
+
+    #[derive(Default)]
+    struct FixtureOptions {
+        nodata: Option<f64>,
+        overviews: bool,
+    }
+
+    fn write_bytes(
+        path: &Path,
+        dimensions: (u64, u64),
+        data_type: RasterDataType,
+        bytes: &[u8],
+        epsg: u16,
+        transform: GeoTransform,
+        options: FixtureOptions,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = WriterConfig::new(dimensions.0, dimensions.1, 1, data_type)
+            .with_compression(Compression::None)
+            .with_predictor(Predictor::None)
+            .with_overviews(options.overviews, OverviewResampling::Nearest)
+            .with_geo_transform(transform)
+            .with_epsg_code(u32::from(epsg));
+        if let Some(value) = options.nodata {
+            config = config.with_nodata(NoDataValue::from_float(value));
+        }
+        if options.overviews {
+            config = config.with_overview_levels(vec![2, 4]);
+            config.tile_width = Some(16);
+            config.tile_height = Some(16);
+        } else {
+            config.tile_width = None;
+            config.tile_height = None;
+        }
+        let mut writer = GeoTiffWriter::create(path, config, GeoTiffWriterOptions::default())?;
+        writer.write(bytes)?;
+        Ok(())
+    }
+
     fn write_fixture(
         path: &Path,
         epsg: u16,
         nodata: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let samples = array![[10.0_f64, 11.0], [12.0, 13.0]];
-        let mut builder = GeoTiffBuilder::new(2, 2)
-            .epsg(epsg)
-            .pixel_scale(0.5, 0.5)
-            .origin(-180.0, 90.0);
-        if let Some(value) = nodata {
-            builder = builder.nodata(value);
-        }
-        builder.write_2d(path, samples.view())?;
-        Ok(())
+        let samples = [10.0_f64, 11.0, 12.0, 13.0];
+        let bytes = samples
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        write_bytes(
+            path,
+            (2, 2),
+            RasterDataType::Float64,
+            &bytes,
+            epsg,
+            GeoTransform::north_up(-180.0, 90.0, 0.5, -0.5),
+            FixtureOptions {
+                nodata: nodata.map(|value| value.parse::<f64>()).transpose()?,
+                ..FixtureOptions::default()
+            },
+        )
     }
 
     fn write_float32_fixture(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        let samples = array![[10.0_f32, 11.0], [12.0, 13.0]];
-        GeoTiffBuilder::new(2, 2)
-            .geographic_epsg(4326)
-            .pixel_scale(0.5, 0.5)
-            .origin(-180.0, 90.0)
-            .write_2d(path, samples.view())?;
-        Ok(())
+        let samples = [10.0_f32, 11.0, 12.0, 13.0];
+        let bytes = samples
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        write_bytes(
+            path,
+            (2, 2),
+            RasterDataType::Float32,
+            &bytes,
+            4326,
+            GeoTransform::north_up(-180.0, 90.0, 0.5, -0.5),
+            FixtureOptions::default(),
+        )
     }
 
     fn write_signed_integer_fixture(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        let samples = array![[-100_i16, -1], [0, 150]];
-        GeoTiffBuilder::new(2, 2)
-            .geographic_epsg(4326)
-            .pixel_scale(0.5, 0.5)
-            .origin(-180.0, 90.0)
-            .write_2d(path, samples.view())?;
-        Ok(())
+        let samples = [-100_i16, -1, 0, 150];
+        let bytes = samples
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        write_bytes(
+            path,
+            (2, 2),
+            RasterDataType::Int16,
+            &bytes,
+            4326,
+            GeoTransform::north_up(-180.0, 90.0, 0.5, -0.5),
+            FixtureOptions::default(),
+        )
     }
 
     fn write_unsigned_integer_fixture(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        let samples = array![[0_u16, 10], [1_000, u16::MAX]];
-        GeoTiffBuilder::new(2, 2)
-            .geographic_epsg(4326)
-            .pixel_scale(0.5, 0.5)
-            .origin(-180.0, 90.0)
-            .write_2d(path, samples.view())?;
-        Ok(())
+        let samples = [0_u16, 10, 1_000, u16::MAX];
+        let bytes = samples
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        write_bytes(
+            path,
+            (2, 2),
+            RasterDataType::UInt16,
+            &bytes,
+            4326,
+            GeoTransform::north_up(-180.0, 90.0, 0.5, -0.5),
+            FixtureOptions::default(),
+        )
+    }
+
+    fn write_projected_fixture(path: &Path, epsg: u16) -> Result<(), Box<dyn std::error::Error>> {
+        let samples = [10.0_f64, 11.0, 12.0, 13.0];
+        let bytes = samples
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        write_bytes(
+            path,
+            (2, 2),
+            RasterDataType::Float64,
+            &bytes,
+            epsg,
+            GeoTransform::north_up(500_000.0, 0.0, 1.0, -1.0),
+            FixtureOptions::default(),
+        )
+    }
+
+    fn write_overview_fixture(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let samples = (0..64).map(|value| value as f64).collect::<Vec<_>>();
+        let bytes = samples
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        write_bytes(
+            path,
+            (8, 8),
+            RasterDataType::Float64,
+            &bytes,
+            4326,
+            GeoTransform::north_up(0.0, 8.0, 1.0, -1.0),
+            FixtureOptions {
+                overviews: true,
+                ..FixtureOptions::default()
+            },
+        )
     }
 
     #[test]
@@ -398,20 +668,73 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_window_containing_nodata() -> Result<(), Box<dyn std::error::Error>> {
+    fn shifts_pixel_is_point_origin_like_gdal() -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("pixel-is-point");
+        write_fixture(&path, 4326, None)?;
+        mark_pixel_is_point(&path)?;
+        let source = GeoTiffRasterSource::open(&path)?;
+        assert_eq!(source.metadata().transform.origin_x, -180.25);
+        assert_eq!(source.metadata().transform.origin_y, 90.25);
+        assert_eq!(source.metadata().transform.pixel_width, 0.5);
+        assert_eq!(source.metadata().transform.pixel_height, -0.5);
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn keeps_pixel_is_point_shift_in_overview_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("pixel-is-point-overviews");
+        write_overview_fixture(&path)?;
+        mark_pixel_is_point(&path)?;
+        let source = GeoTiffRasterSource::open(&path)?;
+        let half = source.sampling_level_for_ratio(2.0)?;
+        assert_eq!(half.metadata.width, 4);
+        assert_eq!(half.metadata.transform.origin_x, -0.5);
+        assert_eq!(half.metadata.transform.origin_y, 8.5);
+        assert_eq!(half.metadata.transform.pixel_width, 2.0);
+        assert_eq!(half.metadata.transform.pixel_height, -2.0);
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn opens_an_arbitrary_epsg_geotiff() -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("epsg32630");
+        write_projected_fixture(&path, 32630)?;
+        let source = GeoTiffRasterSource::open(&path)?;
+        assert_eq!(source.metadata().crs, Crs::Epsg(32630));
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_an_unknown_epsg_geotiff() -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("epsg-unknown");
+        write_projected_fixture(&path, 9999)?;
+        assert!(matches!(
+            GeoTiffRasterSource::open(&path),
+            Err(CtbError::UnsupportedCrs(_))
+        ));
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn marks_nodata_inside_a_window_without_rejecting_the_window()
+    -> Result<(), Box<dyn std::error::Error>> {
         let path = fixture_path("nodata");
         write_fixture(&path, 4326, Some("10"))?;
         let source = GeoTiffRasterSource::open(&path)?;
-        assert!(matches!(
-            source.read_window(WindowRequest {
-                x: 0,
-                y: 0,
-                width: 1,
-                height: 1,
-                overview: 0,
-            }),
-            Err(CtbError::NoDataEncountered)
-        ));
+        let window = source.read_window(WindowRequest {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 1,
+            overview: 0,
+        })?;
+        // GDALCreateWarpedVRT does not filter NoData; raw values are returned.
+        assert_eq!(window.samples[0], 10.0);
+        assert_eq!(window.samples[1], 11.0);
         fs::remove_file(path)?;
         Ok(())
     }
@@ -431,6 +754,69 @@ mod tests {
             }),
             Err(CtbError::InvalidRasterWindow)
         ));
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn selects_and_reads_internal_overviews() -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("overviews");
+        write_overview_fixture(&path)?;
+        let source = GeoTiffRasterSource::open(&path)?;
+        assert_eq!(source.overview_count(), 2);
+
+        let base = source.sampling_level_for_ratio(1.5)?;
+        assert_eq!(base.level, 0);
+        assert_eq!(base.metadata.width, 8);
+
+        let half = source.sampling_level_for_ratio(2.0)?;
+        // C++ warp reads from the base dataset at overview pixel indices;
+        // sampling_level_for_ratio returns level 0 with overview metadata.
+        assert_eq!(half.level, 0);
+        assert_eq!(half.metadata.width, 4);
+        assert_eq!(half.metadata.height, 4);
+        assert_eq!(half.metadata.transform.pixel_width, 2.0);
+        assert_eq!(half.metadata.transform.pixel_height, -2.0);
+
+        let quarter = source.sampling_level_for_ratio(4.0)?;
+        assert_eq!(quarter.level, 0);
+        assert_eq!(quarter.metadata.width, 2);
+        assert_eq!(quarter.metadata.height, 2);
+        assert_eq!(quarter.metadata.transform.pixel_width, 4.0);
+        assert_eq!(quarter.metadata.transform.pixel_height, -4.0);
+
+        // Reading through the selected level reads from the base IFD at
+        // overview pixel coordinates, matching C++ warp semantics.
+        let window = source.read_sampling_window(
+            &half,
+            WindowRequest {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+                overview: half.level,
+            },
+        )?;
+        assert_eq!(window.samples, vec![0.0, 1.0, 8.0, 9.0]);
+
+        // Verify the overview IFD itself is readable via an explicit level.
+        let ovr_level = crate::raster::SamplingLevel {
+            level: 1,
+            data_width: half.metadata.width,
+            data_height: half.metadata.height,
+            metadata: half.metadata.clone(),
+        };
+        let ovr_window = source.read_sampling_window(
+            &ovr_level,
+            WindowRequest {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+                overview: 1,
+            },
+        )?;
+        assert_eq!(ovr_window.samples, vec![0.0, 2.0, 16.0, 18.0]);
         fs::remove_file(path)?;
         Ok(())
     }
@@ -500,6 +886,45 @@ mod tests {
             vec![0.0, 10.0, 1_000.0, f64::from(u16::MAX)]
         );
         fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn opens_a_vrt_and_reads_a_window() -> Result<(), Box<dyn std::error::Error>> {
+        let source_path = fixture_path("vrt-source");
+        write_fixture(&source_path, 4326, None)?;
+        let vrt_path = fixture_path("vrt").with_extension("vrt");
+        let band = VrtBand::simple(
+            1,
+            RasterDataType::Float64,
+            VrtSource::simple(&source_path, 1).with_window(SourceWindow::identity(2, 2)),
+        );
+        VrtBuilder::with_size(2, 2)
+            .with_srs("EPSG:4326")
+            .with_geo_transform(GeoTransform::north_up(-180.0, 90.0, 0.5, -0.5))
+            .add_band(band)?
+            .build_file(&vrt_path)?;
+
+        let source = GeoTiffRasterSource::open(&vrt_path)?;
+        assert_eq!(source.metadata().width, 2);
+        assert_eq!(source.metadata().height, 2);
+        assert_eq!(source.metadata().crs, Crs::Epsg4326);
+        assert_eq!(source.metadata().sample_type, RasterSampleType::Float64);
+        assert_eq!(source.overview_count(), 0);
+        assert_eq!(
+            source
+                .read_window(WindowRequest {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 2,
+                    overview: 0,
+                })?
+                .samples,
+            vec![10.0, 11.0, 12.0, 13.0]
+        );
+        fs::remove_file(source_path)?;
+        fs::remove_file(vrt_path)?;
         Ok(())
     }
 

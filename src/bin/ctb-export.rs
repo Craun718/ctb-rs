@@ -8,7 +8,10 @@ use ctb_rs::{
 };
 
 #[derive(Debug, Parser)]
-#[command(about = "Export a CTB terrain tile to a GeoTIFF")]
+#[command(
+    about = "Export a CTB terrain tile to a GeoTIFF",
+    version = env!("CARGO_PKG_VERSION")
+)]
 struct Arguments {
     /// Input gzip-compressed CTB terrain file.
     #[arg(short = 'i', long)]
@@ -32,6 +35,10 @@ struct Arguments {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    if std::env::args().any(|argument| argument == "--version" || argument == "-V") {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     let arguments = Arguments::parse();
     let terrain = match HeightmapTerrain::read_gzip(&arguments.input_filename) {
         Ok(terrain) => terrain,

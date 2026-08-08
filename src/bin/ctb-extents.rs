@@ -2,24 +2,30 @@ use std::{error::Error, path::PathBuf};
 
 use clap::Parser;
 use ctb_rs::{
-    extents::write_extents, geotiff::GeoTiffRasterSource, grid::GlobalGeodeticGrid,
-    raster::RasterSource, tileset::TilesetPlan,
+    extents::write_extents,
+    geotiff::GeoTiffRasterSource,
+    grid::{GlobalGeodeticGrid, GlobalMercatorGrid, TileGrid},
+    raster::RasterSource,
+    tileset::TilesetPlan,
 };
 
 #[derive(Debug, Parser)]
-#[command(about = "Write GeoJSON coverage extents for CTB terrain tiles")]
+#[command(
+    about = "Write GeoJSON coverage extents for CTB terrain tiles",
+    version = env!("CARGO_PKG_VERSION")
+)]
 struct Arguments {
     /// Directory in which {zoom}.geojson files are written.
     #[arg(short, long, default_value = ".")]
     output_dir: PathBuf,
 
-    /// TMS profile. The pure-Rust implementation currently supports geodetic only.
+    /// TMS profile. Direct-source extents support geodetic and mercator grids.
     #[arg(short, long, default_value = "geodetic")]
     profile: String,
 
-    /// TMS tile edge length in pixels; defaults to the original terrain size of 65.
-    #[arg(short = 't', long, default_value_t = 65)]
-    tile_size: u32,
+    /// TMS tile edge length in pixels; defaults to 65 for geodetic and 256 for mercator.
+    #[arg(short = 't', long)]
+    tile_size: Option<u32>,
 
     /// Highest zoom level to include; defaults to the source-derived maximum.
     #[arg(short = 's', long)]
@@ -29,24 +35,29 @@ struct Arguments {
     #[arg(short = 'e', long)]
     end_zoom: Option<u8>,
 
-    /// Input single-band, north-up EPSG:4326 GeoTIFF DEM.
+    /// Input single-band, north-up GeoTIFF or VRT DEM.
     input: PathBuf,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let arguments = Arguments::parse();
-    if arguments.profile != "geodetic" {
-        return Err("only the geodetic profile is currently supported".into());
+    if std::env::args().any(|argument| argument == "--version" || argument == "-V") {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
     }
+    let arguments = Arguments::parse();
     let source = GeoTiffRasterSource::open(&arguments.input)?;
-    let grid = GlobalGeodeticGrid::new(arguments.tile_size)?;
-    let plan = TilesetPlan::from_raster_with_zoom_range(
+    let grid: Box<dyn TileGrid> = match arguments.profile.as_str() {
+        "geodetic" => Box::new(GlobalGeodeticGrid::new(arguments.tile_size.unwrap_or(65))?),
+        "mercator" => Box::new(GlobalMercatorGrid::new(arguments.tile_size.unwrap_or(256))?),
+        profile => return Err(format!("unsupported TMS profile {profile}").into()),
+    };
+    let plan = TilesetPlan::from_raster_with_tile_grid(
         source.metadata(),
-        grid,
+        grid.as_ref(),
         arguments.start_zoom,
         arguments.end_zoom,
     )?;
-    if let Err(error) = write_extents(&plan, grid, arguments.output_dir) {
+    if let Err(error) = write_extents(&plan, grid.as_ref(), arguments.output_dir) {
         eprintln!("File could not be opened: {error}");
     }
     Ok(())

@@ -11,7 +11,10 @@ use crate::{
     CtbError,
     grid::{TileCoord, TileGrid},
     raster::RasterSource,
-    raster_geotiff::{RasterGeoTiffCompression, write_raster_tile_as_geotiff_with_compression},
+    raster_geotiff::{
+        RasterGeoTiffCompression, RasterGeoTiffPredictor, RasterGeoTiffTiffVariant,
+        RasterGeoTiffWriteOptions, write_raster_tile_as_geotiff_with_options,
+    },
     raster_sampling::RasterTileSamplePlan,
     sampling::ResamplingMethod,
     tileset::{TileWriteProgress, TilesetPlan},
@@ -24,6 +27,9 @@ pub struct RasterTilesetOptions {
     pub end_zoom: Option<u8>,
     pub resampling: ResamplingMethod,
     pub compression: RasterGeoTiffCompression,
+    pub tiff_variant: RasterGeoTiffTiffVariant,
+    pub predictor: Option<RasterGeoTiffPredictor>,
+    pub block_size: Option<(u32, u32)>,
     pub worker_count: usize,
 }
 
@@ -35,6 +41,9 @@ impl Default for RasterTilesetOptions {
             end_zoom: None,
             resampling: ResamplingMethod::Average,
             compression: RasterGeoTiffCompression::None,
+            tiff_variant: RasterGeoTiffTiffVariant::Auto,
+            predictor: None,
+            block_size: None,
             worker_count: 1,
         }
     }
@@ -80,6 +89,8 @@ pub fn write_raster_geotiff_tileset_with_factory(
                         return;
                     }
                 };
+                let mut output_metadata = source.metadata().clone();
+                output_metadata.crs = grid.crs();
                 loop {
                     if first_error.lock().is_ok_and(|error| error.is_some()) {
                         return;
@@ -98,9 +109,14 @@ pub fn write_raster_geotiff_tileset_with_factory(
                                 .and_then(|values| {
                                     write_raster_geotiff_atomically(
                                         &sample_plan,
-                                        source.metadata(),
+                                        &output_metadata,
                                         values,
-                                        options.compression,
+                                        RasterGeoTiffWriteOptions {
+                                            compression: options.compression,
+                                            tiff_variant: options.tiff_variant,
+                                            predictor: options.predictor,
+                                            tile_size: options.block_size,
+                                        },
                                         &path,
                                     )
                                 })
@@ -142,7 +158,7 @@ fn write_raster_geotiff_atomically(
     plan: &RasterTileSamplePlan,
     metadata: &crate::raster::RasterMetadata,
     values: Vec<f64>,
-    compression: RasterGeoTiffCompression,
+    options: RasterGeoTiffWriteOptions,
     path: &Path,
 ) -> Result<(), CtbError> {
     let parent = path.parent().ok_or_else(|| {
@@ -160,7 +176,7 @@ fn write_raster_geotiff_atomically(
         filename.to_string_lossy(),
         std::process::id()
     ));
-    write_raster_tile_as_geotiff_with_compression(&temporary, plan, metadata, values, compression)?;
+    write_raster_tile_as_geotiff_with_options(&temporary, plan, metadata, values, options)?;
     fs::rename(&temporary, path).map_err(|error| CtbError::TilesetIo(error.to_string()))
 }
 

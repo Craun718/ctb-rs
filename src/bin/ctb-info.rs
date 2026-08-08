@@ -4,7 +4,10 @@ use clap::Parser;
 use ctb_rs::terrain::{HEIGHTMAP_TILE_SIZE, HeightmapTerrain, WaterMask};
 
 #[derive(Debug, Parser)]
-#[command(about = "Inspect a CTB heightmap terrain file")]
+#[command(
+    about = "Inspect a CTB heightmap terrain file",
+    version = env!("CARGO_PKG_VERSION")
+)]
 struct Arguments {
     /// Print all raw CTB heightmap values as rows.
     #[arg(short = 'e', long)]
@@ -23,15 +26,31 @@ struct Arguments {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    if std::env::args().any(|argument| argument == "--version" || argument == "-V") {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     let arguments = Arguments::parse();
-    let terrain = HeightmapTerrain::read_gzip(&arguments.input)?;
+    // C++ ctb-info.cpp catches CTBException and prints "Error: " + e.what()
+    // (the Display equivalent), then returns exit code 1. Rust's default
+    // main error handler uses Debug format, so we intercept to match C++.
+    let terrain = match HeightmapTerrain::read_gzip(&arguments.input) {
+        Ok(terrain) => terrain,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+    };
 
     if arguments.show_heights {
-        println!("Heights:");
+        print!("Heights:");
         for row in terrain.heights.chunks(HEIGHTMAP_TILE_SIZE) {
-            let values = row.iter().map(u16::to_string).collect::<Vec<_>>().join(" ");
-            println!("{values}");
+            println!();
+            for value in row {
+                print!("{value} ");
+            }
         }
+        println!();
     }
     if !arguments.no_child {
         let mut names = Vec::new();
@@ -60,7 +79,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             names.push("NE");
         }
         if names.is_empty() {
-            println!("Child tiles: None");
+            // C++ ctb-info.cpp only prints "Child tiles:" inside the
+            // hasChildren() branch; the else branch prints " None".
+            println!(" None");
         } else {
             println!("Child tiles: {}", names.join(" "));
         }

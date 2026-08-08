@@ -1,8 +1,8 @@
 use crate::{
     CtbError,
     grid::{Bounds, GlobalGeodeticGrid, TileCoord, TileGrid},
-    raster::RasterSource,
-    sampling::{ResamplingMethod, sample_with_footprint_raster_tiler},
+    raster::{Crs, RasterSource, transform_bounds, transform_coordinate},
+    sampling::{ResamplingMethod, sample_with_footprint_raster_tiler_level},
 };
 
 /// One destination cell of a CTB `RasterTiler` warped VRT.
@@ -24,6 +24,7 @@ pub struct RasterTileSamplePlan {
     tile: TileCoord,
     bounds: Bounds,
     resolution: f64,
+    target_crs: Crs,
 }
 
 impl RasterTileSamplePlan {
@@ -39,6 +40,7 @@ impl RasterTileSamplePlan {
             tile,
             bounds,
             resolution,
+            target_crs: grid.crs(),
         })
     }
 
@@ -62,13 +64,21 @@ impl RasterTileSamplePlan {
         if row >= self.tile_size || column >= self.tile_size {
             return None;
         }
-        let min_x = self.bounds.min_x + f64::from(column) * self.resolution;
-        let max_x = min_x + self.resolution;
-        let max_y = self.bounds.max_y - f64::from(row) * self.resolution;
-        let min_y = max_y - self.resolution;
+        let col = f64::from(column);
+        let row_f = f64::from(row);
+        // GDAL transforms each destination pixel corner independently through
+        // the forward GeoTransform with FMA contraction (gdaltransformer.cpp:
+        // 3124-3140). Using mul_add matches the fmadd instruction that clang
+        // emits for `gt[0] + pixel * gt[1]`.
+        let min_x = col.mul_add(self.resolution, self.bounds.min_x);
+        let max_x = (col + 1.0).mul_add(self.resolution, self.bounds.min_x);
+        let max_y = row_f.mul_add(-self.resolution, self.bounds.max_y);
+        let min_y = (row_f + 1.0).mul_add(-self.resolution, self.bounds.max_y);
         Some(RasterTileSample {
-            world_x: (min_x + max_x) / 2.0,
-            world_y: (min_y + max_y) / 2.0,
+            // GDAL GenImgProjTransformer computes the destination pixel centre
+            // as (iDstX + 0.5) * resolution + origin using the same FMA path.
+            world_x: (col + 0.5).mul_add(self.resolution, self.bounds.min_x),
+            world_y: (row_f + 0.5).mul_add(-self.resolution, self.bounds.max_y),
             footprint: Bounds::new(min_x, min_y, max_x, max_y).expect(
                 "grid resolution and validated tile bounds form a non-empty destination cell",
             ),
@@ -86,17 +96,29 @@ impl RasterTileSamplePlan {
             .checked_mul(side)
             .ok_or(CtbError::InvalidTileSize(self.tile_size))?;
         let mut values = Vec::with_capacity(capacity);
+        let target_ratio = self.resolution / source.metadata().transform.pixel_width.abs();
+        let level = source.sampling_level_for_ratio(target_ratio)?;
         for row in 0..self.tile_size {
             for column in 0..self.tile_size {
                 let point = self.sample(row, column).expect(
                     "row and column bounded by tile size always identify a destination cell",
                 );
-                values.push(sample_with_footprint_raster_tiler(
-                    source,
+                let (world_x, world_y) = transform_coordinate(
                     point.world_x,
                     point.world_y,
-                    point.footprint,
+                    &self.target_crs,
+                    &source.metadata().crs,
+                )?;
+                let footprint =
+                    transform_bounds(point.footprint, &self.target_crs, &source.metadata().crs)?;
+                values.push(sample_with_footprint_raster_tiler_level(
+                    source,
+                    &level,
+                    world_x,
+                    world_y,
+                    footprint,
                     method,
+                    self.tile_size,
                 )?);
             }
         }
@@ -106,7 +128,13 @@ impl RasterTileSamplePlan {
 
 #[cfg(test)]
 mod tests {
-    use crate::grid::GlobalMercatorGrid;
+    use crate::{
+        grid::GlobalMercatorGrid,
+        raster::{
+            AffineTransform, Crs, RasterMetadata, RasterSampleType, RasterSource, RasterWindow,
+            SamplingLevel, WindowRequest,
+        },
+    };
 
     use super::*;
 
@@ -191,6 +219,89 @@ mod tests {
         let top_left = plan.sample(0, 0).expect("in-bounds Mercator cell");
         assert_eq!(top_left.footprint.max_y, GlobalMercatorGrid::ORIGIN_SHIFT);
         assert_eq!(top_left.footprint.min_x, -GlobalMercatorGrid::ORIGIN_SHIFT);
+        Ok(())
+    }
+
+    struct OverviewOnlySource {
+        base: RasterMetadata,
+        overview: SamplingLevel,
+    }
+
+    impl RasterSource for OverviewOnlySource {
+        fn metadata(&self) -> &RasterMetadata {
+            &self.base
+        }
+
+        fn overview_count(&self) -> u16 {
+            1
+        }
+
+        fn read_window(&self, _request: WindowRequest) -> Result<RasterWindow, CtbError> {
+            Err(CtbError::RasterRead(
+                "base-level read was used instead of the overview".to_owned(),
+            ))
+        }
+
+        fn sampling_level_for_ratio(&self, _target_ratio: f64) -> Result<SamplingLevel, CtbError> {
+            Ok(self.overview.clone())
+        }
+
+        fn read_sampling_window(
+            &self,
+            level: &SamplingLevel,
+            request: WindowRequest,
+        ) -> Result<RasterWindow, CtbError> {
+            if level.level != 1 {
+                return Err(CtbError::RasterRead(
+                    "RasterTiler did not retain the selected overview level".to_owned(),
+                ));
+            }
+            Ok(RasterWindow {
+                request,
+                samples: vec![42.0],
+            })
+        }
+    }
+
+    #[test]
+    fn sample_values_reuses_the_selected_overview_level() -> Result<(), CtbError> {
+        let base_transform = AffineTransform::north_up(-180.0, 90.0, 180.0, -90.0)?;
+        let overview_transform = AffineTransform::north_up(-180.0, 90.0, 360.0, -180.0)?;
+        let source = OverviewOnlySource {
+            base: RasterMetadata {
+                width: 2,
+                height: 2,
+                band_count: 1,
+                crs: Crs::Epsg4326,
+                transform: base_transform,
+                no_data: None,
+                sample_type: RasterSampleType::Float64,
+            },
+            overview: SamplingLevel {
+                level: 1,
+                data_width: 1,
+                data_height: 1,
+                metadata: RasterMetadata {
+                    width: 1,
+                    height: 1,
+                    band_count: 1,
+                    crs: Crs::Epsg4326,
+                    transform: overview_transform,
+                    no_data: None,
+                    sample_type: RasterSampleType::Float64,
+                },
+            },
+        };
+        let plan = RasterTileSamplePlan::new(
+            GlobalGeodeticGrid::new(2)?,
+            TileCoord {
+                zoom: 0,
+                x: 0,
+                y: 0,
+            },
+        )?;
+        let values = plan.sample_values(&source, ResamplingMethod::Nearest)?;
+        assert_eq!(values, vec![42.0; 4]);
         Ok(())
     }
 }

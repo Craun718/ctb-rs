@@ -2,6 +2,8 @@
 
 本目录只保存可再分发、可由仓库内说明复现的小型测试输入。输入的
 GeoTIFF 派生文件在测试或 oracle 运行时写入临时目录，不提交二进制副本。
+`tests/` 根目录下另有 Git LFS 管理的真实 Copernicus DEM，见下方
+“LFS 管理的真实 fixture”。
 
 | ID | 文件 | 许可/来源 | SHA-256 | 生成与用途 | 预期 |
 | --- | --- | --- | --- | --- | --- |
@@ -18,7 +20,22 @@ GeoTIFF 派生文件在测试或 oracle 运行时写入临时目录，不提交�
 | ID | 生成位置 | 样本/元数据 | 预期 |
 | --- | --- | --- | --- |
 | `runtime-geotiff-numeric-v1` | `src/geotiff.rs` 的单元测试 | EPSG:4326、north-up、2×2、0.5° PixelIsArea；`f64`、`f32`、`i16` 负高程与 `u16` | 每种类型读取后必须保持值并转换为 `f64` 公共契约 |
-| `runtime-geotiff-failure-v1` | `src/geotiff.rs` 的单元测试 | 具有 `GDAL_NODATA` tag 的 GeoTIFF，以及三字节截断 TIFF | 分别返回 `NoDataEncountered` 和 `RasterRead`，不得 panic |
+| `runtime-geotiff-failure-v1` | `src/geotiff.rs` 的单元测试 | 具有 `GDAL_NODATA` tag 的 GeoTIFF，以及三字节截断 TIFF | NoData window 返回 NaN 标记而不整窗失败；截断 TIFF 返回 `RasterRead`，不得 panic |
+| `runtime-geotiff-overview-v1` | `src/geotiff.rs` 的单元测试 | EPSG:4326、8×8、f64、2/4 倍 top-level overview、north-up | overview 数量、ratio 边界、派生 GeoTransform 和 level-aware window 样本必须一致 |
+
+NoData 采样 fixture 还在 `src/sampling.rs` 中以非有限样本构造，覆盖混合 tap、全 NoData
+footprint 和 12 个 RasterTiler resampling 分支；无有效贡献时预期为 destination 初值 `0.0`。
+
+## LFS 管理的真实 fixture
+
+| ID | 文件 | 许可/来源 | SHA-256 | 生成与用途 | 预期 |
+| --- | --- | --- | --- | --- | --- |
+| `copernicus-dsm-cog-v1` | `../Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif` | Copernicus Programme 公开 DEM；用户本地原始文件 | `7670186b097b61e7fd7b6b9310783d0dfec564c2faa167f28560b1e375fc17ca` | 从用户原始路径原样复制，仅由 Git LFS 保存；用于 P13-P15 真实 COG oracle | EPSG:4326、3600×3600、Float32、`Origin=(107.999861111111116, 23.000138888888888)`、`Pixel Size=(0.000277777777778, -0.000277777777778)`、DEFLATE、PREDICTOR=3、三级 overview；C++/Rust Terrain 差分已收敛 11391/11391 |
+
+该文件在仓库中的路径为
+`tests/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif`，不是
+`tests/fixtures/` 下的合成输入。克隆或检出后若 LFS 对象未自动拉取，执行
+`git lfs pull`。
 
 ## 录入规则
 
