@@ -1,6 +1,6 @@
 # ctb-rs
 
-`ctb-rs` 是 [cesium-terrain-builder](https://github.com/geo-data/cesium-terrain-builder)
+`ctb-rs` 是 [cesium-terrain-builder](https://github.com/ahuarte47/cesium-terrain-builder)
 （C++ CTB 0.4.1）的纯 Rust 重写，用于为 [Cesium](http://cesiumjs.org) 的
 `CesiumTerrainProvider` 生成 [heightmap-1.0](http://cesiumjs.org/data-and-assets/terrain/formats/heightmap-1.0.html)
 地形切片。它逐模块对齐原版 `libctb` 及四个命令行工具 `ctb-tile`、`ctb-info`、`ctb-export`、
@@ -23,7 +23,7 @@
 
 ## 命令行工具
 
-四个工具均与原版同名，`--version` 输出当前项目版本 `0.0.1`；C++ CTB oracle 仍固定为
+四个工具均与原版同名，`--version` 输出当前项目版本 `0.0.1`；C++ CTB 基准程序仍固定为
 `0.4.1`，版本号不再作为 Rust 与 C++ 的兼容性断言。
 
 ### `ctb-tile`
@@ -39,7 +39,7 @@ ctb-tile --output-dir ./terrain-tiles dem.tif
 
 主要选项：
 
-```
+```bash
 -o, --output-dir <dir>          输出目录（默认当前目录）
 -f, --output-format <format>    Terrain（默认）或 GTiff
 -p, --profile <profile>         geodetic（默认）或 mercator
@@ -113,7 +113,7 @@ cargo test
 `tests/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif`；克隆后若 LFS 对象未
 自动拉取，执行 `git lfs pull`。
 
-`scripts/` 下提供与 C++ oracle 对比的验证脚本：
+`scripts/` 下提供与 C++ 基准程序对比的验证脚本：
 
 - `verify-ctb-oracle.zsh`：对照 C++ CTB 输出做切片差分。
 - `benchmark-ctb-tile.zsh`：`ctb-tile` 性能基准。
@@ -128,10 +128,14 @@ terrain 高程以 C++ 的 `uint16_t((Float32_height + 1000) * 5)` 编码（有�
 ## 状态
 
 本项目为进行中的行为对齐移植。已实现原版的库模块与四条 CLI 路径，并持续以 C++ CTB（固定于
-commit `d9c29b2`，配合 GDAL 3.11.4）为 oracle 做差分验证。各模块的“已由 oracle 证明”与
+commit `d9c29b2`，配合 GDAL 3.11.4）为基准程序做差分验证。各模块的“已由基准程序证明”与
 “仅实现、尚未证明”状态记录在 [TECHNICAL_PLAN.md](TECHNICAL_PLAN.md) 与 [TODO.md](TODO.md) 中，
 不应把后者视为已完成。完整规划与对齐依据见上述两份文档及 [TEST_STRATEGY.md](TEST_STRATEGY.md)。
 
 ## 致谢
 
-本项目以 geo-data/cesium-terrain-builder 的 C++ 实现为唯一行为基准进行重写。
+本项目以 ahuarte47/cesium-terrain-builder （而非 geo-data/cesium-terrain-builder） 的 C++ 实现为唯一行为基准进行重写。
+
+## 许可证
+
+MIT

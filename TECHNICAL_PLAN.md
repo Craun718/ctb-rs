@@ -23,7 +23,7 @@
 1. CLI：选项、默认值、stdout/stderr、退出状态、目录及 resume 行为一致；
 2. 库：Grid、Tiler、Iterator、Tile 及异常条件的可观察行为一致；
 3. 结果：同一输入和固定 CTB 版本下，路径集合、元数据、未压缩 terrain payload、栅格
-   样本和 child flags 一致。TIFF 等容器允许仅比较语义，除非 C++ oracle 证明可稳定逐字节。
+   样本和 child flags 一致。TIFF 等容器允许仅比较语义，除非 C++ 基准程序证明可稳定逐字节。
 
 ## 2. C++ 模块到 Rust 模块的映射
 
@@ -74,18 +74,18 @@ Rust 的 `RasterSource`、缓存和 writer 只能作为 GDAL dataset/VRT 的内�
 
 1. 更新本文的 C++ 责任映射、接口形状和边界条件；
 2. 更新 `TODO.md`，将最高优先级单元拆为可验证任务；
-3. 在 `TEST_STRATEGY.md` 登记 oracle、fixture 和断言；
+3. 在 `TEST_STRATEGY.md` 登记基准程序、fixture 和断言；
 4. 仅随后修改生产代码；完成后回写证据和状态。
 
-没有 C++ 源码或 oracle 足以决定的边界，参考原版仓库使用的 GDAL 默认行为；若仍无法正确
+没有 C++ 源码或基准程序足以决定的边界，参考原版仓库使用的 GDAL 默认行为；若仍无法正确
 落地，停止并向用户询问，不能自行改变上述设计。
 
 ## 6. 实施顺序
 
 ### P0：重新建立规格基线（进行中）
 
-固定 C++ CTB 版本、构建命令和 oracle 输入；建立完整 CLI/库模块兼容矩阵。对当前 Rust
-已实现功能逐项标记“已由 oracle 证明”或“仅实现、尚未证明”，不得把后者视为完成。
+固定 C++ CTB 版本、构建命令和基准程序输入；建立完整 CLI/库模块兼容矩阵。对当前 Rust
+已实现功能逐项标记“已由基准程序证明”或“仅实现、尚未证明”，不得把后者视为完成。
 
 完成标准：三个规划文档重建；每个 C++ 模块、CLI 参数和输出 driver 有责任人（Rust 模块）
 及测试状态。
@@ -226,7 +226,7 @@ overview 被选中时的数据读取层。
 
 先对 Terrain heightmap 和 `-f GTiff` 的 EPSG:4326 direct-source 路径逐项比对：tile range、
 terrain overlap、全部 12 个 resampling 名称的分支、样本类型、NoData、creation options、
-quiet/verbose/resume 和错误文本。先修正任意与 C++ oracle 不符的既有实现，再扩展功能。
+quiet/verbose/resume 和错误文本。先修正任意与 C++ 基准程序不符的既有实现，再扩展功能。
 
 完成标准：已支持路径的裸 terrain payload 逐字节相同；GTiff 的路径、栅格、CRS、transform、
 样本类型和 NoData 相同；全部差异有明确 C++ 证据。
@@ -760,9 +760,9 @@ Rust 旧实现用 `TilesetPlan::child_mask_for(tile)`，通过子 tile 坐标是
 
 按 `GDALTiler` 的执行顺序完成 source/grid CRS 比较、四角 bounds 变换、目标 GeoTransform、
 destination 初始化、采样核、整数转换、内部 overview 选择与缓存。先为每一步构建 GDAL
-中间结果 oracle，再写 Rust 实现。RasterTile 与 TerrainTile 分别保留 C++ 的像素布局差异。
+中间结果基准程序，再写 Rust 实现。RasterTile 与 TerrainTile 分别保留 C++ 的像素布局差异。
 
-完成标准：高分辨率、overview、边缘、NoData、所有支持样本类型的 oracle 可重复通过；
+完成标准：高分辨率、overview、边缘、NoData、所有支持样本类型的基准程序可重复通过；
 单线程和多线程输出相同。
 
 #### P2 实施记录 1：离散统计采样核（Rust 实现完成，C++ 差分待补）
@@ -977,13 +977,13 @@ Rust 证据：新增 overview-only source 测试，若 RasterTiler 回退 base l
 
 将已有 `TileGrid` 接入 RasterTiler、TerrainTiler 和四个 CLI；先支持 source/target 同为
 EPSG:3857，再实现 EPSG:4326↔3857 的纯 Rust 坐标转换和反向采样。随后按矩阵加入 C++ 实测
-需要的 CRS/WKT 表达；每种转换都要有控制点及输出 tile oracle。
+需要的 CRS/WKT 表达；每种转换都要有控制点及输出切片基准程序。
 
 完成标准：`-p mercator` 的 Terrain 与 RasterTiler 对照 C++ 的 z0/z1 及跨纬度样本一致。
 
 ### P4：输入、输出格式与可靠性
 
-按 C++ oracle 中实际的 driver 清单，逐个实现纯 Rust 输入解码与 `CreateCopy` 输出。完成
+按 C++ 基准程序的实际 driver 清单，逐个实现纯 Rust 输入解码与 `CreateCopy` 输出。完成
 BigTIFF、压缩、内部/外部 overview、格式错误处理、创建选项和可恢复写入；保留 C++ 的每
 driver 文件扩展名与失败方式。
 
@@ -1029,7 +1029,7 @@ C++ `ctb-info.cpp` 的 child 信息分支中，`"Child tiles:"` 前缀仅在 `ha
 
 ### P5：全量审计
 
-在无 GDAL/PROJ 的 CI 环境运行 Rust 测试；在隔离 oracle 环境运行 C++ 对照。输出版本化的
+在无 GDAL/PROJ 的 CI 环境运行 Rust 测试；在隔离基准程序环境运行 C++ 对照。输出版本化的
 compatibility report，列出每个模块、参数组合、fixture、比较方式和已知差异；有未处理差异
 即不宣布完成。
 

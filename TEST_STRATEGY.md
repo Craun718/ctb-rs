@@ -2,11 +2,11 @@
 
 ## 1. 原则
 
-测试以 C++ CTB 为 oracle，而不是以当前 Rust 行为为 oracle。每个兼容用例都记录：C++ 提交、
+测试以 C++ CTB 为基准程序，而不是以当前 Rust 行为为基准程序。每个兼容用例都记录：C++ 提交、
 GDAL 版本、命令、输入 checksum、输出路径、解压 terrain payload 或解码 raster、以及比较
 结论。压缩容器的时间戳等非语义字段不参与比较。
 
-Rust 常规测试必须不要求 GDAL/PROJ。C++ oracle 允许位于开发或 CI 的隔离环境，生成后的
+Rust 常规测试必须不要求 GDAL/PROJ。C++ 基准程序允许位于开发或 CI 的隔离环境，生成后的
 小型受许可 fixture、manifest 与 checksum 必须进入仓库。
 
 ## 2. 分层
@@ -20,7 +20,7 @@ Rust 常规测试必须不要求 GDAL/PROJ。C++ oracle 允许位于开发或 CI
 | C++ 差分 | 最终可观察结果 | tile 路径、payload、样本矩阵、metadata、child flags；必要时容器字节。 |
 | 鲁棒性 | Rust 替代层的错误处理 | 损坏 TIFF、缺失 SRS、旋转 transform、NoData、越界、极端尺寸、并发和原子写入。 |
 
-## 3. Fixture 与 oracle 清单
+## 3. Fixture 与基准程序清单
 
 权威清单位于 `tests/fixtures/MANIFEST.md`。新增 fixture 必须补充来源/许可证、生成命令、
 checksum、元数据和预期。最低矩阵如下：
@@ -32,9 +32,9 @@ checksum、元数据和预期。最低矩阵如下：
 | 仅部分覆盖/右上边界 | destination 0、range、child flags | tile 集 | bounds 包含规则 |
 | NoData、缺 SRS、损坏文件 | C++ 对应失败 | C++ 对应失败 | 失败类别与文本 |
 | tiled/striped、DEFLATE/LZW、BigTIFF | payload | read/write | I/O 支持 |
-| 内部/外部 overview | selected level/payload | selected level/raster | GDAL selection oracle |
+| 内部/外部 overview | selected level/payload | selected level/raster | GDAL 选择基准程序 |
 | EPSG:3857 direct source | profile 行为 | z0/z1 metadata/values | Mercator Grid |
-| 4326↔3857 | 重投影 payload | 重投影 raster | 控制点与 tile oracle |
+| 4326↔3857 | 重投影 payload | 重投影 raster | 控制点与切片基准程序 |
 
 ## 4. 比较方法
 
@@ -48,7 +48,7 @@ checksum、元数据和预期。最低矩阵如下：
 
 ## 5. 每个变更的验证流程
 
-1. 先新增或更新 C++ oracle，并令其在未改 Rust 前失败；
+1. 先新增或更新 C++ 基准程序，并令其在未改 Rust 前失败；
 2. 新增领域/适配器测试锁定最小边界；
 3. 实现后运行 `cargo fmt --check`、`cargo test` 和 `cargo clippy -- -D warnings`；
 4. 运行受影响的 CLI 差分与多线程一致性测试；
