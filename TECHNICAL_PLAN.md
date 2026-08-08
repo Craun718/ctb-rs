@@ -2012,3 +2012,51 @@ oracle 和文档引用的一致输入。
   （1800×1800、900×900、450×450）。
 - 本文档、`TEST_STRATEGY.md`、`TODO.md`、`Cpp_diff.md` 与
   `tests/fixtures/MANIFEST.md` 中涉及该输入的位置统一改为仓库内路径。
+
+### P17：GitHub Actions release 发布（已完成）
+
+用户要求 CI 新增步骤：推送 `v` 开头的 tag 时发布 GitHub release。当前
+`build` job 已在上传四个平台二进制 artifact；本阶段不改变构建、测试或
+artifact 行为，只在现有 push 触发的 tag 事件上追加发布任务。
+
+实施规则：
+
+1. 沿用 `on.push` 事件；GitHub Actions 的 tag push 由 `push` 覆盖，不新增
+   `tags` 过滤以免改变现有触发语义。
+2. 新增 `release` job：
+   - `if: startsWith(github.ref, 'refs/tags/v')`，只有 `v` 开头 tag 触发；
+   - `needs: build`，任一平台构建失败时不发布；
+   - `runs-on: ubuntu-24.04`；
+   - `permissions: contents: write`，允许使用 GITHUB_TOKEN 创建 release。
+3. 使用 `actions/download-artifact@v8` 下载当前 run 的全部
+   `ctb-binaries-*` artifact，设置 `path: dist` 与 `merge-multiple: true`，
+   将四个平台二进制合并到 `dist/`。
+4. 使用 `softprops/action-gh-release@v3` 将 `dist/*` 上传为当前 tag 的
+   release assets 并发布；`fail_on_unmatched_files: true` 保证没有资产时
+   发布失败而不是静默创建空 release。
+5. 不修改 `Cargo.toml`、构建命令、artifact 名称或 `build` job 的现有行为；
+   release 资产沿用现有 CI 编译产物。
+6. `v` 前缀判断使用 GitHub ref 字符串 `refs/tags/v`，避免把普通分支或其它
+   tag 误判为 release。
+
+完成标准：workflow 文件存在且能被 YAML 解析；仅 `v*` tag push 会运行
+`release` job；`build` 失败不发布；本地核对 `actions/download-artifact@v8`
+与 `softprops/action-gh-release@v3` 存在对应 tag。
+
+#### P17 实施记录 1：release 发布任务（已完成）
+
+在 `.github/workflows/ci.yml` 的 `build` job 后新增 `release` job。触发条件为
+`startsWith(github.ref, 'refs/tags/v')`，`needs: build` 保证构建失败不发布；
+job 级 `permissions.contents: write` 允许 GITHUB_TOKEN 创建 release。
+`actions/download-artifact@v8` 使用 `pattern: ctb-binaries-*`、`path: dist`、
+`merge-multiple: true` 下载四个平台 artifact，随后
+`softprops/action-gh-release@v3` 以 `files: dist/*` 上传资产并发布，
+`fail_on_unmatched_files: true` 防止空资产发布。
+
+本地验证：
+
+- workflow YAML 通过解析；
+- `git diff --check` 通过；
+- `actions/download-artifact` 的 `v8`/`v8.0.1` tag 存在；
+- `softprops/action-gh-release` 的 `v3`/`v3.0.2` tag 存在；
+- 现有 `actions/upload-artifact@v7` 未改动，`v7`/`v7.0.1` tag 仍存在。

@@ -545,3 +545,24 @@ z3/z4/z5/z6/z9 overlap 像素宽分别为
   `Pixel Size=(0.000277777777778, -0.000277777777778)`、
   DEFLATE、PREDICTOR=3、三级 overview。
 - 清单：见 `tests/fixtures/MANIFEST.md` 的 LFS 清单。
+
+## 15. P17 GitHub Actions release 发布
+
+P17 只修改 `.github/workflows/ci.yml`，不涉及 Rust 算法、fixture 或 C++
+oracle。验证范围限定为 workflow 配置：
+
+- 确认 `release` job 仅在 `refs/tags/v*` 时执行，且 `needs: build`。
+- 确认 `permissions.contents` 为 `write`，发布动作能创建 release。
+- 确认 `actions/download-artifact@v8` 使用 `path: dist` 与
+  `merge-multiple: true` 下载全部 `ctb-binaries-*`。
+- 确认 `softprops/action-gh-release@v3` 的 `files` 为 `dist/*`，并设置
+  `fail_on_unmatched_files: true`。
+- 本地验证 workflow 可被 YAML 解析、`git diff --check` 无空白错误，并核对
+  `actions/download-artifact` 与 `softprops/action-gh-release` 的版本 tag
+  存在。
+- 不运行 Rust 测试，也不执行 C++ oracle。
+
+已执行：workflow YAML 解析通过，`git diff --check` 通过；
+`actions/download-artifact@v8`、`softprops/action-gh-release@v3` 与现有
+`actions/upload-artifact@v7` 的对应主版本 tag 均存在。未在 GitHub 实际推送
+`v*` tag，本轮只完成配置级验证。

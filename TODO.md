@@ -398,3 +398,16 @@
 - [x] 将 P13-P15 文档和 `Cpp_diff.md` 中的外部输入路径统一改为仓库内路径。
 - [x] 在 `tests/fixtures/MANIFEST.md` 登记 SHA-256、来源、元数据和预期。
 - [x] 校验 `git lfs ls-files` 指向同一 SHA-256，并提交。
+
+## P17：GitHub Actions release 发布
+
+- [x] 在 `TECHNICAL_PLAN.md`、`TEST_STRATEGY.md`、`TODO.md` 登记 P17 范围。
+- [x] 新增 `release` job：`startsWith(github.ref, 'refs/tags/v')`、
+      `needs: build`、`permissions: contents: write`。
+- [x] 使用 `actions/download-artifact@v8` 合并下载四个平台
+      `ctb-binaries-*`。
+- [x] 使用 `softprops/action-gh-release@v3` 将 `dist/*` 发布为当前 tag 的
+      GitHub release。
+- [x] 本地校验 workflow YAML、`git diff --check`，并核对两个 action 的版本
+      tag。
+- [x] 回写 P17 实施记录与验证证据。
