@@ -180,7 +180,17 @@ struct Arguments {
     input: PathBuf,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<(), Box<dyn Error>> {
     if std::env::args().any(|argument| argument == "--version" || argument == "-V") {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());

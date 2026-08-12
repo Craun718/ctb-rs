@@ -43,7 +43,7 @@ impl Display for CtbError {
                 maximum,
             } => write!(
                 formatter,
-                "invalid zoom range {start}..={end}; require {maximum} >= start >= end"
+                "invalid zoom range; require: maximum ({maximum}) >= start ({start}) >= end ({end})"
             ),
             Self::CoordinateOutsideGrid { x, y } => {
                 write!(
@@ -102,3 +102,21 @@ impl Display for CtbError {
 }
 
 impl std::error::Error for CtbError {}
+
+#[cfg(test)]
+mod tests {
+    use super::CtbError;
+
+    #[test]
+    fn invalid_zoom_range_display_explains_highest_and_lowest() {
+        let error = CtbError::InvalidZoomRange {
+            start: 8,
+            end: 12,
+            maximum: 15,
+        };
+        assert_eq!(
+            error.to_string(),
+            "invalid zoom range: maximum (15) >= start (8) >= end (12)"
+        );
+    }
+}

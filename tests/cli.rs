@@ -951,3 +951,35 @@ fn ctb_tile_matches_worker_progress_and_resume_contracts() -> Result<(), Box<dyn
     fs::remove_dir_all(directory)?;
     Ok(())
 }
+
+#[test]
+fn ctb_tile_prints_display_for_invalid_zoom_range() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = temporary_directory("tile-invalid-zoom")?;
+    let input = directory.join("dem.tif");
+    let output = directory.join("tiles");
+    write_small_geotiff(&input)?;
+    fs::create_dir(&output)?;
+
+    let result = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .args([
+            "--output-dir",
+            output.to_str().ok_or("invalid output path")?,
+            "--start-zoom",
+            "8",
+            "--end-zoom",
+            "12",
+        ])
+        .arg(&input)
+        .output()?;
+
+    assert!(!result.status.success());
+    let stderr = String::from_utf8(result.stderr)?;
+    assert!(stderr.starts_with("Error: "), "{stderr}");
+    assert!(stderr.contains("maximum ("), "{stderr}");
+    assert!(stderr.contains(">= start (8)"), "{stderr}");
+    assert!(stderr.contains(">= end (12)"), "{stderr}");
+    assert!(!stderr.contains("InvalidZoomRange"), "{stderr}");
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
