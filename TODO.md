@@ -411,3 +411,23 @@
 - [x] 本地校验 workflow YAML、`git diff --check`，并核对两个 action 的版本
       tag。
 - [x] 回写 P17 实施记录与验证证据。
+
+## P18：GeoTIFF 原生 block 缓存
+
+- [x] 在 `TECHNICAL_PLAN.md`、`TEST_STRATEGY.md`、`TODO.md` 登记 P18 范围。
+- [x] 按 level 解析 GeoTIFF tiled/striped block 几何，最终边缘沿用 OxiGeo
+      语义。
+- [x] 实现按 `(level, tile_x, tile_y)` 的已解码原生字节缓存，固定 64 MiB
+      字节预算和 LRU 淘汰。
+- [x] 将 GeoTIFF 窗口读取改为按真实 block 拆分，片段使用
+      `convert_raw_into` 保持与 `read_window_into_typed::<f64>` 一致。
+- [x] 新增等价测试：block 缓存路径 vs 直接读取、tiled/striped、最终边缘
+      block、显式 overview level、重复窗口。
+- [x] `cargo fmt --check`、`cargo test --lib geotiff`（20/20）与
+      `cargo clippy --all-targets -- -D warnings` 通过；全量
+      `cargo test --lib` 为 91 passed + 既有 `error.rs` 文案失败。
+- [x] 重建 release 并重跑真实 Copernicus DEM 低 zoom 性能基准：Rust z0
+      4.24 s、z14->z0 8.18 s；C++ z0 0.78 s、z14->z0 1.51 s。
+- [x] 重跑 geodetic 11391/11391、Mercator 38/38 路径与解压后 payload 差分，
+      差异均为 0。
+- [x] 回写 P18 实施记录与验证证据。

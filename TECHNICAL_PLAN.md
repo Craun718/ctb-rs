@@ -2060,3 +2060,88 @@ job 级 `permissions.contents: write` 允许 GITHUB_TOKEN 创建 release。
 - `actions/download-artifact` 的 `v8`/`v8.0.1` tag 存在；
 - `softprops/action-gh-release` 的 `v3`/`v3.0.2` tag 存在；
 - 现有 `actions/upload-artifact@v7` 未改动，`v7`/`v7.0.1` tag 仍存在。
+
+### P18：GeoTIFF 原生 block 缓存（已完成）
+
+用户要求继续优化 Rust 与 C++ 的 GeoTIFF 输入速度，并确认输出必须仍与 C++
+完全一致。P13-P15 已把采样算法逐位对齐，真实 Copernicus DEM 全量差分已收敛；
+剩余主要差异来自 GeoTIFF 读取路径的缓存颗粒度，不来自采样算法。
+
+#### P18 根因
+
+当前 `ctb-tile` 对每个直接源使用 `CachedRasterSource::new_with_nodata_cache`
+（`src/bin/ctb-tile.rs`），缓存单位是应用层 `64×64` f64 window。低 zoom 请求
+接近完整 3600×3600 基础 band 时，每次 `64×64` 未命中都会调用 OxiGeo 的
+`read_window_into_typed`，而 OxiGeo 0.2.3 没有已解码 block 缓存，同一个真实
+1024×1024 DEFLATE block 会被反复读取、解压和转换。实测 z0 从 50.97 s 拖慢到
+z14→z0 全范围 91.68 s；C++ 通过 GDAL block cache 只解压一次，所以对应耗时
+为 1.46 s。
+
+#### P18 实施规则
+
+1. 只修改 `src/geotiff.rs`，不改 OxiGeo、`Cargo.toml`、应用层缓存或采样算法。
+2. 为 GeoTIFF 源新增按真实 block 颗粒度缓存的已解码 block，key 为
+   `(level, tile_x, tile_y)`，value 保存解码后的原生字节、block 宽高和
+   `RasterDataType`。
+3. 按 TIFF level 解析真实 block 几何：
+   - tiled：`tile_width × tile_height`、`tiles_across × tiles_down`；
+   - striped：block 宽为 level 宽，block 高为 `RowsPerStrip`，最后一个 strip
+     使用实际剩余行数。
+4. 缓存使用固定字节预算和 LRU 淘汰；预算设为 64 MiB，足够缓存完整 3600×3600
+   Float32 基础 band 的 16 个 1024×1024 已解码 block。
+5. GeoTIFF `read_samples` 改为按真实 block 拆分窗口：
+   - 未命中时用 `read_tile_band_buffer(level, 0, tile_x, tile_y)` 解码一个
+     真实 block；
+   - 命中时只把与请求相交的行/列片段复制到输出；
+   - 片段转换使用 OxiGeo 的 `convert_raw_into`，与
+     `read_window_into_typed::<f64>` 完全相同的转换语义，保证 payload 逐字节
+     一致。
+6. VRT 路径保持不变，继续使用现有 `read_window` + `copy_to_slice`；VRT 不引入
+   原生 block 缓存。
+
+#### P18 验证门禁
+
+- 单元测试比较 block 缓存路径与直接 `read_window_into_typed::<f64>` 的数值，
+  覆盖 tiled、striped、最终边缘 block 和显式 overview level。
+- 重复读取同一窗口时命中缓存，输出仍与首次读取完全一致。
+- `cargo fmt`、`cargo test`、`cargo clippy --all-targets -- -D warnings` 通过。
+- 重建 release 后重跑真实 Copernicus DEM 低 zoom 基准，记录 Rust 新耗时与
+  C++ 耗时。
+- 重跑 geodetic 11391/11391、Mercator 38/38 路径与解压后 payload 差分，
+  必须仍为 0。
+
+#### P18 实施记录 1：实现与实测结果（已完成）
+
+实现位置为 `src/geotiff.rs`：新增按 `(level, tile_x, tile_y)` 的已解码原生
+字节缓存，按 level IFD 解析 tiled/striped block 几何，固定 64 MiB 预算 +
+LRU 淘汰。`read_window` 对每行每相交 block 调用 `convert_raw_into`，与
+`read_window_into_typed::<f64>` 的转换语义一致；VRT 仍走原
+`read_window + copy_to_slice` 路径，不引入 GeoTIFF block 缓存。没有修改
+OxiGeo、Cargo 依赖、应用层 `CachedRasterSource` 或采样算法。
+
+开发环境门禁（2026-08-13）：
+
+- `cargo fmt --check` 通过。
+- `cargo test --lib geotiff`：20/20 通过，覆盖 tiled 边缘、striped 最终
+  block、显式 overview level、Float32/整数转换和重复窗口。
+- `cargo clippy --all-targets -- -D warnings` 通过。
+- 全量 `cargo test --lib`：91 passed、1 failed；失败为既有的
+  `error.rs::invalid_zoom_range_display_explains_highest_and_lowest`
+  文案断言，与 P18 无关。
+
+重建 release 后的真实 Copernicus DEM 基准（同一台机器、`time` shell 计时，
+输入 `tests/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif`）：
+
+| 范围 | Rust P18 后 | C++ | 旧 Rust 基线（issue.md） |
+| --- | ---: | ---: | ---: |
+| z0 | 4.24 s | 0.78 s | 50.97 s |
+| z14->z0 | 8.18 s | 1.51 s | 91.68 s |
+
+低 zoom 从旧基线约 283x 降到约 5.4x，全量从约 62.8x 降到约 5.4x；本轮
+结论是剩余差距主要仍在 GeoTIFF 读取/缓存路径，不由采样算法差异造成。
+
+差分回归：
+
+- geodetic Copernicus：路径 11391/11391，解压后 payload diff 0。
+- Mercator 720×720 EPSG:3857：`-s 2 -e 0` 路径 38/38，解压后 payload
+  diff 0。

@@ -1,9 +1,12 @@
-use std::path::Path;
+use std::{collections::VecDeque, path::Path, sync::Mutex};
 
 use oxigeo::{
     DatasetFormat, RasterDataType,
-    core_types::io::FileDataSource,
-    geotiff::{CogReader, GeoTiffReader, RasterType},
+    core_types::{buffer::convert_raw_into, io::FileDataSource},
+    geotiff::{
+        CogReader, GeoTiffReader, RasterType,
+        tiff::{ImageInfo, TiffFile, TiffTag},
+    },
     open::open,
     vrt::{PixelRect, VrtReader, resolve_crs},
 };
@@ -15,6 +18,297 @@ use crate::{
         WindowRequest,
     },
 };
+
+const GEOTIFF_BLOCK_CACHE_BUDGET_BYTES: usize = 64 << 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct BlockKey {
+    level: u16,
+    tile_x: u32,
+    tile_y: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BlockGeometry {
+    width: u64,
+    height: u64,
+    block_width: u64,
+    block_height: u64,
+    blocks_across: u32,
+    blocks_down: u32,
+    is_tiled: bool,
+    data_type: RasterDataType,
+}
+
+impl BlockGeometry {
+    fn from_info(info: &ImageInfo, level: usize) -> Result<Self, CtbError> {
+        let data_type = info.data_type().ok_or_else(|| {
+            CtbError::RasterRead(format!(
+                "level {level} has no supported GeoTIFF sample type"
+            ))
+        })?;
+        let is_tiled = info.is_tiled();
+        let (block_width, block_height, blocks_across, blocks_down) = if is_tiled {
+            let block_width = u64::from(info.tile_width.unwrap_or_default());
+            let block_height = u64::from(info.tile_height.unwrap_or_default());
+            if block_width == 0 || block_height == 0 {
+                return Err(CtbError::RasterRead(format!(
+                    "level {level} declares zero-sized GeoTIFF tiles"
+                )));
+            }
+            (
+                block_width,
+                block_height,
+                u32::try_from(info.width.div_ceil(block_width)).map_err(|_| {
+                    CtbError::RasterRead(format!("level {level} tile grid is too wide"))
+                })?,
+                u32::try_from(info.height.div_ceil(block_height)).map_err(|_| {
+                    CtbError::RasterRead(format!("level {level} tile grid is too tall"))
+                })?,
+            )
+        } else {
+            let rows_per_strip = u64::from(info.rows_per_strip.unwrap_or(info.height as u32));
+            if rows_per_strip == 0 {
+                return Err(CtbError::RasterRead(format!(
+                    "level {level} declares zero-sized GeoTIFF strips"
+                )));
+            }
+            (
+                info.width,
+                rows_per_strip,
+                1,
+                u32::try_from(info.height.div_ceil(rows_per_strip)).map_err(|_| {
+                    CtbError::RasterRead(format!("level {level} strip grid is too tall"))
+                })?,
+            )
+        };
+        Ok(Self {
+            width: info.width,
+            height: info.height,
+            block_width,
+            block_height,
+            blocks_across,
+            blocks_down,
+            is_tiled,
+            data_type,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedBlock {
+    key: BlockKey,
+    bytes: Vec<u8>,
+    width: u64,
+    height: u64,
+    data_type: RasterDataType,
+}
+
+#[derive(Debug)]
+struct GeoTiffBlockCache {
+    geometries: Vec<BlockGeometry>,
+    blocks: VecDeque<CachedBlock>,
+    used_bytes: usize,
+    budget_bytes: usize,
+}
+
+impl GeoTiffBlockCache {
+    fn new(geometries: Vec<BlockGeometry>) -> Self {
+        Self {
+            geometries,
+            blocks: VecDeque::new(),
+            used_bytes: 0,
+            budget_bytes: GEOTIFF_BLOCK_CACHE_BUDGET_BYTES,
+        }
+    }
+
+    fn geometry(&self, level: u16) -> Result<&BlockGeometry, CtbError> {
+        self.geometries.get(usize::from(level)).ok_or_else(|| {
+            CtbError::RasterRead(format!(
+                "GeoTIFF level {level} has no cached block geometry"
+            ))
+        })
+    }
+
+    fn cached_block(
+        &mut self,
+        file: &GeoTiffReader<FileDataSource>,
+        level: u16,
+        tile_x: u32,
+        tile_y: u32,
+    ) -> Result<&CachedBlock, CtbError> {
+        let geometry = *self.geometry(level)?;
+        if tile_x >= geometry.blocks_across || tile_y >= geometry.blocks_down {
+            let layout = if geometry.is_tiled { "tile" } else { "strip" };
+            return Err(CtbError::RasterRead(format!(
+                "GeoTIFF {layout} ({tile_x},{tile_y}) is out of bounds at level {level}"
+            )));
+        }
+        let key = BlockKey {
+            level,
+            tile_x,
+            tile_y,
+        };
+        if let Some(position) = self.blocks.iter().position(|block| block.key == key) {
+            let block = self
+                .blocks
+                .remove(position)
+                .expect("position was found by iteration");
+            self.blocks.push_front(block);
+        } else {
+            let buffer = file
+                .read_tile_band_buffer(usize::from(level), 0, tile_x, tile_y)
+                .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+            let block = CachedBlock {
+                key,
+                width: buffer.width(),
+                height: buffer.height(),
+                data_type: buffer.data_type(),
+                bytes: buffer.into_bytes(),
+            };
+            self.insert(block);
+        }
+        self.blocks.front().ok_or_else(|| {
+            CtbError::RasterRead("GeoTIFF block cache is empty after block load".to_owned())
+        })
+    }
+
+    fn insert(&mut self, block: CachedBlock) {
+        self.used_bytes = self.used_bytes.saturating_add(block.bytes.len());
+        self.blocks.push_front(block);
+        // Keep the most recently used block even if a single decoded block
+        // exceeds the byte budget; all older entries are still evicted.
+        while self.used_bytes > self.budget_bytes && self.blocks.len() > 1 {
+            if let Some(evicted) = self.blocks.pop_back() {
+                self.used_bytes = self.used_bytes.saturating_sub(evicted.bytes.len());
+            }
+        }
+    }
+
+    fn read_window(
+        &mut self,
+        file: &GeoTiffReader<FileDataSource>,
+        level: u16,
+        request: WindowRequest,
+        samples: &mut [f64],
+    ) -> Result<(), CtbError> {
+        if request.width == 0 || request.height == 0 {
+            return Err(CtbError::InvalidRasterWindow);
+        }
+        let geometry = *self.geometry(level)?;
+        let x = u64::from(request.x);
+        let y = u64::from(request.y);
+        let width = u64::from(request.width);
+        let height = u64::from(request.height);
+        let first_tile_x = (x / geometry.block_width) as u32;
+        let first_tile_y = (y / geometry.block_height) as u32;
+        let last_tile_x = ((x + width - 1) / geometry.block_width)
+            .min(geometry.width.saturating_sub(1) / geometry.block_width)
+            as u32;
+        let last_tile_y = ((y + height - 1) / geometry.block_height)
+            .min(geometry.height.saturating_sub(1) / geometry.block_height)
+            as u32;
+
+        for tile_y in first_tile_y..=last_tile_y {
+            let block_y0 = u64::from(tile_y) * geometry.block_height;
+            let block_y_end = block_y0
+                .saturating_add(geometry.block_height)
+                .min(geometry.height);
+            let row_start = y.max(block_y0);
+            let row_end = (y + height).min(block_y_end);
+            if row_end <= row_start {
+                continue;
+            }
+            for tile_x in first_tile_x..=last_tile_x {
+                let block_x0 = u64::from(tile_x) * geometry.block_width;
+                let block_x_end = block_x0
+                    .saturating_add(geometry.block_width)
+                    .min(geometry.width);
+                let col_start = x.max(block_x0);
+                let col_end = (x + width).min(block_x_end);
+                if col_end <= col_start {
+                    continue;
+                }
+
+                let cached = self.cached_block(file, level, tile_x, tile_y)?;
+                if cached.data_type != geometry.data_type {
+                    return Err(CtbError::RasterRead(format!(
+                        "GeoTIFF block cache type changed at level {level} tile ({tile_x},{tile_y})"
+                    )));
+                }
+                let src_col = col_start - block_x0;
+                let run = col_end - col_start;
+                if src_col >= cached.width {
+                    return Err(CtbError::RasterRead(format!(
+                        "GeoTIFF block ({tile_x},{tile_y}) at level {level} is smaller than its declared geometry"
+                    )));
+                }
+                let bytes_per_sample = cached.data_type.size_bytes();
+                let source_len =
+                    usize::try_from(run.checked_mul(bytes_per_sample as u64).ok_or_else(|| {
+                        CtbError::RasterRead("GeoTIFF block byte length overflow".to_owned())
+                    })?)
+                    .map_err(|_| {
+                        CtbError::RasterRead("GeoTIFF block byte length overflow".to_owned())
+                    })?;
+                let out_col = col_start - x;
+                let run = usize::try_from(run).map_err(|_| {
+                    CtbError::RasterRead("GeoTIFF window width overflow".to_owned())
+                })?;
+                for row in 0..(row_end - row_start) {
+                    let src_row = row_start - block_y0 + row;
+                    if src_row >= cached.height {
+                        return Err(CtbError::RasterRead(format!(
+                            "GeoTIFF block ({tile_x},{tile_y}) at level {level} is smaller than its declared geometry"
+                        )));
+                    }
+                    let source_offset = usize::try_from(
+                        (src_row * cached.width + src_col)
+                            .checked_mul(bytes_per_sample as u64)
+                            .ok_or_else(|| {
+                                CtbError::RasterRead(
+                                    "GeoTIFF block byte offset overflow".to_owned(),
+                                )
+                            })?,
+                    )
+                    .map_err(|_| {
+                        CtbError::RasterRead("GeoTIFF block byte offset overflow".to_owned())
+                    })?;
+                    let source_end = source_offset.checked_add(source_len).ok_or_else(|| {
+                        CtbError::RasterRead("GeoTIFF block buffer overflow".to_owned())
+                    })?;
+                    let source = cached.bytes.get(source_offset..source_end).ok_or_else(|| {
+                        CtbError::RasterRead(format!(
+                            "GeoTIFF block buffer underrun at level {level} tile ({tile_x},{tile_y})"
+                        ))
+                    })?;
+
+                    let out_row = row_start - y + row;
+                    let dst_offset = usize::try_from(
+                        out_row
+                            .checked_mul(width)
+                            .and_then(|value| value.checked_add(out_col))
+                            .ok_or_else(|| {
+                                CtbError::RasterRead("GeoTIFF window offset overflow".to_owned())
+                            })?,
+                    )
+                    .map_err(|_| {
+                        CtbError::RasterRead("GeoTIFF window offset overflow".to_owned())
+                    })?;
+                    let dst_end = dst_offset.checked_add(run).ok_or_else(|| {
+                        CtbError::RasterRead("GeoTIFF window buffer overflow".to_owned())
+                    })?;
+                    let destination = samples.get_mut(dst_offset..dst_end).ok_or_else(|| {
+                        CtbError::RasterRead("GeoTIFF window buffer underrun".to_owned())
+                    })?;
+                    convert_raw_into(source, cached.data_type, destination)
+                        .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
 
 enum RasterData {
     GeoTiff(GeoTiffReader<FileDataSource>),
@@ -29,6 +323,7 @@ enum RasterData {
 pub struct GeoTiffRasterSource {
     data: RasterData,
     metadata: RasterMetadata,
+    geotiff_block_cache: Option<Mutex<GeoTiffBlockCache>>,
 }
 
 impl GeoTiffRasterSource {
@@ -81,6 +376,7 @@ impl GeoTiffRasterSource {
         })?)?;
         let epsg = file.epsg_code().ok_or(CtbError::MissingCrs)?;
         let (width, height) = raster_dimensions(file.width(), file.height())?;
+        let block_geometries = parse_geotiff_block_geometries(path, file.overview_count())?;
         let metadata = build_metadata(
             width,
             height,
@@ -92,6 +388,7 @@ impl GeoTiffRasterSource {
         Ok(Self {
             data: RasterData::GeoTiff(file),
             metadata,
+            geotiff_block_cache: Some(Mutex::new(GeoTiffBlockCache::new(block_geometries))),
         })
     }
 
@@ -131,7 +428,48 @@ impl GeoTiffRasterSource {
         Ok(Self {
             data: RasterData::Vrt(file),
             metadata,
+            geotiff_block_cache: None,
         })
+    }
+
+    fn read_samples(&self, level: u16, request: WindowRequest) -> Result<Vec<f64>, CtbError> {
+        let width = usize::try_from(request.width).map_err(|_| CtbError::InvalidRasterWindow)?;
+        let height = usize::try_from(request.height).map_err(|_| CtbError::InvalidRasterWindow)?;
+        let count = width
+            .checked_mul(height)
+            .ok_or(CtbError::InvalidRasterWindow)?;
+        let mut samples = vec![0.0_f64; count];
+        let x = u64::from(request.x);
+        let y = u64::from(request.y);
+        let width_u64 = u64::from(request.width);
+        let height_u64 = u64::from(request.height);
+        match &self.data {
+            RasterData::GeoTiff(file) => {
+                let cache = self.geotiff_block_cache.as_ref().ok_or_else(|| {
+                    CtbError::UnsupportedRaster(
+                        "GeoTIFF source has no native block cache".to_owned(),
+                    )
+                })?;
+                let mut cache = cache.lock().map_err(|_| {
+                    CtbError::RasterRead("GeoTIFF block cache lock poisoned".to_owned())
+                })?;
+                cache.read_window(file, level, request, &mut samples)?;
+            }
+            RasterData::Vrt(file) => {
+                if level != 0 {
+                    return Err(CtbError::UnsupportedRaster(
+                        "VRT inputs have no overview levels".to_owned(),
+                    ));
+                }
+                let buffer = file
+                    .read_window(1, PixelRect::new(x, y, width_u64, height_u64))
+                    .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+                buffer
+                    .copy_to_slice(&mut samples)
+                    .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+            }
+        }
+        Ok(samples)
     }
 
     fn validate_window(
@@ -155,46 +493,6 @@ impl GeoTiffRasterSource {
             return Err(CtbError::InvalidRasterWindow);
         }
         Ok(())
-    }
-
-    fn read_samples(&self, level: u16, request: WindowRequest) -> Result<Vec<f64>, CtbError> {
-        let width = usize::try_from(request.width).map_err(|_| CtbError::InvalidRasterWindow)?;
-        let height = usize::try_from(request.height).map_err(|_| CtbError::InvalidRasterWindow)?;
-        let count = width
-            .checked_mul(height)
-            .ok_or(CtbError::InvalidRasterWindow)?;
-        let mut samples = vec![0.0_f64; count];
-        let x = u64::from(request.x);
-        let y = u64::from(request.y);
-        let width_u64 = u64::from(request.width);
-        let height_u64 = u64::from(request.height);
-        match &self.data {
-            RasterData::GeoTiff(file) => file
-                .read_window_into_typed::<f64>(
-                    usize::from(level),
-                    0,
-                    x,
-                    y,
-                    width_u64,
-                    height_u64,
-                    &mut samples,
-                )
-                .map_err(|error| CtbError::RasterRead(error.to_string()))?,
-            RasterData::Vrt(file) => {
-                if level != 0 {
-                    return Err(CtbError::UnsupportedRaster(
-                        "VRT inputs have no overview levels".to_owned(),
-                    ));
-                }
-                let buffer = file
-                    .read_window(1, PixelRect::new(x, y, width_u64, height_u64))
-                    .map_err(|error| CtbError::RasterRead(error.to_string()))?;
-                buffer
-                    .copy_to_slice(&mut samples)
-                    .map_err(|error| CtbError::RasterRead(error.to_string()))?;
-            }
-        }
-        Ok(samples)
     }
 
     fn level_size(&self, level: usize) -> Result<(u64, u64), CtbError> {
@@ -327,6 +625,66 @@ impl RasterSource for GeoTiffRasterSource {
     }
 }
 
+fn parse_geotiff_block_geometries(
+    path: &Path,
+    overview_count: usize,
+) -> Result<Vec<BlockGeometry>, CtbError> {
+    let source =
+        FileDataSource::open(path).map_err(|error| CtbError::RasterRead(error.to_string()))?;
+    let tiff = TiffFile::parse(&source).map_err(|error| CtbError::RasterRead(error.to_string()))?;
+    let primary = ImageInfo::from_ifd(
+        tiff.primary_ifd(),
+        &source,
+        tiff.byte_order(),
+        tiff.header.variant,
+    )
+    .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+    let mut geometries = Vec::with_capacity(overview_count + 1);
+    geometries.push(BlockGeometry::from_info(&primary, 0)?);
+    for level in 1..=overview_count {
+        let info = overview_info_from_tiff(&tiff, &primary, level)?;
+        geometries.push(BlockGeometry::from_info(&info, level)?);
+    }
+    Ok(geometries)
+}
+
+fn overview_info_from_tiff(
+    tiff: &TiffFile,
+    primary: &ImageInfo,
+    level: usize,
+) -> Result<ImageInfo, CtbError> {
+    let byte_order = tiff.byte_order();
+    let ifd = tiff.ifds.get(level).ok_or_else(|| {
+        CtbError::RasterRead(format!("GeoTIFF overview level {level} has no IFD"))
+    })?;
+    let scalar = |tag: TiffTag| {
+        ifd.get_entry(tag)
+            .and_then(|entry| entry.get_u64(byte_order).ok())
+    };
+
+    let mut info = primary.clone();
+    info.width = scalar(TiffTag::ImageWidth).ok_or_else(|| {
+        CtbError::RasterRead(format!("GeoTIFF overview level {level} has no image width"))
+    })?;
+    info.height = scalar(TiffTag::ImageLength).ok_or_else(|| {
+        CtbError::RasterRead(format!(
+            "GeoTIFF overview level {level} has no image height"
+        ))
+    })?;
+    // Layout tags are per-level: an overview may be striped even when the
+    // full-resolution image is tiled, so they are never inherited.
+    info.tile_width = scalar(TiffTag::TileWidth).and_then(|value| u32::try_from(value).ok());
+    info.tile_height = scalar(TiffTag::TileLength).and_then(|value| u32::try_from(value).ok());
+    info.rows_per_strip = scalar(TiffTag::RowsPerStrip).and_then(|value| u32::try_from(value).ok());
+    if let Some(value) = scalar(TiffTag::SamplesPerPixel) {
+        info.samples_per_pixel = value as u16;
+    }
+    if let Some(value) = scalar(TiffTag::BitsPerSample) {
+        info.bits_per_sample = vec![value as u16];
+    }
+    Ok(info)
+}
+
 fn raster_dimension(width: u64, height: u64) -> Result<u32, CtbError> {
     u32::try_from(width).map_err(|_| CtbError::InvalidRasterDimensions {
         width: u32::try_from(width).unwrap_or(u32::MAX),
@@ -427,8 +785,8 @@ mod tests {
         GeoTransform, RasterDataType,
         core_types::{io::FileDataSource, types::NoDataValue},
         geotiff::{
-            CogReader, GeoKey, GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling, TiffTag,
-            WriterConfig,
+            CogReader, GeoKey, GeoTiffReader, GeoTiffWriter, GeoTiffWriterOptions,
+            OverviewResampling, TiffTag, WriterConfig,
             tiff::{Compression, Predictor},
         },
         vrt::{SourceWindow, VrtBand, VrtBuilder, VrtSource},
@@ -632,6 +990,80 @@ mod tests {
         )
     }
 
+    fn write_edge_fixture(path: &Path, tiled: bool) -> Result<(), Box<dyn std::error::Error>> {
+        let width = 40_u64;
+        let height = 24_u64;
+        let mut bytes = Vec::with_capacity(usize::try_from(width * height * 4)?);
+        for y in 0..height {
+            for x in 0..width {
+                let value = x as f32 + y as f32 * 100.0;
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        let mut config = WriterConfig::new(width, height, 1, RasterDataType::Float32)
+            .with_compression(Compression::None)
+            .with_predictor(Predictor::None)
+            .with_geo_transform(GeoTransform::north_up(0.0, height as f64, 1.0, -1.0))
+            .with_epsg_code(4326)
+            .with_overviews(false, OverviewResampling::Nearest);
+        if tiled {
+            config = config.with_tile_size(16, 16);
+        } else {
+            config.tile_width = None;
+            config.tile_height = None;
+        }
+        let mut writer = GeoTiffWriter::create(path, config, GeoTiffWriterOptions::default())?;
+        writer.write(&bytes)?;
+        Ok(())
+    }
+
+    fn write_large_overview_fixture(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let samples = (0..4096).map(|value| value as f64).collect::<Vec<_>>();
+        let bytes = samples
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        write_bytes(
+            path,
+            (64, 64),
+            RasterDataType::Float64,
+            &bytes,
+            4326,
+            GeoTransform::north_up(0.0, 64.0, 1.0, -1.0),
+            FixtureOptions {
+                overviews: true,
+                ..FixtureOptions::default()
+            },
+        )
+    }
+
+    fn open_direct_reader(
+        path: &Path,
+    ) -> Result<GeoTiffReader<FileDataSource>, Box<dyn std::error::Error>> {
+        let source = FileDataSource::open(path)?;
+        GeoTiffReader::open(source).map_err(Into::into)
+    }
+
+    fn read_direct_window(
+        reader: &GeoTiffReader<FileDataSource>,
+        level: u16,
+        request: WindowRequest,
+    ) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+        let width = usize::try_from(request.width)?;
+        let height = usize::try_from(request.height)?;
+        let mut samples = vec![0.0_f64; width * height];
+        reader.read_window_into_typed::<f64>(
+            usize::from(level),
+            0,
+            u64::from(request.x),
+            u64::from(request.y),
+            u64::from(request.width),
+            u64::from(request.height),
+            &mut samples,
+        )?;
+        Ok(samples)
+    }
+
     #[test]
     fn opens_epsg_4326_and_reads_a_window() -> Result<(), Box<dyn std::error::Error>> {
         let path = fixture_path("epsg4326");
@@ -817,6 +1249,111 @@ mod tests {
             },
         )?;
         assert_eq!(ovr_window.samples, vec![0.0, 2.0, 16.0, 18.0]);
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn block_cache_matches_direct_read_across_tiled_edge_blocks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("block-cache-tiled-edge");
+        write_edge_fixture(&path, true)?;
+        let source = GeoTiffRasterSource::open(&path)?;
+        let request = WindowRequest {
+            x: 15,
+            y: 5,
+            width: 20,
+            height: 18,
+            overview: 0,
+        };
+        let cached = source.read_samples(0, request)?;
+        let direct_reader = open_direct_reader(&path)?;
+        let direct = read_direct_window(&direct_reader, 0, request)?;
+        assert_eq!(cached, direct);
+
+        let repeated = source.read_samples(0, request)?;
+        assert_eq!(repeated, direct);
+        let cache = source
+            .geotiff_block_cache
+            .as_ref()
+            .ok_or("GeoTIFF cache missing")?
+            .lock()
+            .map_err(|_| "GeoTIFF cache lock poisoned")?;
+        assert_eq!(cache.blocks.len(), 6);
+        assert!(cache.geometries[0].is_tiled);
+        assert_eq!(cache.geometries[0].blocks_across, 3);
+        assert_eq!(cache.geometries[0].blocks_down, 2);
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn block_cache_matches_direct_read_across_striped_final_block()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("block-cache-striped-edge");
+        write_edge_fixture(&path, false)?;
+        let source = GeoTiffRasterSource::open(&path)?;
+        let request = WindowRequest {
+            x: 15,
+            y: 5,
+            width: 20,
+            height: 18,
+            overview: 0,
+        };
+        let cached = source.read_samples(0, request)?;
+        let direct_reader = open_direct_reader(&path)?;
+        let direct = read_direct_window(&direct_reader, 0, request)?;
+        assert_eq!(cached, direct);
+
+        let repeated = source.read_samples(0, request)?;
+        assert_eq!(repeated, direct);
+        let cache = source
+            .geotiff_block_cache
+            .as_ref()
+            .ok_or("GeoTIFF cache missing")?
+            .lock()
+            .map_err(|_| "GeoTIFF cache lock poisoned")?;
+        assert_eq!(cache.blocks.len(), 2);
+        assert!(!cache.geometries[0].is_tiled);
+        assert_eq!(cache.geometries[0].blocks_across, 1);
+        assert_eq!(cache.geometries[0].blocks_down, 2);
+        assert_eq!(cache.geometries[0].block_width, 40);
+        assert_eq!(cache.geometries[0].block_height, 16);
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn block_cache_matches_direct_read_on_explicit_overview_level()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = fixture_path("block-cache-overview");
+        write_large_overview_fixture(&path)?;
+        let source = GeoTiffRasterSource::open(&path)?;
+        let request = WindowRequest {
+            x: 15,
+            y: 15,
+            width: 17,
+            height: 17,
+            overview: 1,
+        };
+        let cached = source.read_samples(1, request)?;
+        let direct_reader = open_direct_reader(&path)?;
+        let direct = read_direct_window(&direct_reader, 1, request)?;
+        assert_eq!(cached, direct);
+
+        let cache = source
+            .geotiff_block_cache
+            .as_ref()
+            .ok_or("GeoTIFF cache missing")?
+            .lock()
+            .map_err(|_| "GeoTIFF cache lock poisoned")?;
+        assert_eq!(cache.geometries.len(), 3);
+        assert_eq!(cache.geometries[1].width, 32);
+        assert_eq!(cache.geometries[1].height, 32);
+        assert_eq!(cache.geometries[1].block_width, 16);
+        assert_eq!(cache.geometries[1].block_height, 16);
+        assert_eq!(cache.geometries[1].blocks_across, 2);
+        assert_eq!(cache.geometries[1].blocks_down, 2);
         fs::remove_file(path)?;
         Ok(())
     }
