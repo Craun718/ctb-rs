@@ -637,3 +637,29 @@ P19 不改变采样算法或 GeoTIFF 原生 block 缓存，只优化
 - geodetic Copernicus：路径 11391/11391，解压后 payload diff 0。
 - Mercator 720×720 EPSG:3857：`-s 2 -e 0` 路径 38/38，解压后 payload
   diff 0。
+
+## 18. P20 GitHub release 资产按平台标识
+
+P20 只修改 `.github/workflows/ci.yml` 的上传路径与矩阵元数据，不涉及 Rust
+算法、fixture 或 C++ oracle。验证范围限定为 workflow 配置和发布资产命名：
+
+- `build` job 矩阵新增 `platform_suffix`，四个映射必须为
+  `windows-x64`、`macos-arm64`、`linux-arm64`、`linux-x64`。
+- `cargo build --all-targets --locked` 之后、上传之前，四个二进制被复制为
+  `ctb-tile-<platform_suffix><binary_ext>`、
+  `ctb-info-<platform_suffix><binary_ext>`、
+  `ctb-export-<platform_suffix><binary_ext>`、
+  `ctb-extents-<platform_suffix><binary_ext>`；Windows 保留 `.exe`。
+- `actions/upload-artifact@v7` 只上传带平台后缀的文件，artifact 名称继续
+  使用 `ctb-binaries-*`，`actions/download-artifact@v8` 的
+  `merge-multiple: true` 合并后不得再发生同名覆盖。
+- 预期 release 资产为 4 个工具 × 4 个平台，共 16 个文件，文件名全局唯一且
+  可识别平台。
+- 本地验证 workflow 可被 YAML 解析、`git diff --check` 无空白错误；模拟
+  四个平台文件合并时无同名文件。
+- 不运行 Rust 测试，也不执行 C++ oracle。
+
+已执行：workflow YAML 解析通过，四个 `platform_suffix` 映射正确；
+`git diff --check` 通过；模拟 `ctb-{tile,info,export,extents}-{windows-x64.exe,
+macos-arm64,linux-arm64,linux-x64}` 得到 16 个唯一资产名，无同名覆盖。
+未在 GitHub 实际推送新 tag，本轮只完成配置级验证。

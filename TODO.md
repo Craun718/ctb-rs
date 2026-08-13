@@ -445,3 +445,14 @@
 - [x] 重跑 geodetic 11391/11391、Mercator 38/38 路径与解压后 payload 差分，
       差异均为 0。
 - [x] 回写 P19 实施记录与验证证据。
+
+## P20：GitHub release 资产按平台标识
+
+- [x] 在 `TECHNICAL_PLAN.md`、`TEST_STRATEGY.md`、`TODO.md` 登记 P20 范围。
+- [x] 为矩阵新增 `platform_suffix`，并确认四个平台映射正确。
+- [x] 构建后复制四个二进制为带平台后缀的唯一名称，Windows 保留 `.exe`。
+- [x] 上传路径改为带平台后缀的文件，原 `ctb-binaries-*` artifact 名称
+      不变。
+- [x] 本地校验 workflow YAML、`git diff --check`，并核对预期 16 个资产
+      名称无同名覆盖。
+- [x] 回写 P20 实施记录与验证证据。

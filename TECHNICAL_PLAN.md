@@ -2202,3 +2202,51 @@ P18 后真实 Copernicus DEM 仍比 C++ 慢约 5.4x。`sample` 采样显示低 z
 - geodetic Copernicus：路径 11391/11391，解压后 payload diff 0。
 - Mercator 720×720 EPSG:3857：`-s 2 -e 0` 路径 38/38，解压后 payload
   diff 0。
+
+### P20：GitHub release 资产按平台标识（已完成）
+
+用户在 `v0.0.1` release 页面发现实际资产只有 Windows `.exe` 和一份未标
+平台的非 Windows 二进制。原因是四个平台 artifact 中非 Windows 文件同名，
+`actions/download-artifact@v8` 的 `merge-multiple: true` 会把同名文件合并到
+同一个 `dist/` 并相互覆盖，最终只保留一份文件且无法从资产名识别平台。
+本阶段只修正 release 资产命名，不改变构建命令、测试或发布触发条件。
+
+实施规则：
+
+1. `build` job 的 runner 矩阵、`artifact` 名称、Rust toolchain 和
+   `cargo build --all-targets --locked` 保持不变。
+2. 在矩阵中新增 `platform_suffix` 字段：
+   `windows-x64`、`macos-arm64`、`linux-arm64`、`linux-x64`。
+3. `cargo build` 后、上传前，将四个二进制复制为
+   `ctb-tile-<platform_suffix><binary_ext>` 等唯一名称；复制步骤使用
+   `bash`，保证 Windows runner 也可执行 `cp`。
+4. `actions/upload-artifact@v7` 只上传带 `platform_suffix` 的文件，原
+   artifact 名称继续使用 `ctb-binaries-*`，下载与发布逻辑不变。
+5. 合并下载后每个文件名全局唯一，release 应包含 4 个工具 × 4 个平台的
+   16 个资产，且每个资产名称可明确区分平台。
+6. 不修改 `Cargo.toml`、Rust 源码、测试策略中的算法门禁或
+   `softprops/action-gh-release@v3` 的发布方式。
+
+完成标准：
+
+- workflow YAML 可解析，`git diff --check` 通过。
+- 四个平台的 artifact 内二进制均带平台后缀，Windows 保留 `.exe`。
+- 模拟下载合并后不存在同名文件覆盖；预期资产为：
+  `ctb-{tile,info,export,extents}-{windows-x64.exe,macos-arm64,linux-arm64,linux-x64}`。
+- 更新 TODO、测试策略并回写实施记录。
+
+#### P20 实施记录 1：上传前为二进制追加平台后缀（已完成）
+
+在 `.github/workflows/ci.yml` 的 `build` job 矩阵中新增 `platform_suffix`，
+并在 `cargo build` 后增加 `Copy binaries with platform suffix` 步骤：使用
+`bash` 将四个二进制复制为
+`ctb-{tile,info,export,extents}-<platform_suffix><binary_ext>`。上传路径改为
+只上传带平台后缀的文件，artifact 名称仍为 `ctb-binaries-*`；release job
+继续使用 `actions/download-artifact@v8` 的 `merge-multiple: true`，但文件名
+全局唯一，不再发生同名覆盖。
+
+本地验证：
+
+- workflow YAML 解析通过，矩阵中的 `platform_suffix` 与 artifact 一一对应；
+- `git diff --check` 通过；
+- 模拟四个平台资产名，共 16 个文件且无同名重复。

@@ -12,28 +12,40 @@ jobs:
         include:
           - os: windows-2022
             artifact: ctb-binaries-windows-x64
+            platform_suffix: windows-x64
             binary_ext: .exe
           - os: macos-14
             artifact: ctb-binaries-macos-arm64
+            platform_suffix: macos-arm64
             binary_ext: ''
           - os: ubuntu-24.04-arm
             artifact: ctb-binaries-linux-arm64
+            platform_suffix: linux-arm64
             binary_ext: ''
           - os: ubuntu-24.04
             artifact: ctb-binaries-linux-x64
+            platform_suffix: linux-x64
             binary_ext: ''
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --all-targets --locked
+      - name: Copy binaries with platform suffix
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp target/debug/ctb-tile${{ matrix.binary_ext }} target/debug/ctb-tile-${{ matrix.platform_suffix }}${{ matrix.binary_ext }}
+          cp target/debug/ctb-info${{ matrix.binary_ext }} target/debug/ctb-info-${{ matrix.platform_suffix }}${{ matrix.binary_ext }}
+          cp target/debug/ctb-export${{ matrix.binary_ext }} target/debug/ctb-export-${{ matrix.platform_suffix }}${{ matrix.binary_ext }}
+          cp target/debug/ctb-extents${{ matrix.binary_ext }} target/debug/ctb-extents-${{ matrix.platform_suffix }}${{ matrix.binary_ext }}
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: |
-            target/debug/ctb-tile${{ matrix.binary_ext }}
-            target/debug/ctb-info${{ matrix.binary_ext }}
-            target/debug/ctb-export${{ matrix.binary_ext }}
-            target/debug/ctb-extents${{ matrix.binary_ext }}
+            target/debug/ctb-tile-${{ matrix.platform_suffix }}${{ matrix.binary_ext }}
+            target/debug/ctb-info-${{ matrix.platform_suffix }}${{ matrix.binary_ext }}
+            target/debug/ctb-export-${{ matrix.platform_suffix }}${{ matrix.binary_ext }}
+            target/debug/ctb-extents-${{ matrix.platform_suffix }}${{ matrix.binary_ext }}
           if-no-files-found: error
 
   release:
