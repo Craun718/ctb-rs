@@ -2145,3 +2145,60 @@ OxiGeo、Cargo 依赖、应用层 `CachedRasterSource` 或采样算法。
 - geodetic Copernicus：路径 11391/11391，解压后 payload diff 0。
 - Mercator 720×720 EPSG:3857：`-s 2 -e 0` 路径 38/38，解压后 payload
   diff 0。
+
+### P19：应用层窗口按 block 批量复制（已完成）
+
+P18 后真实 Copernicus DEM 仍比 C++ 慢约 5.4x。`sample` 采样显示低 zoom
+已不再以 deflate 为主，约 86% 的 worker 采样落在
+`CachedRasterSource::read_sampling_window`，其中主要是 `memmove`。
+
+#### P19 根因
+
+`CachedRasterSource::read_sampling_window` 仍按单个像素调用
+`cached_block`。命中 `64×64` block 时，`cached_block` 会把整个
+`Vec<f64>` clone 一次再返回，外层再把其中一个样本 push 到目标窗口。
+一个接近 3600×3600 的 pooled source window 会产生约 1300 万次
+`cached_block` 调用；即使底层 GeoTIFF block 已经缓存，每次命中仍会复制
+32 KiB 样本数据。该路径实测占 z0 的绝大部分 CPU。
+
+#### P19 实施规则
+
+1. 只修改 `src/cache.rs` 的窗口读取与 `CachedBlock` 存储，不改采样算法、
+   GeoTIFF block 缓存或 CLI 参数。
+2. `read_sampling_window` 改为按 `block_size` 对齐后的 block 遍历：对每个
+   相交 block 只调用一次 `cached_block`，再直接复制该 block 中与请求相交的
+   行/列片段到目标 `Vec<f64>`。
+3. 缓存样本改为 `Arc<[f64]>`，LRU 命中/插入只 clone 原子指针，不再复制
+   整个 block 的样本数据。
+4. 输出顺序仍为 row-major，像素值仍来自与当前逐像素路径相同的
+   `cached_block`，保证 payload 不变。
+
+#### P19 验证门禁
+
+- 单元测试覆盖跨多个 `block_size` block 的大窗口读取，结果与直接逐像素
+  读取完全一致，且每个 block 只触发一次底层读取。
+- `cargo fmt --check`、`cargo test --lib geotiff`、
+  `cargo clippy --all-targets -- -D warnings` 通过。
+- 重建 release 后重跑真实 Copernicus DEM z0/z14->z0 基准，记录与 C++
+  的新差距。
+- 重跑 geodetic 11391/11391、Mercator 38/38 路径与解压后 payload 差分，
+  必须仍为 0。
+
+#### P19 实施记录 1：实现与实测结果
+
+2026-08-13 实测结果：
+
+- `cargo fmt --check` 通过；`cargo test --lib cache` 9/9 通过；
+  `cargo test --lib geotiff` 20/20 通过；
+  `cargo clippy --all-targets -- -D warnings` 通过。
+- 全量 `cargo test --lib` 为 92 passed、1 failed，失败仍是既有
+  `error.rs::invalid_zoom_range_display_explains_highest_and_lowest`
+  文案断言，不属于 P19。
+- 重建 release 后重跑真实 Copernicus DEM：Rust z0 约 0.27 s、
+  z14->z0 约 1.0 s；C++ 本轮重跑为 z0 0.58 s、z14->z0 1.63 s。
+  P18 记录为 Rust z0 4.24 s、z14->z0 8.18 s；C++ z0 0.78 s、
+  z14->z0 1.51 s；旧 Rust 基线为 z0 50.97 s、z14->z0 91.68 s。
+  本轮计时不是隔离基准，且 C++ 数字为本机重跑，可能受负载影响。
+- geodetic Copernicus：路径 11391/11391，解压后 payload diff 0。
+- Mercator 720×720 EPSG:3857：`-s 2 -e 0` 路径 38/38，解压后 payload
+  diff 0。

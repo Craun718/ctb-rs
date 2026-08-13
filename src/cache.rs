@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use crate::{
     CtbError,
@@ -8,7 +11,7 @@ use crate::{
 #[derive(Debug, Clone)]
 struct CachedBlock {
     request: WindowRequest,
-    samples: Vec<f64>,
+    samples: Arc<[f64]>,
 }
 
 #[derive(Debug, Default)]
@@ -99,7 +102,7 @@ impl<S: RasterSource> CachedRasterSource<S> {
         let window = self.source.read_sampling_window(level, block_request)?;
         let block = CachedBlock {
             request: block_request,
-            samples: window.samples,
+            samples: window.samples.into(),
         };
         if let Ok(mut state) = self.state.lock() {
             state.blocks.push_front(block.clone());
@@ -158,28 +161,79 @@ impl<S: RasterSource> RasterSource for CachedRasterSource<S> {
             return Err(CtbError::InvalidRasterWindow);
         }
         let mut samples = Vec::with_capacity(request.width as usize * request.height as usize);
-        for y in request.y..end_y {
-            for x in request.x..end_x {
+        let first_block_x = request.x / self.block_size * self.block_size;
+        let first_block_y = request.y / self.block_size * self.block_size;
+        let mut block_y = first_block_y;
+        while block_y < end_y {
+            let block_height = self
+                .block_size
+                .min(level.data_height.saturating_sub(block_y));
+            let copy_start_y = request.y.max(block_y);
+            let copy_end_y = end_y.min(
+                block_y
+                    .checked_add(block_height)
+                    .ok_or(CtbError::InvalidRasterWindow)?,
+            );
+            if copy_start_y >= copy_end_y {
+                return Err(CtbError::RasterRead(
+                    "cached raster block row did not intersect its source window".to_owned(),
+                ));
+            }
+            let mut row_blocks = Vec::new();
+            let mut block_x = first_block_x;
+            while block_x < end_x {
+                let block_width = self
+                    .block_size
+                    .min(level.data_width.saturating_sub(block_x));
                 let block = self.cached_block(
                     level,
                     WindowRequest {
-                        x,
-                        y,
-                        width: 1,
-                        height: 1,
+                        x: block_x,
+                        y: block_y,
+                        width: block_width,
+                        height: block_height,
                         overview: request.overview,
                     },
                 )?;
-                let local_x = (x - block.request.x) as usize;
-                let local_y = (y - block.request.y) as usize;
-                let index = local_y * block.request.width as usize + local_x;
-                let sample = block.samples.get(index).copied().ok_or_else(|| {
-                    CtbError::RasterRead(
-                        "cached raster block did not contain its requested sample".to_owned(),
-                    )
-                })?;
-                samples.push(sample);
+                let copy_start_x = request.x.max(block.request.x);
+                let copy_end_x = end_x.min(block.request.x + block.request.width);
+                if copy_start_x >= copy_end_x {
+                    return Err(CtbError::RasterRead(
+                        "cached raster block did not intersect its source window".to_owned(),
+                    ));
+                }
+                row_blocks.push(block);
+                block_x = block_x
+                    .checked_add(block_width)
+                    .ok_or(CtbError::InvalidRasterWindow)?;
             }
+            for row in copy_start_y..copy_end_y {
+                for block in &row_blocks {
+                    let copy_start_x = request.x.max(block.request.x);
+                    let copy_end_x = end_x.min(block.request.x + block.request.width);
+                    if copy_start_x >= copy_end_x {
+                        return Err(CtbError::RasterRead(
+                            "cached raster block row did not intersect its source window"
+                                .to_owned(),
+                        ));
+                    }
+                    let copy_width = (copy_end_x - copy_start_x) as usize;
+                    let block_samples_width = block.request.width as usize;
+                    let local_x = (copy_start_x - block.request.x) as usize;
+                    let local_y = (row - block.request.y) as usize;
+                    let start = local_y * block_samples_width + local_x;
+                    let end = start + copy_width;
+                    let block_row = block.samples.get(start..end).ok_or_else(|| {
+                        CtbError::RasterRead(
+                            "cached raster block did not contain its requested row".to_owned(),
+                        )
+                    })?;
+                    samples.extend_from_slice(block_row);
+                }
+            }
+            block_y = block_y
+                .checked_add(block_height)
+                .ok_or(CtbError::InvalidRasterWindow)?;
         }
         Ok(RasterWindow { request, samples })
     }
@@ -271,6 +325,31 @@ mod tests {
         assert_eq!(first.samples, vec![9.0]);
         assert_eq!(second.samples, vec![18.0]);
         assert_eq!(reads.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn reads_large_windows_from_aligned_blocks() -> Result<(), CtbError> {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let source = CachedRasterSource::new(CountingRaster::new(Arc::clone(&reads), None)?, 8, 4);
+        let request = WindowRequest {
+            x: 1,
+            y: 2,
+            width: 6,
+            height: 5,
+            overview: 0,
+        };
+        let mut expected = Vec::new();
+        for y in 2..7 {
+            for x in 1..7 {
+                expected.push(f64::from(y * 8 + x));
+            }
+        }
+        let first = source.read_window(request)?;
+        let second = source.read_window(request)?;
+        assert_eq!(first.samples, expected);
+        assert_eq!(second.samples, expected);
+        assert_eq!(reads.load(Ordering::Relaxed), 4);
         Ok(())
     }
 

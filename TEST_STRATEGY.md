@@ -603,3 +603,37 @@ tile_y)` 缓存已解码原生字节。
 - geodetic Copernicus：路径 11391/11391，解压后 payload diff 0。
 - Mercator 720×720 EPSG:3857：`-s 2 -e 0` 路径 38/38，解压后 payload
   diff 0。
+
+## 17. P19 应用层窗口按 block 批量复制
+
+P19 不改变采样算法或 GeoTIFF 原生 block 缓存，只优化
+`CachedRasterSource` 的窗口复制路径：从逐像素 `cached_block` 改为按
+`block_size` 对齐遍历，缓存样本改用 `Arc<[f64]>`。
+
+测试断言：
+
+- 跨多个应用层 block 的窗口，按 block 批量复制得到的 row-major 样本与
+  逐像素读取完全一致。
+- 一个请求命中的每个应用层 block 只触发一次底层读取；不同 block 按 LRU
+  正常缓存。
+- 声明 NoData 的源继续走 exact-read 路径，不因 P19 改变缓存语义。
+- `CachedRasterSource` 单测、`cargo test --lib geotiff`、
+  `cargo clippy --all-targets -- -D warnings` 通过。
+- 回归门禁：重建 release 后 geodetic 11391/11391、Mercator 38/38 路径一致，
+  解压后 payload 差异为 0；真实 Copernicus DEM 低 zoom 性能需记录 Rust 新
+  耗时与 C++ 基线。
+
+2026-08-13 实测结果（同一机器非隔离墙钟时间，仅用于趋势对比）：
+
+- `cargo fmt --check` 通过；`cargo test --lib cache` 9/9 通过；
+  `cargo test --lib geotiff` 20/20 通过；
+  `cargo clippy --all-targets -- -D warnings` 通过。
+- 全量 `cargo test --lib` 为 92 passed、1 failed，失败是既有
+  `error.rs` 文案断言，不属于 P19。
+- 重建 release 后真实 Copernicus DEM：Rust z0 约 0.27 s、
+  z14->z0 约 1.0 s；C++ 本轮重跑为 z0 0.58 s、z14->z0 1.63 s。
+  P18 记录为 Rust z0 4.24 s、z14->z0 8.18 s；C++ z0 0.78 s、
+  z14->z0 1.51 s；旧 Rust 基线为 z0 50.97 s、z14->z0 91.68 s。
+- geodetic Copernicus：路径 11391/11391，解压后 payload diff 0。
+- Mercator 720×720 EPSG:3857：`-s 2 -e 0` 路径 38/38，解压后 payload
+  diff 0。
