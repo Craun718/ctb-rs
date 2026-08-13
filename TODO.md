@@ -431,3 +431,17 @@
 - [x] 重跑 geodetic 11391/11391、Mercator 38/38 路径与解压后 payload 差分，
       差异均为 0。
 - [x] 回写 P18 实施记录与验证证据。
+
+## P19：应用层窗口按 block 批量复制
+
+- [x] 在 `TECHNICAL_PLAN.md`、`TEST_STRATEGY.md`、`TODO.md` 登记 P19 范围。
+- [x] `read_sampling_window` 改为按 `block_size` 对齐遍历，每 block 只读一次。
+- [x] `CachedBlock` 样本改为 `Arc<[f64]>`，LRU 命中不再复制整个 block。
+- [x] 新增跨多个 block 的大窗口等价测试，并断言底层读取次数。
+- [x] `cargo fmt --check`、`cargo test --lib geotiff` 与
+      `cargo clippy --all-targets -- -D warnings` 通过。
+- [x] 重建 release 并重跑真实 Copernicus DEM 低 zoom 性能基准：记录 Rust
+      z0、z14->z0 与 C++ 差距。
+- [x] 重跑 geodetic 11391/11391、Mercator 38/38 路径与解压后 payload 差分，
+      差异均为 0。
+- [x] 回写 P19 实施记录与验证证据。
