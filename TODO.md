@@ -456,3 +456,37 @@
 - [x] 本地校验 workflow YAML、`git diff --check`，并核对预期 16 个资产
       名称无同名覆盖。
 - [x] 回写 P20 实施记录与验证证据。
+
+## P21：跨 worker 共享 GeoTIFF block 缓存与写路径优化
+
+- [x] 在 `TECHNICAL_PLAN.md`、`TEST_STRATEGY.md`、`TODO.md` 登记 P21 范围。
+- [x] 将 `GeoTiffBlockCache` 改为可 `Arc` 共享，锁内不做 deflate，固定
+      64 MiB LRU 预算，block 字节使用 `Arc<[u8]>`。
+- [x] CLI 在 source factory 外构造一次共享缓存，所有 worker 复用同一份
+      已解码 GeoTIFF block。
+- [x] 新增 `open_with_shared_cache`，避免每个 worker 重复解析 TIFF IFD。
+- [x] `write_gzip` 改为流式写入 `GzEncoder<File>`，输出字节与
+      `encode_gzip` 一致。
+- [x] tileset 预创建 tile 目录，保留临时文件加 rename 的原子替换，写失败
+      清理临时文件。
+- [x] 新增共享缓存跨 source 去重 decode 测试、gzip 字节等价与往返测试。
+- [x] `cargo fmt --check`、相关 lib 测试与
+      `cargo clippy --all-targets -- -D warnings` 通过。
+- [x] 重建 release，重跑真实 Copernicus DEM z0/z14->z0 基准并记录与 C++
+      差距；实测 z0 约 0.27 s、z14->z0 约 0.89 s。
+- [x] 重跑 geodetic 11391/11391 路径与解压后 payload 差分，差异为 0。
+      Mercator 38/38 因 C++ oracle 与原始输入缺失，本轮无法重跑，沿用
+      P18/P19 已记录结果。
+- [x] 回写 P21 实施记录与验证证据。
+
+## P22：私有数据性能复核
+
+- [x] 登记 P22，并明确隐私约束：文档只记录文件体积 1.9G，不记录其他测试
+      文件信息。
+- [x] 使用私有数据复测当前 release 构建；完整端到端基准因预计耗时数小时
+      未在单轮会话完成，改用代表性压力 profile 验证热点。
+- [x] 文档不记录除 1.9G 文件体积以外的测试文件信息。
+- [x] 定位剩余热点并回写优化方向、优化内容。
+- [x] 回写 P22 实施记录与验证证据。
+- [ ] 经授权后实施 P22 优化方向，并验证输出与既有差分保持一致。
+- [ ] 在可执行完整测试的会话中补跑私有数据全量端到端墙钟基准。

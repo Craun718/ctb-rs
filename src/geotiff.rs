@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, path::Path, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use oxigeo::{
     DatasetFormat, RasterDataType,
@@ -98,15 +102,20 @@ impl BlockGeometry {
 #[derive(Debug, Clone)]
 struct CachedBlock {
     key: BlockKey,
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
     width: u64,
     height: u64,
     data_type: RasterDataType,
 }
 
 #[derive(Debug)]
-struct GeoTiffBlockCache {
+pub struct GeoTiffBlockCache {
     geometries: Vec<BlockGeometry>,
+    inner: Mutex<GeoTiffBlockCacheInner>,
+}
+
+#[derive(Debug)]
+struct GeoTiffBlockCacheInner {
     blocks: VecDeque<CachedBlock>,
     used_bytes: usize,
     budget_bytes: usize,
@@ -116,28 +125,33 @@ impl GeoTiffBlockCache {
     fn new(geometries: Vec<BlockGeometry>) -> Self {
         Self {
             geometries,
-            blocks: VecDeque::new(),
-            used_bytes: 0,
-            budget_bytes: GEOTIFF_BLOCK_CACHE_BUDGET_BYTES,
+            inner: Mutex::new(GeoTiffBlockCacheInner {
+                blocks: VecDeque::new(),
+                used_bytes: 0,
+                budget_bytes: GEOTIFF_BLOCK_CACHE_BUDGET_BYTES,
+            }),
         }
     }
 
-    fn geometry(&self, level: u16) -> Result<&BlockGeometry, CtbError> {
-        self.geometries.get(usize::from(level)).ok_or_else(|| {
-            CtbError::RasterRead(format!(
-                "GeoTIFF level {level} has no cached block geometry"
-            ))
-        })
+    fn geometry(&self, level: u16) -> Result<BlockGeometry, CtbError> {
+        self.geometries
+            .get(usize::from(level))
+            .copied()
+            .ok_or_else(|| {
+                CtbError::RasterRead(format!(
+                    "GeoTIFF level {level} has no cached block geometry"
+                ))
+            })
     }
 
     fn cached_block(
-        &mut self,
-        file: &GeoTiffReader<FileDataSource>,
+        &self,
         level: u16,
         tile_x: u32,
         tile_y: u32,
-    ) -> Result<&CachedBlock, CtbError> {
-        let geometry = *self.geometry(level)?;
+        load: impl FnOnce() -> Result<CachedBlock, CtbError>,
+    ) -> Result<CachedBlock, CtbError> {
+        let geometry = self.geometry(level)?;
         if tile_x >= geometry.blocks_across || tile_y >= geometry.blocks_down {
             let layout = if geometry.is_tiled { "tile" } else { "strip" };
             return Err(CtbError::RasterRead(format!(
@@ -149,30 +163,56 @@ impl GeoTiffBlockCache {
             tile_x,
             tile_y,
         };
-        if let Some(position) = self.blocks.iter().position(|block| block.key == key) {
-            let block = self
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| CtbError::RasterRead("GeoTIFF block cache lock poisoned".to_owned()))?;
+        if let Some(position) = inner.blocks.iter().position(|block| block.key == key) {
+            let block = inner
                 .blocks
                 .remove(position)
                 .expect("position was found by iteration");
-            self.blocks.push_front(block);
-        } else {
-            let buffer = file
-                .read_tile_band_buffer(usize::from(level), 0, tile_x, tile_y)
-                .map_err(|error| CtbError::RasterRead(error.to_string()))?;
-            let block = CachedBlock {
-                key,
-                width: buffer.width(),
-                height: buffer.height(),
-                data_type: buffer.data_type(),
-                bytes: buffer.into_bytes(),
-            };
-            self.insert(block);
+            inner.blocks.push_front(block.clone());
+            return Ok(block);
         }
-        self.blocks.front().ok_or_else(|| {
-            CtbError::RasterRead("GeoTIFF block cache is empty after block load".to_owned())
-        })
+        drop(inner);
+
+        let mut block = load()?;
+        block.key = key;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| CtbError::RasterRead("GeoTIFF block cache lock poisoned".to_owned()))?;
+        if let Some(position) = inner.blocks.iter().position(|existing| existing.key == key) {
+            let existing = inner
+                .blocks
+                .remove(position)
+                .expect("position was found by iteration");
+            inner.blocks.push_front(existing.clone());
+            return Ok(existing);
+        }
+        inner.insert(block.clone());
+        Ok(block)
     }
 
+    #[cfg(test)]
+    fn blocks_len(&self) -> Result<usize, CtbError> {
+        self.inner
+            .lock()
+            .map(|inner| inner.blocks.len())
+            .map_err(|_| CtbError::RasterRead("GeoTIFF block cache lock poisoned".to_owned()))
+    }
+
+    #[cfg(test)]
+    fn used_bytes(&self) -> Result<usize, CtbError> {
+        self.inner
+            .lock()
+            .map(|inner| inner.used_bytes)
+            .map_err(|_| CtbError::RasterRead("GeoTIFF block cache lock poisoned".to_owned()))
+    }
+}
+
+impl GeoTiffBlockCacheInner {
     fn insert(&mut self, block: CachedBlock) {
         self.used_bytes = self.used_bytes.saturating_add(block.bytes.len());
         self.blocks.push_front(block);
@@ -184,9 +224,11 @@ impl GeoTiffBlockCache {
             }
         }
     }
+}
 
+impl GeoTiffBlockCache {
     fn read_window(
-        &mut self,
+        &self,
         file: &GeoTiffReader<FileDataSource>,
         level: u16,
         request: WindowRequest,
@@ -195,7 +237,7 @@ impl GeoTiffBlockCache {
         if request.width == 0 || request.height == 0 {
             return Err(CtbError::InvalidRasterWindow);
         }
-        let geometry = *self.geometry(level)?;
+        let geometry = self.geometry(level)?;
         let x = u64::from(request.x);
         let y = u64::from(request.y);
         let width = u64::from(request.width);
@@ -230,7 +272,22 @@ impl GeoTiffBlockCache {
                     continue;
                 }
 
-                let cached = self.cached_block(file, level, tile_x, tile_y)?;
+                let cached = self.cached_block(level, tile_x, tile_y, || {
+                    let buffer = file
+                        .read_tile_band_buffer(usize::from(level), 0, tile_x, tile_y)
+                        .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+                    Ok(CachedBlock {
+                        key: BlockKey {
+                            level,
+                            tile_x,
+                            tile_y,
+                        },
+                        width: buffer.width(),
+                        height: buffer.height(),
+                        data_type: buffer.data_type(),
+                        bytes: Arc::from(buffer.into_bytes()),
+                    })
+                })?;
                 if cached.data_type != geometry.data_type {
                     return Err(CtbError::RasterRead(format!(
                         "GeoTIFF block cache type changed at level {level} tile ({tile_x},{tile_y})"
@@ -323,11 +380,44 @@ enum RasterData {
 pub struct GeoTiffRasterSource {
     data: RasterData,
     metadata: RasterMetadata,
-    geotiff_block_cache: Option<Mutex<GeoTiffBlockCache>>,
+    geotiff_block_cache: Option<Arc<GeoTiffBlockCache>>,
 }
 
 impl GeoTiffRasterSource {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, CtbError> {
+        Self::open_inner(path, None)
+    }
+
+    pub fn new_shared_block_cache(
+        path: impl AsRef<Path>,
+    ) -> Result<Arc<GeoTiffBlockCache>, CtbError> {
+        let path = path.as_ref();
+        let detected = open(path).map_err(|error| CtbError::RasterRead(error.to_string()))?;
+        if detected.format() != DatasetFormat::GeoTiff {
+            return Err(CtbError::UnsupportedRaster(format!(
+                "shared GeoTIFF block cache requires a GeoTIFF input, found {:?}",
+                detected.format()
+            )));
+        }
+        let data_source =
+            FileDataSource::open(path).map_err(|error| CtbError::RasterRead(error.to_string()))?;
+        let file = GeoTiffReader::open(data_source)
+            .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+        let block_geometries = parse_geotiff_block_geometries(path, file.overview_count())?;
+        Ok(Arc::new(GeoTiffBlockCache::new(block_geometries)))
+    }
+
+    pub fn open_with_shared_cache(
+        path: impl AsRef<Path>,
+        block_cache: Arc<GeoTiffBlockCache>,
+    ) -> Result<Self, CtbError> {
+        Self::open_inner(path, Some(block_cache))
+    }
+
+    fn open_inner(
+        path: impl AsRef<Path>,
+        block_cache: Option<Arc<GeoTiffBlockCache>>,
+    ) -> Result<Self, CtbError> {
         let path = path.as_ref();
         let detected = open(path).map_err(|error| CtbError::RasterRead(error.to_string()))?;
         match detected.format() {
@@ -336,7 +426,7 @@ impl GeoTiffRasterSource {
                     .map_err(|error| CtbError::RasterRead(error.to_string()))?;
                 let file = GeoTiffReader::open(data_source)
                     .map_err(|error| CtbError::RasterRead(error.to_string()))?;
-                Self::from_geotiff(file, path)
+                Self::from_geotiff(file, path, block_cache)
             }
             DatasetFormat::Vrt => {
                 let file = VrtReader::open(path)
@@ -350,7 +440,11 @@ impl GeoTiffRasterSource {
         }
     }
 
-    fn from_geotiff(file: GeoTiffReader<FileDataSource>, path: &Path) -> Result<Self, CtbError> {
+    fn from_geotiff(
+        file: GeoTiffReader<FileDataSource>,
+        path: &Path,
+        shared_block_cache: Option<Arc<GeoTiffBlockCache>>,
+    ) -> Result<Self, CtbError> {
         if file.band_count() != 1 {
             return Err(CtbError::UnsupportedRaster(format!(
                 "expected one elevation band, found {} bands",
@@ -376,7 +470,12 @@ impl GeoTiffRasterSource {
         })?)?;
         let epsg = file.epsg_code().ok_or(CtbError::MissingCrs)?;
         let (width, height) = raster_dimensions(file.width(), file.height())?;
-        let block_geometries = parse_geotiff_block_geometries(path, file.overview_count())?;
+        let block_cache = match shared_block_cache {
+            Some(cache) => Some(cache),
+            None => Some(Arc::new(GeoTiffBlockCache::new(
+                parse_geotiff_block_geometries(path, file.overview_count())?,
+            ))),
+        };
         let metadata = build_metadata(
             width,
             height,
@@ -388,7 +487,7 @@ impl GeoTiffRasterSource {
         Ok(Self {
             data: RasterData::GeoTiff(file),
             metadata,
-            geotiff_block_cache: Some(Mutex::new(GeoTiffBlockCache::new(block_geometries))),
+            geotiff_block_cache: block_cache,
         })
     }
 
@@ -449,9 +548,6 @@ impl GeoTiffRasterSource {
                     CtbError::UnsupportedRaster(
                         "GeoTIFF source has no native block cache".to_owned(),
                     )
-                })?;
-                let mut cache = cache.lock().map_err(|_| {
-                    CtbError::RasterRead("GeoTIFF block cache lock poisoned".to_owned())
                 })?;
                 cache.read_window(file, level, request, &mut samples)?;
             }
@@ -1276,10 +1372,8 @@ mod tests {
         let cache = source
             .geotiff_block_cache
             .as_ref()
-            .ok_or("GeoTIFF cache missing")?
-            .lock()
-            .map_err(|_| "GeoTIFF cache lock poisoned")?;
-        assert_eq!(cache.blocks.len(), 6);
+            .ok_or("GeoTIFF cache missing")?;
+        assert_eq!(cache.blocks_len()?, 6);
         assert!(cache.geometries[0].is_tiled);
         assert_eq!(cache.geometries[0].blocks_across, 3);
         assert_eq!(cache.geometries[0].blocks_down, 2);
@@ -1310,10 +1404,8 @@ mod tests {
         let cache = source
             .geotiff_block_cache
             .as_ref()
-            .ok_or("GeoTIFF cache missing")?
-            .lock()
-            .map_err(|_| "GeoTIFF cache lock poisoned")?;
-        assert_eq!(cache.blocks.len(), 2);
+            .ok_or("GeoTIFF cache missing")?;
+        assert_eq!(cache.blocks_len()?, 2);
         assert!(!cache.geometries[0].is_tiled);
         assert_eq!(cache.geometries[0].blocks_across, 1);
         assert_eq!(cache.geometries[0].blocks_down, 2);
@@ -1344,9 +1436,7 @@ mod tests {
         let cache = source
             .geotiff_block_cache
             .as_ref()
-            .ok_or("GeoTIFF cache missing")?
-            .lock()
-            .map_err(|_| "GeoTIFF cache lock poisoned")?;
+            .ok_or("GeoTIFF cache missing")?;
         assert_eq!(cache.geometries.len(), 3);
         assert_eq!(cache.geometries[1].width, 32);
         assert_eq!(cache.geometries[1].height, 32);
@@ -1355,6 +1445,58 @@ mod tests {
         assert_eq!(cache.geometries[1].blocks_across, 2);
         assert_eq!(cache.geometries[1].blocks_down, 2);
         fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn shared_block_cache_reuses_decoded_blocks_across_arc_clones()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cache = std::sync::Arc::new(GeoTiffBlockCache::new(vec![BlockGeometry {
+            width: 8,
+            height: 8,
+            block_width: 4,
+            block_height: 4,
+            blocks_across: 2,
+            blocks_down: 2,
+            is_tiled: true,
+            data_type: RasterDataType::Float64,
+        }]));
+        let loads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let load = || -> Result<CachedBlock, CtbError> {
+            loads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(CachedBlock {
+                key: BlockKey {
+                    level: 0,
+                    tile_x: 0,
+                    tile_y: 0,
+                },
+                width: 4,
+                height: 4,
+                data_type: RasterDataType::Float64,
+                bytes: std::sync::Arc::from(vec![0_u8; 128]),
+            })
+        };
+        let first = cache.cached_block(0, 0, 0, load)?;
+        assert_eq!(first.bytes.len(), 128);
+        assert_eq!(loads.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let cache = std::sync::Arc::clone(&cache);
+                scope.spawn(move || {
+                    for _ in 0..100 {
+                        cache
+                            .cached_block(0, 0, 0, || -> Result<CachedBlock, CtbError> {
+                                unreachable!("cached block should not be loaded after insertion")
+                            })
+                            .expect("shared block cache hit should succeed");
+                    }
+                });
+            }
+        });
+        assert_eq!(loads.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(cache.blocks_len()?, 1);
+        assert_eq!(cache.used_bytes()?, 128);
         Ok(())
     }
 

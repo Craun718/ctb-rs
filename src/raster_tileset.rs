@@ -72,6 +72,7 @@ pub fn write_raster_geotiff_tileset_with_factory(
         .rev()
         .flat_map(|level| level.tiles.iter().copied())
         .collect::<Vec<_>>();
+    prepare_raster_directories(output_directory.as_ref(), &tiles)?;
     let output_directory = output_directory.as_ref();
     let next_index = AtomicUsize::new(0);
     let completed = AtomicUsize::new(0);
@@ -154,6 +155,22 @@ pub fn raster_geotiff_path(output_directory: impl AsRef<Path>, tile: TileCoord) 
         .join(format!("{}.tif", tile.y))
 }
 
+fn prepare_raster_directories(
+    output_directory: &Path,
+    tiles: &[TileCoord],
+) -> Result<(), CtbError> {
+    let mut directories = std::collections::BTreeSet::new();
+    for tile in tiles {
+        if let Some(parent) = raster_geotiff_path(output_directory, *tile).parent() {
+            directories.insert(parent.to_path_buf());
+        }
+    }
+    for directory in directories {
+        fs::create_dir_all(&directory).map_err(|error| CtbError::TilesetIo(error.to_string()))?;
+    }
+    Ok(())
+}
+
 fn write_raster_geotiff_atomically(
     plan: &RasterTileSamplePlan,
     metadata: &crate::raster::RasterMetadata,
@@ -167,7 +184,6 @@ fn write_raster_geotiff_atomically(
             path.display()
         ))
     })?;
-    fs::create_dir_all(parent).map_err(|error| CtbError::TilesetIo(error.to_string()))?;
     let filename = path.file_name().ok_or_else(|| {
         CtbError::TilesetIo(format!("GeoTIFF path {} has no filename", path.display()))
     })?;
@@ -176,8 +192,17 @@ fn write_raster_geotiff_atomically(
         filename.to_string_lossy(),
         std::process::id()
     ));
-    write_raster_tile_as_geotiff_with_options(&temporary, plan, metadata, values, options)?;
-    fs::rename(&temporary, path).map_err(|error| CtbError::TilesetIo(error.to_string()))
+    if let Err(error) =
+        write_raster_tile_as_geotiff_with_options(&temporary, plan, metadata, values, options)
+    {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(CtbError::TilesetIo(error.to_string()));
+    }
+    Ok(())
 }
 
 fn set_first_error(slot: &Mutex<Option<CtbError>>, error: CtbError) {

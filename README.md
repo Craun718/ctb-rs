@@ -11,11 +11,12 @@
 
 ## 开发计划
 
-- [x] 实现输出结果与原版0差异
+- [x] 函数级一比一复刻原版实现
+- [x] 在输出结果不变的前提下进行优化
 - [ ] 性能达到cpp版同级水平
 - [ ] 支持输出layer.json
 - [ ] 支持输出quantized-mesh
- 
+
 ## 特性
 
 - **纯 Rust，无 GDAL/PROJ FFI**：不链接 GDAL、PROJ 或任何 C/C++ GIS FFI；GeoTIFF/VRT

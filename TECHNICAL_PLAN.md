@@ -2250,3 +2250,176 @@ P18 后真实 Copernicus DEM 仍比 C++ 慢约 5.4x。`sample` 采样显示低 z
 - workflow YAML 解析通过，矩阵中的 `platform_suffix` 与 artifact 一一对应；
 - `git diff --check` 通过；
 - 模拟四个平台资产名，共 16 个文件且无同名重复。
+
+### P21：跨 worker 共享 GeoTIFF block 缓存与写路径优化（已完成）
+
+说明：用户本轮要求的性能优化原称 P20，但仓库中已有已完成且不相关的
+`P20：GitHub release 资产按平台标识`；按开发手册编号不复用，本节采用
+P21 承接。
+
+#### P21 根因
+
+P19 后低 zoom 已接近 C++，但 `z14->z0` 仍比 C++ 快约 1.4x，采样热点仍
+包含 `read_tile_band_buffer` 的 deflate。当前 CLI 每个 worker 通过
+`source_factory` 独立打开 `GeoTiffRasterSource`，因此每个 worker 都有自己的
+`Mutex<GeoTiffBlockCache>`：同一个真实 GeoTIFF block 在不同 worker 中会重复
+解压，应用层 `CachedRasterSource` 的缓存无法消除该重复。此外，每次 source
+open 都重新解析 TIFF IFD；Terrain 写路径先构造原始 payload `Vec` 和 gzip
+`Vec`，再 `fs::write` 整份文件，且每个 tile 都重复 `create_dir_all`。
+
+#### P21 实施规则
+
+1. 共享 GeoTIFF 原生 block 缓存：
+   - `GeoTiffBlockCache` 改为可被 `Arc` 共享；缓存仍按
+     `(level, tile_x, tile_y)` 存已解码原生字节，字节存为 `Arc<[u8]>`，
+     固定 64 MiB 预算和 LRU 淘汰。
+   - `Mutex` 只保护 LRU 表和字节预算。命中时短暂持锁取出缓存；未命中时
+     先释放锁读取 `read_tile_band_buffer`，再抢锁插入，避免多个 worker
+     在同一把锁上串行执行 deflate。
+   - CLI 在建 `source_factory` 前构造一次 `Arc<GeoTiffBlockCache>`，
+     metadata source 与所有 worker 共用该缓存；VRT 输入仍走原路径。
+   - 新增 `open_with_shared_cache`，复用已解析的 block 几何，不再每个
+     worker 重复 `parse_geotiff_block_geometries`。每个 worker 仍持有独立
+     `GeoTiffReader` 和源元数据，不共享 reader 内部状态。
+2. Terrain 写路径：
+   - `HeightmapTerrain::write_gzip` 改为将 raw payload 直接写入
+     `GzEncoder<File>`，不再构造完整 gzip `Vec` 后 `fs::write`；压缩参数
+     仍为 `Compression::default()`，输出字节必须与 `encode_gzip` 一致。
+   - tileset 在创建 worker 前统一创建所有 tile 目录；tile 写文件仍使用
+     同目录临时文件加 `rename`，保留原子替换语义。写失败时清理临时文件。
+3. 采样 kernel 微优化：
+   - 只在能保持 payload 逐位一致、且 profile 仍显示
+     `TerrainSamplePlan::sample_heights` 占明显比例时进行；若存在回归风险，
+     本阶段以共享缓存和写路径优化为完成范围。
+
+#### P21 验证门禁
+
+- 单元测试覆盖共享 `Arc<GeoTiffBlockCache>`：两个 source 共用同一缓存时，
+  对同一 block 的首次读取只 decode 一次，后续读取命中且结果与直接读取一致。
+- 保留 P18 的 tiled/striped/最终边缘/显式 overview 等价测试；VRT 不进入
+  GeoTIFF block 缓存。
+- `write_gzip` 输出字节与 `encode_gzip` 完全一致，`decode_gzip` 可往返还原
+  terrain。
+- tileset 目录预创建与原子 rename 行为不改变文件路径、不改变失败语义。
+- `cargo fmt --check`、`cargo test --lib geotiff`、`cargo test --lib cache`、
+  `cargo test --lib terrain`、`cargo test --lib tileset` 与
+  `cargo clippy --all-targets -- -D warnings` 通过；全量 lib 测试除既有
+  `error.rs` 文案断言外全部通过。
+- 重建 release 后重跑真实 Copernicus DEM z0/z14->z0 基准，记录 Rust 与
+  C++ 的新差距。
+- 重跑 geodetic 11391/11391、Mercator 38/38 路径与解压后 payload 差分，
+  必须仍为 0。
+
+#### P21 实施记录 1：实现与实测结果
+
+2026-08-13 实施结果：
+
+- `GeoTiffBlockCache` 改为通过 `Arc` 共享：`Mutex` 只保护 LRU 元数据和
+  64 MiB 字节预算；未命中时在锁外执行 `read_tile_band_buffer`，解码完成后
+  再抢锁插入，block 字节存为 `Arc<[u8]>`。
+- `GeoTiffRasterSource::new_shared_block_cache` 只对 GeoTIFF 输入启用；
+  `open_with_shared_cache` 复用已解析 block 几何，避免每个 worker 重复解析
+  TIFF IFD；VRT 仍走原路径。
+- `HeightmapTerrain::write_gzip` 改为流式写入 `GzEncoder<File>`，压缩参数
+  不变，磁盘 gzip 字节与 `encode_gzip` 一致。
+- Terrain/raster tileset 在 worker 启动前统一预创建目录；tile 仍通过
+  同目录临时文件加 `rename` 原子替换，失败时清理临时文件。
+- 验证：`cargo fmt --check` 通过；`cargo clippy --all-targets -- -D warnings`
+  通过；`cargo test --lib` 为 93 passed、1 failed，失败仍是既有
+  `error.rs` 文案断言，不属于 P21；release 构建通过。
+- 性能（同一机器非隔离墙钟）：真实 Copernicus DEM `z0` 约 0.27 s，
+  `z14->z0` 约 0.89 s；P19 记录为 z0 约 0.27 s、z14->z0 约 1.0 s；
+  可参照 C++ 基线 z0 0.58/0.78 s、z14->z0 1.37/1.63 s。本轮主要收益来自
+  消除 worker 间重复 deflate 和重复 IFD 解析。
+- geodetic Copernicus：`tests/terrain` 与
+  `/private/tmp/ctb-p21.abZX3C/full` 对比，路径 11391/11391，解压后
+  payload diff 0。
+- Mercator 本轮无法用真实 C++ oracle 重跑：原
+  `/Users/sander/coding/cesium-terrain-builder` 与
+  `/private/tmp/ctb-p18-cpp-run/ctb-tile` 均已不存在，原始 720×720
+  EPSG:3857 输入也不可恢复；用 `oracle-source.asc` 重建只能得到 9 条
+  terrain 路径，不能冒充 38/38。Mercator 一致性沿用 P18/P19 已记录结果。
+
+### P22：私有数据性能复核（代表性 profile 已完成，全量端到端未完成）
+
+说明：用户提供一份私有 DEM 用于本轮性能测试。按用户约束，
+`TECHNICAL_PLAN.md`、`TODO.md`、`TEST_STRATEGY.md` 中不得记录除文件体积
+以外的测试文件信息；本文档只记录文件体积 1.9G，以及可复用的优化方向和
+优化内容。
+
+#### P22 隐私与测试约束
+
+- 不在技术文档、TODO 或测试策略中记录私有数据路径、名称、CRS、尺寸、
+  分辨率、波段、zoom 范围或 tile 数量。
+- 测试产物放在 `/private/tmp` 临时目录，不进入工作树。
+- 不进行 C++ oracle 差分；当前环境没有可用的 C++ 构建/oracle，本轮只做
+  Rust 端到端性能复测。
+- 先复测当前 release 构建的端到端耗时，再根据耗时分布记录后续优化方向。
+- 全量范围按当前热点路径预计需要数小时，不在单轮会话中强制跑完；本轮以
+  代表性压力 profile 验证热点，不把中断运行当作正式端到端基准。
+
+#### P22 验证门禁
+
+- release 构建基于当前工作树通过。
+- 私有数据端到端测试如可完成则记录墙钟耗时；若单轮无法完成，记录代表性
+  profile 与峰值内存，并明确剩余全量基准。
+- 优化方向必须写成可执行、可验证的后续内容；若本轮只复测，TODO 中明确
+  标记剩余项。
+
+#### P22 优化方向
+
+1. 缓存并复用 `proj4rs::Proj` 对象
+
+   `src/raster.rs` 的 `transform_coordinate` 每次调用都会按 CRS 重新构造
+   `Proj`，profile 中表现为 `Proj::from_epsg_code`、`Proj::init` 和
+   `projstring` 解析。可按 `(source_crs, target_crs)` 做线程局部或只读共享
+   缓存，避免每个采样点重复初始化。验证：缓存前后相同坐标输入必须保持
+   f64 结果一致，并覆盖既有 CRS/terrain 差分矩阵。
+
+2. 为 LZW 增加解码到调用方缓冲区的高效路径
+
+   热点栈中 `oxiarc_lzw::decompress` 先构造并增长临时 `Vec`，随后
+   `oxigeo` 再通过 `decompress_into_partial` 复制到目标缓冲区；解码器和
+   字典还有大量 reset/malloc/free/realloc 抖动。上游可增加直接写入调用方
+   缓冲区的入口，并复用字典缓冲。该方向属于依赖侧变更，实施前需按 Cargo
+   依赖变更流程确认。验证：COG block 输出保持一致，terrain payload
+   差分保持 0。
+
+3. 复核应用层 block 缓存几何与预算
+
+   当前热点的缓存命中前仍以 native LZW 解码为主，说明缓存几何优化应作为
+   配套手段，不能替代解码路径优化。可按私有数据访问模式复核
+   `GeoTiffBlockCache` 的 LRU 预算与读取窗口粒度。验证：缓存命中/未命中
+   输出一致，峰值内存不超出设定预算。
+
+4. 评估 `average_at` 一次读取更大 source window
+
+   `average_at` 当前逐样本调用 `read_sample_raw`，每次都要经过
+   `CachedRasterSource` 的窗口读取与分发。可评估先读取一个更大的源窗口，
+   再在内存中完成局部平均采样，减少重复窗口构造。仅当能证明输出与逐点
+   读取完全一致或满足 CTB 数值等价要求时才实施，不得改变算法语义。
+
+#### P22 实施记录 1：代表性 profile 与热点分析
+
+2026-08-13 实施结果：
+
+- 基于当前工作树 release 构建，对 1.9G 私有 DEM 发起端到端测试；按采样
+  热点外推，完整范围需要数小时，未在单轮会话中跑完，因此不记录为正式
+  全量墙钟基准。
+- 在多个代表性压力阶段采集 sample profile，热点稳定收敛在
+  `TerrainSamplePlan::sample_heights` → `sample_with_footprint_level` →
+  `average_at` → `read_sample_raw` → `CachedRasterSource` →
+  `GeoTiffRasterSource::read_samples` → oxigeo
+  `read_window_into`/`scatter_bytes` → `CogReader::read_tile_into` →
+  `decompress_into_partial` → `oxiarc_lzw::decompress`。
+- LZW 热点以临时 `Vec` 分配/增长、字典 reset 和 malloc/free/realloc
+  抖动为主；oxigeo 解码后还会把临时结果复制到调用方缓冲区。
+- 坐标变换路径出现 `proj4rs::Proj::from_epsg_code`、`Proj::init`、
+  `projstring` 解析与 `transform_vertex_3d`；对应代码每次采样重建
+  `Proj`。
+- 代表性采样阶段物理内存峰值约 150-250 MB，未发现内存失控。
+- 本轮不进行 C++ oracle 差分；当前环境没有可用的 C++ 构建/oracle，不把
+  中断运行当作 Rust 与 C++ 的新差距。
+
+后续按 `P22 优化方向` 执行，先做不改变输出字节的复用与解码路径优化，再
+对需要改算法或依赖的项单独申请授权。

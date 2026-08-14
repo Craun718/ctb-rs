@@ -663,3 +663,91 @@ P20 只修改 `.github/workflows/ci.yml` 的上传路径与矩阵元数据，不
 `git diff --check` 通过；模拟 `ctb-{tile,info,export,extents}-{windows-x64.exe,
 macos-arm64,linux-arm64,linux-x64}` 得到 16 个唯一资产名，无同名覆盖。
 未在 GitHub 实际推送新 tag，本轮只完成配置级验证。
+
+## 19. P21 跨 worker 共享 GeoTIFF block 缓存与写路径优化
+
+P21 不改变采样算法、CRS/坐标变换、输出 tile 路径或 terrain payload，只
+优化 worker 之间的重复解码、source open 的重复 IFD 解析，以及 Terrain
+写文件路径。
+
+测试断言：
+
+- `GeoTiffBlockCache` 可通过 `Arc` 在多个 `GeoTiffRasterSource` 之间共享；
+  两个 source 对同一 `(level, tile_x, tile_y)` 的首个请求只会触发一次
+  `read_tile_band_buffer`，后续请求命中缓存，且窗口数值与直接
+  `read_window_into_typed::<f64>` 一致。
+- 缓存命中/插入的 `Mutex` 只保护 LRU 元数据和字节预算，不覆盖 deflate；
+  代码路径必须先在锁外完成 `read_tile_band_buffer`，再抢锁插入。
+- 固定 64 MiB 字节预算和 LRU 淘汰继续生效；单个超大 block 仍保留最近使用
+  项，超预算时淘汰较旧项。
+- VRT 输入继续走原 `read_window` + `copy_to_slice`，不引入共享 GeoTIFF
+  block 缓存。
+- `write_gzip` 写入磁盘的 gzip 字节与 `encode_gzip` 完全一致，
+  `decode_gzip` 往返后 terrain 相等。
+- tileset 预创建目录后，每个 tile 仍先写同目录临时文件再 rename；写失败时
+  清理临时文件，路径和最终文件内容不因优化改变。
+- `cargo fmt --check`、`cargo test --lib geotiff`、
+  `cargo test --lib cache`、`cargo test --lib terrain`、
+  `cargo test --lib tileset` 与 `cargo clippy --all-targets -- -D warnings`
+  通过；全量 lib 测试除既有 `error.rs` 文案断言外全部通过。
+- 回归门禁：重建 release 后 geodetic 11391/11391、Mercator 38/38 路径一致，
+  解压后 payload 差异为 0；真实 Copernicus DEM z0/z14->z0 性能需记录 Rust
+  新耗时与 C++ 基线。
+
+2026-08-13 实施结果：
+
+- 共享缓存单测验证两个 `Arc` clone 访问同一 block 时只触发一次
+  `read_tile_band_buffer`，并发命中与直接读取结果一致；VRT 不进入
+  GeoTIFF block 缓存。
+- `write_gzip` 写入文件后读取字节等于 `encode_gzip`，`read_gzip` 可往返还原
+  terrain。
+- `cargo fmt --check` 通过；`cargo clippy --all-targets -- -D warnings`
+  通过；`cargo test --lib` 为 93 passed、1 failed，失败仍是既有
+  `error.rs` 文案断言，不属于 P21；release 构建通过。
+- 真实 Copernicus DEM 性能（同一机器非隔离墙钟）：`z0` 约 0.27 s，
+  `z14->z0` 约 0.89 s；P19 为 z0 约 0.27 s、z14->z0 约 1.0 s；C++ 基线
+  为 z0 0.58/0.78 s、z14->z0 1.37/1.63 s。
+- geodetic Copernicus：`tests/terrain` 与
+  `/private/tmp/ctb-p21.abZX3C/full` 对比，路径 11391/11391，解压后
+  payload diff 0。
+- Mercator 真实 C++ oracle 本轮不可复跑：`cesium-terrain-builder`、
+  `/private/tmp/ctb-p18-cpp-run/ctb-tile` 和原始 720×720 EPSG:3857 输入
+  均已不存在；`oracle-source.asc` 重建只能得到 9 条路径，不能作为 38/38
+  回归证据，Mercator 一致性沿用 P18/P19 记录。
+
+## 20. P22 私有数据性能复核
+
+约束：只允许在文档中记录私有数据文件体积 1.9G，以及可复用的优化方向和
+优化内容；不记录路径、名称、CRS、尺寸、分辨率、波段、zoom 范围或 tile
+数量。测试产物放在 `/private/tmp`，不进入工作树。本轮不进行 C++ oracle
+差分。全量范围预计需数小时，本轮以代表性压力 profile 验证热点，文档不
+记录具体 zoom 范围或 tile 数量。
+
+验证目标：
+
+- 当前 release 构建可通过。
+- 私有数据端到端测试可完成则记录墙钟耗时；若单轮无法完成，记录代表性
+  profile 与峰值内存。
+- 根据耗时分布记录后续优化方向；优化内容必须可执行、可验证。
+
+2026-08-13 实施记录：
+
+- 基于当前工作树 release 构建对 1.9G 私有 DEM 发起测试；完整范围预计需要
+  数小时，未在单轮会话中跑完，不记录为正式全量墙钟基准。
+- 代表性压力阶段采样显示热点稳定收敛在
+  `TerrainSamplePlan::sample_heights` → `average_at` →
+  `read_sample_raw` → `GeoTiffRasterSource::read_samples` →
+  oxigeo `read_window_into` → `CogReader::read_tile_into` →
+  `decompress_into_partial` → `oxiarc_lzw::decompress`。
+- 主要热点是 LZW 解码临时 `Vec` 分配/增长、字典 reset 和内存分配抖动，
+  以及每次采样重建 `proj4rs::Proj`；具体优化方向见
+  `TECHNICAL_PLAN.md` P22 与 `TODO.md` P22。
+- 本轮不进行 C++ oracle 差分；当前环境没有可用的 C++ 构建/oracle。
+
+后续验证：
+
+- P22 优化后的坐标变换输出与优化前保持一致，既有 CRS/terrain 差分保持
+  通过。
+- LZW 解码入口改动保持 COG block 输出一致，terrain payload 差分保持 0。
+- 缓存几何/预算改动保持命中与未命中结果一致，峰值内存不超出设定预算。
+- 全量私有数据端到端基准在可执行的会话中补跑并记录墙钟耗时。
