@@ -125,6 +125,8 @@ cargo test
 
 - `verify-ctb-oracle.zsh`：对照 C++ CTB 输出做切片差分。
 - `benchmark-ctb-tile.zsh`：`ctb-tile` 性能基准。
+- `benchmark-ctb-cpp-rust-timeout.zsh`：先跑 C++ 并记录墙钟，再以两倍
+  C++ 墙钟作为 Rust timeout，比较共同 `.terrain` 输出。
 
 ## 工作原理
 

@@ -488,5 +488,145 @@
 - [x] 文档不记录除 1.9G 文件体积以外的测试文件信息。
 - [x] 定位剩余热点并回写优化方向、优化内容。
 - [x] 回写 P22 实施记录与验证证据。
-- [ ] 经授权后实施 P22 优化方向，并验证输出与既有差分保持一致。
+- [x] 经授权后实施 P22 优化方向 1（Proj 复用），并验证输出与既有差分
+      保持一致（P23 完成）。
+- [ ] 剩余 P22 优化方向（LZW 直接解码/字典复用、缓存几何复核、更大
+      source window）待依赖变更授权后实施。
 - [ ] 在可执行完整测试的会话中补跑私有数据全量端到端墙钟基准。
+
+## P23：私有数据性能优化第一轮：Proj 复用
+
+- [ ] 登记 P23，并延续 P22 隐私约束：文档只记录文件体积 1.9G 和可复用
+      优化内容。
+- [x] 在 `src/raster.rs` 增加线程局部 `proj4rs::Proj` 缓存，按
+      `(source_epsg_code, target_epsg_code)` 复用同一对投影对象。
+- [x] 保持错误消息、度/弧度转换和 `transform_xy` 调用顺序不变，新增通用
+      EPSG 重复变换精确一致性测试。
+- [x] 运行 `cargo fmt --check`、`cargo test --lib raster` 和
+      `cargo clippy --all-targets -- -D warnings`，回写验证证据。
+- [x] 重建 release，使用同一私有数据、同一代表性范围和同一线程数分别跑
+      优化前后基准。
+- [x] 比较私有数据代表性输出的文件集合与解压后 payload；不得在文档中
+      记录除文件体积外的测试文件信息。
+- [x] 回写 P23 实施记录、性能证据与剩余优化项。
+- [ ] 经授权后推进 LZW 直接解码/字典复用；同时复核 block 缓存几何/预算，
+      并仅在等价性可证明时评估一次读取更大 source window。
+
+## P24：私有数据性能复测：Rust/C++ 同机对比
+
+- [x] 登记 P24，并延续 P22/P23 隐私约束：文档只记录文件体积 1.9G 和
+      可复用优化内容。
+- [x] 恢复本机可运行的 C++ 0.4.1 oracle，确认动态库路径与版本可用。
+- [x] 使用同一 1.9G 私有 DEM、同一代表性范围和同一线程数，分别跑
+      C++ 0.4.1 与当前 Rust release。
+- [x] 比较 Rust/C++ 代表性输出的文件集合与解压后 payload；不得在文档中
+      记录除文件体积外的测试文件信息。
+- [x] 记录可复现的墙钟结果；若负载不稳定，明确不将单次墙钟作为正式结论。
+- [x] 根据热点与墙钟差距回写后续优化方向，并更新 P23 剩余项。
+- [x] 回写 P24 实施记录与验证证据。
+- [ ] 经授权后推进 `oxiarc_lzw`/`oxigeo` 依赖侧优化，并复核私有数据下的
+      GeoTIFF block cache 预算与访问模式。
+
+## P25：Terrain 跨 CRS Average 使用完整 VRT source window
+
+- [x] 登记 P25，并延续 P22/P23/P24 隐私约束：文档只记录文件体积 1.9G 和
+      可复用优化内容。
+- [x] 将 `terrain_sampling.rs` 的 affine transform 辅助函数改为可接收
+      坐标变换闭包，保留同 CRS FMA 数值路径。
+- [x] `sample_heights` 的 Average 分支去掉 CRS 分流，跨 CRS 也走
+      overlap GT + pooled `compute_source_window` + 整行 line coords +
+      加权平均。
+- [x] 新增 UTM 跨 CRS Terrain 单元/过程测试，并用 C++ oracle 比较路径集合
+      与解压后 payload。
+- [x] 运行 `cargo fmt --check`、`cargo test --lib terrain_sampling`、
+      `cargo test --test cli`、`cargo clippy --all-targets -- -D warnings`
+      并回写验证证据。
+- [x] 重建 release，用有实际高程变化的 UTM fixture 跑 C++/Rust Terrain
+      差分；路径集合一致，z6-z7 共 6 个 terrain 解压后 payload 全部逐字节
+      一致。
+- [x] 回写 P25 实施记录；本轮不评估私有数据性能趋势，剩余 LZW 依赖侧
+      优化继续等待授权。
+- [ ] P25 正确性结论稳定后，经用户授权再跑 1.9G 私有数据性能趋势对比。
+- [ ] 单独确认 C++ 0.4.1 对 `start zoom > natural max` 不校验并继续生成
+      z8 的行为，再决定 Rust CLI 是否按 C++ 对齐。
+
+## P26：私有数据 subset 性能测试流程
+
+- [x] 登记 P26，明确后续私有数据测试流程：先跑 C++ 并记录墙钟，再跑
+      Rust，Rust timeout = 2x C++ 墙钟。
+- [x] 从 1.9G 私有 DEM 裁出约 200MB 的 subset，仅记录 subset 文件体积。
+- [x] 同一 subset、同一 CLI 参数、同一线程数，先跑 C++ 0.4.1 并记录完成
+      墙钟。
+- [x] Rust 按 C++ 墙钟两倍超时运行，未完成则记录中断耗时。
+- [x] 比较 Rust 超时前共同完成的输出与 C++ 解压后 payload，并回写结果。
+- [ ] 经授权后继续推进 LZW 直接解码/字典复用及私有数据 block cache
+      几何复核。
+
+## P27：100MB 级别私有数据 subset 复测
+
+- [x] 登记 P27，延续 P26 隐私约束和固定测试流程，只记录 subset 文件体积。
+- [x] 从 1.9G 私有 DEM 裁出约 100MB 的 subset。
+- [x] 同一 subset、同一 CLI 参数、同一线程数，先跑 C++ 0.4.1 并记录完成
+      墙钟。
+- [x] Rust 按 C++ 墙钟两倍超时运行，记录完成或中断耗时。
+- [x] 比较 Rust/C++ 共同完成的输出与解压后 payload，并回写 P27 结果。
+- [ ] 根据 P27 结果复核 64 MiB block cache 预算，再决定是否继续推进 LZW
+      直接解码/字典复用。
+
+## P28：私有数据 GeoTIFF block cache 预算复核
+
+- [x] 登记 P28，记录 64 MiB 预算对私有数据 subset 的容量不足证据。
+- [x] 将 `src/geotiff.rs` block cache 字节预算调整为 819 MiB，与 C++ GDAL
+      block cache 规模对齐。
+- [x] 运行 `cargo fmt --check`、`cargo test --lib geotiff`、
+      `cargo test --test cli`、`cargo clippy --all-targets -- -D warnings`
+      并重建 release。
+- [x] 用同一约 100MB subset、同一 CLI 参数和同一线程数复测 Rust，记录
+      完成或超时结果。
+- [x] 比较 Rust/C++ 输出与解压后 payload，回写 P28 验证证据。
+- [x] 若仍超时，记录新热点；LZW 依赖侧优化继续等待授权。
+
+## P29：C++/Rust 超时对比脚本化
+
+- [x] 登记 P29，固化后续流程：先跑 C++ 并记录墙钟，再以两倍墙钟作为
+      Rust timeout。
+- [x] 新增 `scripts/benchmark-ctb-cpp-rust-timeout.zsh`，脚本本身不记录
+      私有数据路径、名称、CRS、尺寸、分辨率、zoom 范围或 tile 数量。
+- [x] 通过 `zsh -n` 校验脚本语法，并用假 C++/Rust 二进制验证计时、
+      timeout、共同输出比较和 payload 差异退出码。
+
+## P30：脚本化流程首轮真实复测
+
+- [x] 登记 P30，用同一约 100MB 私有 subset 验证 P29 脚本的真实执行流程。
+- [x] 通过脚本先跑 C++，记录完成墙钟，再自动设置 Rust timeout 为两倍
+      墙钟。
+- [x] Rust 未在两倍墙钟内完成时记录中断耗时，并比较共同输出解压后
+      payload。
+- [x] 回写 P30 实施记录；后续继续按脚本化规则滚动测试，LZW 依赖侧优化
+      等待授权。
+
+## P31：脚本化流程滚动复测
+
+- [x] 登记 P31，延续 P30 隐私约束和固定流程：只记录 subset 文件体积约
+      100MB、C++ 墙钟、Rust timeout、Rust 完成/超时状态和 payload 差分
+      结论。
+- [x] 通过脚本先跑 C++，记录完成墙钟，再自动设置 Rust timeout 为两倍
+      墙钟。
+- [x] Rust 未在两倍墙钟内完成时记录中断耗时，并比较共同输出解压后
+      payload。
+- [x] 回写 P31 实施记录；本轮发现共同输出中 1 个 terrain payload 差异，
+      先定位正确性差异，性能优化暂停。
+
+## P32：P31 单 terrain payload 差异定位
+
+- [ ] 登记 P32，定位 Rust/C++ 在约 100MB subset 上共同输出中唯一 payload
+      不一致的 terrain 文件；文档继续遵守隐私约束，不记录测试文件路径、
+      名称、CRS、尺寸、分辨率、zoom 范围或 tile 数量。
+- [ ] 复现差异文件在单独完整运行下仍稳定存在，排除 Rust timeout 截断造成
+      的半成品输出。
+- [ ] 对比 Rust 与 GDAL/C++ 的 overview 选择、source window、margin 和
+      差异像元参与平均的源像素/权重，记录根因。
+- [ ] 按根因选择项目侧修复；若需要改 Cargo 依赖侧代码，先整理方案并请求
+      Cargo CLI 授权。
+- [ ] 修复后通过既有正确性测试，并按“先 C++、Rust timeout = 2x C++ 墙钟”
+      规则滚动复测，再回到性能热点分析。

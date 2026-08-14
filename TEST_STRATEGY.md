@@ -751,3 +751,250 @@ P21 不改变采样算法、CRS/坐标变换、输出 tile 路径或 terrain pay
 - LZW 解码入口改动保持 COG block 输出一致，terrain payload 差分保持 0。
 - 缓存几何/预算改动保持命中与未命中结果一致，峰值内存不超出设定预算。
 - 全量私有数据端到端基准在可执行的会话中补跑并记录墙钟耗时。
+
+## 21. P23 私有数据性能优化第一轮：Proj 复用
+
+隐私约束与 P22 相同：只允许在文档中记录私有数据文件体积 1.9G，以及可复用
+的优化方向和优化内容；不记录路径、名称、CRS、尺寸、分辨率、zoom 范围或
+tile 数量。测试产物放在 `/private/tmp`，不进入工作树。本轮不进行 C++
+oracle 差分；当前环境没有可用的 C++ 构建/oracle。
+
+测试目标：
+
+- 使用同一 1.9G 私有 DEM、同一代表性范围和同一线程数，比较优化前后
+  release 构建的墙钟耗时。
+- 代表性输出必须做文件集合与解压后 payload 比较，确认 `proj4rs::Proj`
+  缓存没有改变 terrain 数据。
+- 单元测试覆盖通用 EPSG 变换：重复调用同一 `(source_crs, target_crs)`
+  与首次调用结果精确一致，控制点和未知 EPSG 错误行为不回归。
+
+验证命令：
+
+- `cargo fmt --check`
+- `cargo test --lib raster`
+- `cargo clippy --all-targets -- -D warnings`
+- release 构建后执行私有数据代表性范围前后基准，并在 `/private/tmp`
+  比较输出；实施记录只写文件体积 1.9G、代表性前后耗时和输出一致性，
+  不写测试文件细节。
+
+2026-08-13 实施记录：
+
+- 代码实现：`src/raster.rs` 使用线程局部 `(source_epsg_code,
+  target_epsg_code)` → `ProjectionPair` 缓存，只消除重复
+  `Proj::from_epsg_code`/`Proj::init`/projstring 解析；坐标运算、错误
+  路径和调用顺序不变。
+- 测试结果：`cargo fmt --check`、`cargo test --lib raster`（17/17）、
+  `cargo clippy --all-targets -- -D warnings`、`cargo test --test cli`
+  （13/13）和 `cargo build --release` 通过；全量 `cargo test` 为 94
+  passed，仅保留既有不相关的 `error.rs` 文案断言失败。
+- 私有数据结果：使用同一 1.9G 私有 DEM、同一代表性范围和同一线程数，
+  分别用优化前与 P23 release 长跑；共同完成的输出文件解压后 payload
+  完全一致。两次运行均在完整范围前手动中断且机器负载不稳，因此不以墙钟
+  作为正式 A/B 结论；本轮未观察到可确认的端到端加速，说明 Proj 构造在该
+  代表性 LZW/采样主导路径中占比小。
+- 文档遵守隐私约束：除文件体积 1.9G 外，不记录测试文件路径、名称、CRS、
+  尺寸、分辨率、zoom 范围或 tile 数量。
+
+## 22. P24 私有数据性能复测：Rust/C++ 同机对比
+
+隐私约束与 P22/P23 相同：只允许在文档中记录私有数据文件体积 1.9G，以及
+可复用的优化方向和优化内容；不记录路径、名称、CRS、尺寸、分辨率、zoom
+范围或 tile 数量。测试产物放在 `/private/tmp`，不进入工作树。
+
+测试目标：
+
+- 使用同一 1.9G 私有 DEM、同一代表性范围和同一线程数，分别跑本机
+  C++ 0.4.1 oracle 与当前 Rust release，作为一轮可复现的同机对比。
+- 代表性输出必须做文件集合与解压后 payload 比较，确认两者仍有既有
+  CTB 兼容性，或明确本轮差异范围。
+- 若机器负载稳定，记录 Rust/C++ 墙钟并给出比值；否则只记录趋势并说明
+  不把中断或高负载单次结果当作正式结论。
+
+验证命令：
+
+- 先确认 C++ oracle 可用：设置动态库搜索路径后执行 `--version`。
+- 对同一私有 DEM 分别执行 Rust/C++ `ctb-tile -q -c <同一线程数>
+  -s <同一代表性范围> -e <同一代表性范围> -o /private/tmp/<目录>`；
+  具体范围和目录不进入文档。
+- 用 `find | sort` 比较路径集合，并逐一 `gzip -dc | cmp` 比较解压后
+  terrain payload。
+- 记录 Rust/C++ 耗时、输出差异状态和下一步优化方向。
+
+2026-08-14 实施结果：
+
+- 已恢复本机 C++ 0.4.1 oracle：补齐动态库搜索路径后版本命令可用。
+- 使用同一 1.9G 私有 DEM、同一代表性范围和同一线程数完成 Rust/C++ 对比；
+  具体范围与路径集合按隐私约束不写入文档。
+- C++ 代表性范围完成墙钟约 43.8 s；Rust 同范围运行约 2h15m 后仍未完成，
+  按用户要求手动中断。该差值只作为趋势判断，不作为正式 A/B 墙钟结论。
+- Rust 中断时输出集合少于 C++；共同完成的输出中文件集合相同，但解压后
+  payload 存在多处差异（包含文件大小不同），另有 Rust 未完成目标未参与
+  差分。差异原因需后续单独定位，本轮不把兼容性结论写成通过。
+- 直接 GeoTIFF 源单目标采样确认主要热点在
+  `GeoTiffReader::read_tile_band_buffer` → `read_window_into` →
+  `scatter_bytes` → `decompress_into_partial` → `oxiarc_lzw::decompress`；
+  `LzwDecoder::decode` 最大，字典 reset、`add_string_decode` 和
+  malloc/free/realloc/memset/memmove 紧随其后，应用层缓存占比很小。
+- 后续方向：增加 LZW 直接写入目标缓冲区的解码 API，复用字典缓冲区，
+  复核私有数据下 GeoTIFF block cache 预算与访问模式；依赖侧改动必须先
+  经 Cargo CLI 流程和授权。
+- 文档遵守隐私约束：除文件体积 1.9G 外，不记录测试文件路径、名称、CRS、
+  尺寸、分辨率、zoom 范围或 tile 数量。
+
+## 23. P25 Terrain 跨 CRS Average pooled VRT source window
+
+目标：`TerrainSamplePlan::sample_heights` 的 Average 分支在所有 CRS 组合下都
+复刻 C++ `GDALTiler::createRasterTile` 的完整 VRT 数据流：overlap destination
+transform、`ComputeSourceWindow`、一次 pooled source read、整行
+`GWKAverageOrModeComputeLineCoords` 和逐像元加权平均。该优化不修改 LZW
+解码，也不引入新算法。
+
+验证命令：
+
+- `cargo fmt --check`
+- `cargo test --lib terrain_sampling`
+- `cargo test --test cli`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo build --release`
+
+oracle 验证：
+
+- 使用 UTM fixture 同时运行 C++ 0.4.1 与 Rust release 的 Terrain 输出，
+  比较路径集合和 `gzip -dc` 后的 payload。
+- 若 payload 不一致，先修复 P25 的坐标/窗口/权重实现，再重新构建和对比；
+  禁止用放宽断言代替 C++ 行为。
+- 私有数据只允许记录文件体积 1.9G；本策略不记录路径、名称、CRS、尺寸、
+  分辨率、zoom 范围或 tile 数量。
+
+### 23.1 P25 UTM Terrain oracle 实施结果
+
+2026-08-14 实施并验证：
+
+- 使用公开 UTM fixture（由仓库内 Copernicus DEM 测试源派生，32×32、
+  EPSG:32649，min=16.77 / max=568.45）同时运行 C++ 0.4.1 与 Rust release
+  的 `ctb-tile -q -c 4 -s 7 -e 6` Terrain 输出。
+- Rust 与 C++ 各自生成 6 个 `.terrain`（z6-z7），路径集合一致；对每个文件
+  `gzip -dc` 后比较，6/6 payload 逐字节一致（SHA-256 均相同）。
+- `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、
+  `cargo build --release` 通过；`cargo test --lib terrain_sampling` 14/14、
+  `cargo test --test cli` 13/13 通过。
+- 新增单测 `average_cross_crs_reads_one_pooled_sampling_window`，确认 UTM 源
+  跨 CRS 到 geodetic grid 时走一次 pooled sampling window read。
+- 补充：完整 `cargo test` 仍被既有 `error.rs` 的 zoom range 消息断言挡住
+  （`src/error.rs:46` 使用 `; require:`，`src/error.rs:119` 期望 `:`），该失败
+  与 P25 改动无关；排除该单测后 95/95 lib 用例通过。
+- 补充观察：同一 fixture 下 C++ 0.4.1 对 `-s 8` 不校验 natural max，仍生成
+  z8；Rust 拒绝 `start > natural max`。该差异与 P25 采样路径无关，待后续
+  单独确认是否按 C++ CLI 对齐。
+- 本轮不评估 1.9G 私有数据性能；LZW 依赖侧优化继续等待 Cargo CLI 授权。
+
+## 24. P26 私有数据 subset 性能测试流程
+
+后续私有数据性能测试固定按以下顺序执行，避免 Rust 长跑占用后 C++ 基准
+受机器负载影响：
+
+1. 从 1.9G 私有 DEM 裁出约 200MB 的 subset。
+2. 同一 subset、同一 CLI 参数、同一线程数，先跑 C++ 0.4.1，记录完成墙钟。
+3. Rust 使用相同参数，timeout = 2x C++ 墙钟；到点未完成则中断并记录部分
+   结果。
+4. 比较 Rust 超时前共同完成的输出与 C++ 输出的文件集合和解压后 payload。
+5. 文档只记录 subset 文件体积约 200MB 和可复用结论，不记录路径、名称、
+   CRS、尺寸、分辨率、zoom 范围或 tile 数量。
+
+### 24.1 P26 私有数据 subset 实施结果
+
+2026-08-14 实施结果：
+
+- subset 文件体积约 200MB；Rust 与 C++ 使用同一 subset、同一 CLI 参数和
+  同一线程数。
+- C++ 0.4.1 完成墙钟约 19.2s；Rust timeout 按 C++ 两倍执行，约 38.3s
+  被中断，未跑完。
+- Rust 超时前已生成的部分输出与 C++ 共同完成的文件逐一 `gzip -dc` 比较，
+  payload 全部逐字节一致。
+- 后续仍等待授权推进 `oxiarc_lzw`/`oxigeo` 依赖侧优化，并复核私有数据
+  GeoTIFF block cache 预算与访问模式。
+
+## 25. P27 100MB 级别私有数据 subset 复测
+
+继续沿用 P26 固定流程，把 subset 缩小到 100MB 级别，用于缩短滚动迭代
+的每轮测试时间。隐私约束不变：文档只记录 subset 文件体积约 100MB，以及
+可复用结论，不记录路径、名称、CRS、尺寸、分辨率、zoom 范围或 tile 数量。
+
+### 25.1 P27 实施结果
+
+2026-08-14 实施结果：
+
+- subset 文件体积约 100MB；Rust 与 C++ 使用同一 subset、同一 CLI 参数和
+  同一线程数。
+- C++ 0.4.1 完成墙钟约 7.89s；Rust timeout 按 C++ 两倍执行，约 15.81s
+  被中断，未跑完。
+- Rust 超时前共同完成的输出与 C++ 逐一 `gzip -dc` 比较，payload 全部
+  逐字节一致。
+- 64 MiB block cache 不足以稳定保留低 zoom 一轮访问所需的全部已解码块，
+  需要先复核缓存预算。
+
+## 26. P28 私有数据 GeoTIFF block cache 预算复核
+
+约 100MB 私有 subset 下，64 MiB 缓存容量不足低 zoom 一轮访问所需的全部
+已解码块，会触发同一批块反复 LZW 解码。本轮把 block cache 预算调整为
+819 MiB，与 C++ GDAL block cache 规模对齐，不改 LZW 解码和采样算法。
+
+### 26.1 P28 验证门禁
+
+- `cargo fmt --check`、`cargo test --lib geotiff`、
+  `cargo test --test cli`、`cargo clippy --all-targets -- -D warnings`、
+  `cargo build --release` 通过。
+- 同一约 100MB subset、同一 CLI 参数、同一线程数复测 Rust，C++ 基准仍为
+  7.89s，Rust timeout 为 15.78s。
+- Rust/C++ 共同输出逐一 `gzip -dc` 比较，payload 必须一致。
+
+### 26.2 P28 实施结果
+
+2026-08-14 实施结果：
+
+- `src/geotiff.rs` block cache 预算调整为 819 MiB，未改 Cargo 依赖、采样
+  算法或 LZW 解码路径；验证门禁通过。
+- 同一约 100MB subset、同一 CLI 参数和同一线程数复测：C++ 0.4.1 约 7.89s；
+  Rust timeout 约 15.78s 被中断，未跑完。
+- Rust 超时前共同完成的输出与 C++ 逐一 `gzip -dc` 比较，payload 全部逐字节
+  一致。
+- 热点仍集中在 `GeoTiffRasterSource::read_samples` ->
+  `read_tile_band_buffer` -> `oxiarc_lzw::decompress`；依赖侧优化等待授权。
+
+## 27. P30 脚本化流程首轮真实复测
+
+P29 新增的脚本把后续私有数据对比固定为：先 C++，记录墙钟，再把 Rust
+timeout 自动设为 C++ 墙钟两倍。本轮的用途是验证脚本用真实 subset 能完整
+跑通这一流程，并继续记录性能基线。
+
+### 27.1 P30 实施结果
+
+2026-08-14 实施结果：
+
+- subset 文件体积约 100MB；Rust 与 C++ 使用同一 subset、同一 CLI 参数和
+  同一线程数，命令通过 P29 脚本执行。
+- C++ 0.4.1 完成墙钟约 8.151s；Rust timeout 由脚本设为约 16.302s。
+- Rust 未在两倍墙钟内完成，约 16.338s 被中断。
+- Rust 超时前已生成的部分输出与 C++ 共同完成的文件逐一 `gzip -dc` 比较，
+  payload 全部逐字节一致。
+- 后续继续按同一脚本化规则滚动测试；LZW 依赖侧优化仍等待授权。
+
+## 28. P31 脚本化流程滚动复测
+
+继续沿用 P30 的固定流程：先跑 C++，记录墙钟，再以 C++ 墙钟两倍作为
+Rust timeout。隐私约束不变，只记录约 100MB subset 文件体积、C++ 墙钟、
+Rust timeout、Rust 完成/超时状态和 payload 差分结论，不记录测试文件路径、
+名称、CRS、尺寸、分辨率、zoom 范围或 tile 数量。
+
+### 28.1 P31 实施结果
+
+2026-08-14 实施结果：
+
+- subset 文件体积约 100MB；Rust 与 C++ 使用同一 subset、同一 CLI 参数和
+  同一线程数，命令通过 P29 脚本执行。
+- C++ 0.4.1 完成墙钟约 8.316s；Rust timeout 由脚本自动设为约 16.632s。
+- Rust 未在两倍墙钟内完成，约 16.665s 被中断。
+- Rust 超时前共同完成的输出逐一 `gzip -dc` 比较，33 个共同 `.terrain` 中
+  有 1 个 payload 不一致。
+- 单独完整复跑同一范围后，该 terrain 文件差异仍稳定存在；该差异先由
+  P32 定位，再继续性能优化。

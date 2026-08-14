@@ -138,3 +138,16 @@ OxiGeo 才能解决，也不需要为提速牺牲 C++ 兼容性。
 geodetic 11391/11391、Mercator 38/38，路径与解压后 payload 差异均为 0。
 剩余差距不是采样算法差异，后续若继续优化，可评估跨 worker 共享 block 缓存、
 大窗口按真实 block 批量读取，以及是否进一步降低 OxiGeo 单次窗口读取开销。
+
+## 后续私有数据复测（P22-P24）
+
+后续使用一个 1.9G 私有 DEM 复测后，P18 的适用范围需要补充：它解决的是
+Copernicus 这类真实 block 较大、DEFLATE 的 COG 输入被反复 inflate 的问题，
+不代表所有输入都已达到 C++ 水平。该私有数据为宽行条带 LZW 编码，直接源
+单目标采样显示主要时间集中在 `oxiarc_lzw::decompress`、
+`LzwDecoder::decode`、`LzwDictionary::reset`/`add_string_decode` 以及
+malloc/free/realloc/memset/memmove 抖动；应用层缓存占比很小。
+
+因此下一步不是继续调大应用层缓存，而是依赖侧 LZW 直接解码与字典复用，
+并复核 64 MiB GeoTIFF block cache 在宽行条带下的预算和访问模式。涉及
+`oxigeo`/`oxiarc_lzw` 或 Cargo 依赖变更时必须先授权。

@@ -11,6 +11,8 @@ const SOURCE_WINDOW_EPS: f64 = 1e-6;
 const COORD_EPS: f64 = 1e-10;
 const APPROX_TRANSFORM_MAX_ERROR: f64 = 0.125;
 
+type PixelTransform<'a> = dyn Fn(f64, f64) -> Result<(f64, f64), CtbError> + 'a;
+
 /// GDAL `VRTWarpedDataset` defaults to `min(nXSize,512)` by
 /// `min(nYSize,128)` blocks (`vrtwarped.cpp`).
 const VRT_BLOCK_MAX_WIDTH: u32 = 512;
@@ -106,7 +108,7 @@ impl TerrainSamplePlan {
         // overview chooser after reprojection to the source CRS.
         let target_ratio = 1.0 / source.metadata().transform.pixel_width;
         let level = source.sampling_level_for_ratio(target_ratio)?;
-        if method == ResamplingMethod::Average && self.target_crs == source.metadata().crs {
+        if method == ResamplingMethod::Average {
             return self.sample_average_with_gdal_window(source, &level);
         }
         let mut heights = Vec::new();
@@ -143,14 +145,31 @@ impl TerrainSamplePlan {
         let overlap =
             overlap_destination_transform(self.bounds, self.cell_width, self.cell_height)?;
         let source_transform = &level.metadata.transform;
-        let (src_x_off, src_y_off, src_x_size, src_y_size) = compute_source_window(
-            &overlap,
-            source_transform,
+        let transform = |dst_x: f64, dst_y: f64| {
+            if self.target_crs == source.metadata().crs {
+                Ok(dst_to_src(dst_x, dst_y, &overlap, source_transform))
+            } else {
+                let world_x = dst_x.mul_add(overlap.pixel_width, overlap.origin_x);
+                let world_y = dst_y.mul_add(overlap.pixel_height, overlap.origin_y);
+                let (source_x, source_y) = transform_coordinate(
+                    world_x,
+                    world_y,
+                    &self.target_crs,
+                    &source.metadata().crs,
+                )?;
+                Ok((
+                    source_transform.world_to_pixel_x(source_x),
+                    source_transform.world_to_pixel_y(source_y),
+                ))
+            }
+        };
+        let (src_x_off, src_y_off, src_x_size, src_y_size) = compute_source_window_with_transform(
             level.data_width,
             level.data_height,
             self.warp_block_width,
             self.warp_block_height,
-        );
+            &transform,
+        )?;
         let margin_x = average_margin(self.warp_block_width as i32, src_x_size);
         let margin_y = average_margin(self.warp_block_height as i32, src_y_size);
         if src_x_size == 0 || src_y_size == 0 {
@@ -185,15 +204,14 @@ impl TerrainSamplePlan {
         let mut x2 = vec![0.0; self.warp_block_width as usize];
         let mut y2 = vec![0.0; self.warp_block_width as usize];
         for row in 0..self.heightmap_size {
-            compute_average_line_coords(
+            compute_average_line_coords_with_transform(
                 &mut x1,
                 &mut y1,
                 &mut x2,
                 &mut y2,
                 f64::from(row),
-                &overlap,
-                source_transform,
-            );
+                &transform,
+            )?;
             for column in 0..self.heightmap_size {
                 let value = sample_average_pixel(
                     &window,
@@ -215,6 +233,7 @@ impl TerrainSamplePlan {
 /// (gdalwarpkernel.cpp:6873). The transform is run for the full VRT block
 /// scanline, even though only the upper-left heightmap-sized columns are
 /// consumed.
+#[cfg(test)]
 fn compute_average_line_coords(
     x1: &mut [f64],
     y1: &mut [f64],
@@ -224,6 +243,21 @@ fn compute_average_line_coords(
     dst_gt: &AffineTransform,
     src_gt: &AffineTransform,
 ) {
+    let result =
+        compute_average_line_coords_with_transform(x1, y1, x2, y2, dst_y, &|dst_x, dst_y| {
+            Ok(dst_to_src(dst_x, dst_y, dst_gt, src_gt))
+        });
+    result.expect("affine terrain transform cannot fail");
+}
+
+fn compute_average_line_coords_with_transform(
+    x1: &mut [f64],
+    y1: &mut [f64],
+    x2: &mut [f64],
+    y2: &mut [f64],
+    dst_y: f64,
+    transform: &PixelTransform<'_>,
+) -> Result<(), CtbError> {
     debug_assert_eq!(x1.len(), y1.len());
     debug_assert_eq!(x2.len(), y2.len());
     debug_assert_eq!(x1.len(), x2.len());
@@ -239,10 +273,11 @@ fn compute_average_line_coords(
     for y in y2.iter_mut() {
         *y = dst_y + 1.0;
     }
-    let success = gdal_approx_transform_row(x1, y1, dst_gt, src_gt);
+    let success = gdal_approx_transform_row_with_transform(x1, y1, transform)?;
     debug_assert!(success);
-    let success = gdal_approx_transform_row(x2, y2, dst_gt, src_gt);
+    let success = gdal_approx_transform_row_with_transform(x2, y2, transform)?;
     debug_assert!(success);
+    Ok(())
 }
 
 fn overlap_destination_transform(
@@ -277,31 +312,29 @@ fn dst_to_src(
 }
 
 /// GDALGenImgProjTransform applied to a whole destination scanline.
-fn gdal_gen_img_proj_transform_row(
+fn gdal_gen_img_proj_transform_row_with_transform(
     dst_x: &mut [f64],
     dst_y: &mut [f64],
-    dst_gt: &AffineTransform,
-    src_gt: &AffineTransform,
-) -> bool {
+    transform: &PixelTransform<'_>,
+) -> Result<bool, CtbError> {
     for index in 0..dst_x.len() {
-        let (src_x, src_y) = dst_to_src(dst_x[index], dst_y[index], dst_gt, src_gt);
+        let (src_x, src_y) = transform(dst_x[index], dst_y[index])?;
         dst_x[index] = src_x;
         dst_y[index] = src_y;
     }
-    true
+    Ok(true)
 }
 
 /// GDALApproxTransform for the constant-y scanline used by
 /// GWKAverageOrModeComputeLineCoords.
-fn gdal_approx_transform_row(
+fn gdal_approx_transform_row_with_transform(
     dst_x: &mut [f64],
     dst_y: &mut [f64],
-    dst_gt: &AffineTransform,
-    src_gt: &AffineTransform,
-) -> bool {
+    transform: &PixelTransform<'_>,
+) -> Result<bool, CtbError> {
     let n_points = dst_x.len();
     if n_points == 0 {
-        return true;
+        return Ok(true);
     }
     let n_middle = (n_points - 1) / 2;
     if dst_y[0] != dst_y[n_points - 1]
@@ -310,26 +343,25 @@ fn gdal_approx_transform_row(
         || dst_x[0] == dst_x[n_middle]
         || n_points <= 5
     {
-        return gdal_gen_img_proj_transform_row(dst_x, dst_y, dst_gt, src_gt);
+        return gdal_gen_img_proj_transform_row_with_transform(dst_x, dst_y, transform);
     }
 
     let mut sme_x = [dst_x[0], dst_x[n_middle], dst_x[n_points - 1]];
     let mut sme_y = [dst_y[0], dst_y[n_middle], dst_y[n_points - 1]];
-    if !gdal_gen_img_proj_transform_row(&mut sme_x, &mut sme_y, dst_gt, src_gt) {
-        return gdal_gen_img_proj_transform_row(dst_x, dst_y, dst_gt, src_gt);
+    if !gdal_gen_img_proj_transform_row_with_transform(&mut sme_x, &mut sme_y, transform)? {
+        return gdal_gen_img_proj_transform_row_with_transform(dst_x, dst_y, transform);
     }
 
-    gdal_approx_transform_internal(dst_x, dst_y, dst_gt, src_gt, &sme_x, &sme_y)
+    gdal_approx_transform_internal_with_transform(dst_x, dst_y, &sme_x, &sme_y, transform)
 }
 
-fn gdal_approx_transform_internal(
+fn gdal_approx_transform_internal_with_transform(
     dst_x: &mut [f64],
     dst_y: &mut [f64],
-    dst_gt: &AffineTransform,
-    src_gt: &AffineTransform,
     sme_x: &[f64; 3],
     sme_y: &[f64; 3],
-) -> bool {
+    transform: &PixelTransform<'_>,
+) -> Result<bool, CtbError> {
     let n_points = dst_x.len();
     let n_middle = (n_points - 1) / 2;
     let df_delta_x = (sme_x[2] - sme_x[0]) / (dst_x[n_points - 1] - dst_x[0]);
@@ -346,7 +378,7 @@ fn gdal_approx_transform_internal(
             dst_x[index] = df_dist.mul_add(df_delta_x, sme_x[0]);
             dst_y[index] = df_dist.mul_add(df_delta_y, sme_y[0]);
         }
-        return true;
+        return Ok(true);
     }
 
     let x_middle = [
@@ -375,54 +407,49 @@ fn gdal_approx_transform_internal(
     let mut transformed_middle_y = y_middle;
     let mut success = true;
     if !use_base_transform_half1 && !use_base_transform_half2 {
-        success = gdal_gen_img_proj_transform_row(
+        success = gdal_gen_img_proj_transform_row_with_transform(
             &mut transformed_middle_x,
             &mut transformed_middle_y,
-            dst_gt,
-            src_gt,
-        );
+            transform,
+        )?;
     } else if !use_base_transform_half1 {
-        success = gdal_gen_img_proj_transform_row(
+        success = gdal_gen_img_proj_transform_row_with_transform(
             &mut transformed_middle_x[..2],
             &mut transformed_middle_y[..2],
-            dst_gt,
-            src_gt,
-        );
+            transform,
+        )?;
     } else if !use_base_transform_half2 {
-        success = gdal_gen_img_proj_transform_row(
+        success = gdal_gen_img_proj_transform_row_with_transform(
             &mut transformed_middle_x[2..],
             &mut transformed_middle_y[2..],
-            dst_gt,
-            src_gt,
-        );
+            transform,
+        )?;
     }
 
     if !success {
-        return fallback_approx_transform_halves(
-            dst_x, dst_y, dst_gt, src_gt, n_middle, sme_x, sme_y,
+        return fallback_approx_transform_halves_with_transform(
+            dst_x, dst_y, n_middle, sme_x, sme_y, transform,
         );
     }
 
     if !use_base_transform_half1 {
         let half_sme_x = [sme_x[0], transformed_middle_x[0], transformed_middle_x[1]];
         let half_sme_y = [sme_y[0], transformed_middle_y[0], transformed_middle_y[1]];
-        if !gdal_approx_transform_internal(
+        if !gdal_approx_transform_internal_with_transform(
             &mut dst_x[..n_middle],
             &mut dst_y[..n_middle],
-            dst_gt,
-            src_gt,
             &half_sme_x,
             &half_sme_y,
-        ) {
-            return false;
+            transform,
+        )? {
+            return Ok(false);
         }
-    } else if !gdal_gen_img_proj_transform_row(
+    } else if !gdal_gen_img_proj_transform_row_with_transform(
         &mut dst_x[1..n_middle],
         &mut dst_y[1..n_middle],
-        dst_gt,
-        src_gt,
-    ) {
-        return false;
+        transform,
+    )? {
+        return Ok(false);
     } else {
         dst_x[0] = sme_x[0];
         dst_y[0] = sme_y[0];
@@ -431,23 +458,21 @@ fn gdal_approx_transform_internal(
     if !use_base_transform_half2 {
         let half_sme_x = [sme_x[1], transformed_middle_x[2], sme_x[2]];
         let half_sme_y = [sme_y[1], transformed_middle_y[2], sme_y[2]];
-        if !gdal_approx_transform_internal(
+        if !gdal_approx_transform_internal_with_transform(
             &mut dst_x[n_middle..],
             &mut dst_y[n_middle..],
-            dst_gt,
-            src_gt,
             &half_sme_x,
             &half_sme_y,
-        ) {
-            return false;
+            transform,
+        )? {
+            return Ok(false);
         }
-    } else if !gdal_gen_img_proj_transform_row(
+    } else if !gdal_gen_img_proj_transform_row_with_transform(
         &mut dst_x[n_middle + 1..n_points - 1],
         &mut dst_y[n_middle + 1..n_points - 1],
-        dst_gt,
-        src_gt,
-    ) {
-        return false;
+        transform,
+    )? {
+        return Ok(false);
     } else {
         dst_x[n_middle] = sme_x[1];
         dst_y[n_middle] = sme_y[1];
@@ -455,38 +480,35 @@ fn gdal_approx_transform_internal(
         dst_y[n_points - 1] = sme_y[2];
     }
 
-    true
+    Ok(true)
 }
 
-fn fallback_approx_transform_halves(
+fn fallback_approx_transform_halves_with_transform(
     dst_x: &mut [f64],
     dst_y: &mut [f64],
-    dst_gt: &AffineTransform,
-    src_gt: &AffineTransform,
     n_middle: usize,
     sme_x: &[f64; 3],
     sme_y: &[f64; 3],
-) -> bool {
+    transform: &PixelTransform<'_>,
+) -> Result<bool, CtbError> {
     let n_points = dst_x.len();
-    let mut success = gdal_gen_img_proj_transform_row(
+    let mut success = gdal_gen_img_proj_transform_row_with_transform(
         &mut dst_x[1..n_middle],
         &mut dst_y[1..n_middle],
-        dst_gt,
-        src_gt,
-    );
-    success &= gdal_gen_img_proj_transform_row(
+        transform,
+    )?;
+    success &= gdal_gen_img_proj_transform_row_with_transform(
         &mut dst_x[n_middle + 1..n_points - 1],
         &mut dst_y[n_middle + 1..n_points - 1],
-        dst_gt,
-        src_gt,
-    );
+        transform,
+    )?;
     dst_x[0] = sme_x[0];
     dst_y[0] = sme_y[0];
     dst_x[n_middle] = sme_x[1];
     dst_y[n_middle] = sme_y[1];
     dst_x[n_points - 1] = sme_x[2];
     dst_y[n_points - 1] = sme_y[2];
-    success
+    Ok(success)
 }
 
 fn round_if_close(value: f64) -> f64 {
@@ -503,6 +525,7 @@ fn round_if_close(value: f64) -> f64 {
 /// GeoTransform, but psWarpOptions->hSrcDS remains the base dataset, so the
 /// final clamp and window size use level.data_width/data_height. The
 /// destination edge is sampled with independent X/Y block dimensions.
+#[cfg(test)]
 fn compute_source_window(
     dst_gt: &AffineTransform,
     src_gt: &AffineTransform,
@@ -511,6 +534,23 @@ fn compute_source_window(
     destination_width: u32,
     destination_height: u32,
 ) -> (i32, i32, i32, i32) {
+    compute_source_window_with_transform(
+        base_width,
+        base_height,
+        destination_width,
+        destination_height,
+        &|dst_x, dst_y| Ok(dst_to_src(dst_x, dst_y, dst_gt, src_gt)),
+    )
+    .expect("affine terrain transform cannot fail")
+}
+
+fn compute_source_window_with_transform(
+    base_width: u32,
+    base_height: u32,
+    destination_width: u32,
+    destination_height: u32,
+    transform: &PixelTransform<'_>,
+) -> Result<(i32, i32, i32, i32), CtbError> {
     let mut min_x = f64::INFINITY;
     let mut min_y = f64::INFINITY;
     let mut max_x = f64::NEG_INFINITY;
@@ -528,7 +568,7 @@ fn compute_source_window(
             (0.0, y),
             (destination_width_f, y),
         ] {
-            let (src_x, src_y) = dst_to_src(dst_x, dst_y, dst_gt, src_gt);
+            let (src_x, src_y) = transform(dst_x, dst_y)?;
             if !src_x.is_finite() || !src_y.is_finite() {
                 continue;
             }
@@ -540,7 +580,7 @@ fn compute_source_window(
     }
 
     if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
-        return (0, 0, 0, 0);
+        return Ok((0, 0, 0, 0));
     }
 
     let min_x = round_if_close(min_x);
@@ -579,7 +619,7 @@ fn compute_source_window(
         )
     };
 
-    (src_x_off, src_y_off, src_x_size, src_y_size)
+    Ok((src_x_off, src_y_off, src_x_size, src_y_size))
 }
 
 /// GDALWarpKernel::PerformWarp margin verified against the real COG oracle.
@@ -769,6 +809,11 @@ fn round_clamped(value: f64, min: f64, max: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use crate::{
         CtbError,
         raster::{
@@ -806,6 +851,12 @@ mod tests {
         value: f64,
     }
 
+    struct CountingRaster {
+        metadata: RasterMetadata,
+        value: f64,
+        sampling_reads: Arc<AtomicUsize>,
+    }
+
     struct GeoTiffWindowRaster {
         metadata: RasterMetadata,
     }
@@ -831,6 +882,39 @@ mod tests {
                 request,
                 samples: vec![self.value; count],
             })
+        }
+    }
+
+    impl RasterSource for CountingRaster {
+        fn metadata(&self) -> &RasterMetadata {
+            &self.metadata
+        }
+
+        fn overview_count(&self) -> u16 {
+            0
+        }
+
+        fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError> {
+            let width =
+                usize::try_from(request.width).map_err(|_| CtbError::InvalidRasterWindow)?;
+            let height =
+                usize::try_from(request.height).map_err(|_| CtbError::InvalidRasterWindow)?;
+            let count = width
+                .checked_mul(height)
+                .ok_or(CtbError::InvalidRasterWindow)?;
+            Ok(RasterWindow {
+                request,
+                samples: vec![self.value; count],
+            })
+        }
+
+        fn read_sampling_window(
+            &self,
+            _level: &crate::raster::SamplingLevel,
+            request: WindowRequest,
+        ) -> Result<RasterWindow, CtbError> {
+            self.sampling_reads.fetch_add(1, Ordering::SeqCst);
+            self.read_window(request)
         }
     }
 
@@ -1310,6 +1394,43 @@ mod tests {
         let heights = plan.sample_heights(&source, ResamplingMethod::Average)?;
         assert_eq!(heights.len(), HEIGHTMAP_TILE_SIZE * HEIGHTMAP_TILE_SIZE);
         assert!(heights.iter().all(|value| (*value - 100.0).abs() < 1e-12));
+        Ok(())
+    }
+
+    #[test]
+    fn average_cross_crs_reads_one_pooled_sampling_window() -> Result<(), CtbError> {
+        let sampling_reads = Arc::new(AtomicUsize::new(0));
+        let source = CountingRaster {
+            metadata: RasterMetadata {
+                width: 32,
+                height: 32,
+                band_count: 1,
+                crs: Crs::Epsg(32630),
+                transform: AffineTransform::north_up(400_000.0, 100_000.0, 8_000.0, -8_000.0)?,
+                no_data: None,
+                sample_type: RasterSampleType::Float64,
+            },
+            value: 9.0,
+            sampling_reads: sampling_reads.clone(),
+        };
+        let grid = GlobalGeodeticGrid::new(65)?;
+        let plan = TerrainSamplePlan::new(
+            grid,
+            TileCoord {
+                zoom: 6,
+                x: 62,
+                y: 32,
+            },
+        )?;
+        let heights = plan.sample_heights(&source, ResamplingMethod::Average)?;
+        assert_eq!(heights.len(), HEIGHTMAP_TILE_SIZE * HEIGHTMAP_TILE_SIZE);
+        assert_eq!(sampling_reads.load(Ordering::SeqCst), 1);
+        assert!(heights.iter().any(|value| (*value - 9.0).abs() < 1e-12));
+        assert!(
+            heights
+                .iter()
+                .all(|value| *value == 0.0 || (*value - 9.0).abs() < 1e-12)
+        );
         Ok(())
     }
 

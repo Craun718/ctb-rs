@@ -23,7 +23,9 @@ use crate::{
     },
 };
 
-const GEOTIFF_BLOCK_CACHE_BUDGET_BYTES: usize = 64 << 20;
+// Match the GDAL block-cache scale used by the C++ oracle baseline. Wide
+// one-row strips are ~0.12 MiB each, so 64 MiB only retained ~540 strips.
+const GEOTIFF_BLOCK_CACHE_BUDGET_BYTES: usize = 819 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct BlockKey {
