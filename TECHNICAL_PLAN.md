@@ -2809,7 +2809,7 @@ timeout、Rust 完成/超时状态和 payload 差分结论。
   不一致；单独完整复跑同一范围后该文件差异仍稳定存在，不是超时半成品。
 - 性能优化先暂停，进入 P32 定位该采样差异；LZW 依赖侧优化继续等待授权。
 
-### P32：P31 单 terrain payload 差异定位（进行中）
+### P32：P31 单 terrain payload 差异定位（实施完成）
 
 说明：P31 首见共同输出 payload 差异。先复现并定位差异文件在 Rust 与
 GDAL/C++ 采样链上的根因，再继续性能优化，避免在错误输出上继续量化速度。
@@ -2824,3 +2824,107 @@ zoom 范围或 tile 数量。
    像元参与平均的源像素/权重，找到稳定根因后先写回技术方案。
 3. 修复只覆盖差异根因，不以“性能更快”为理由改变 C++ 行为。
 4. 修复后回写 P32 实施记录，再按 P31 固定流程滚动复测。
+
+#### P32 实施记录
+
+2026-08-15 定位结果：
+
+- 单独完整运行复现同一差异，排除 timeout 半成品；差异稳定收敛到单个
+  heightmap 采样的源窗口边界。
+- C++/GDAL 与 Rust 诊断确认差异不是 Cargo 依赖侧坐标变换错误，而是项目侧
+  source window 整数化路径把 `>90%` 覆盖范围扩展为整幅来源栅格，改变了
+  average gate 与参与样本；未修改 Cargo 依赖。
+- 项目侧按 C++ pooled window 的边界先直接裁剪 X/Y offset/size，使采样窗口、
+  gate 和参与样本回到 C++ 结果。
+
+### P33：P32 阈值差异复核与项目侧修复（实施完成）
+
+说明：当前临时诊断已把 P31 的唯一 payload 差异收敛到单个 terrain 采样的边界阈值：
+差异位于 65×65 heightmap 的 row 25 / column 16，C++ 解码值为 5000，Rust 为 7565。
+C++/GDAL 的 pooled source window 为 `x=19399, y=121, 11810×5079`，`y` margin 为
+158，因此该像元右上源坐标的 gate 阈值是 `121 + 5079 + 158 = 5358`；C++ approximate
+transform 得到 `y=5359.100106...` 而返回 nodata/0。Rust 需要继续输出同一目标像素的
+exact/approx transform 与 gate 数值，确认差异来自 proj4rs 数值、approx transformer 递归
+还是窗口整数化。先定位并登记稳定根因，再只做项目侧行为修复；不得以扩大 margin 或
+改动权重公式这种性能/便利性方案替代 GDAL 语义。
+
+#### P33 实施规则
+
+1. 继续遵守 P31/P32 隐私约束，仓库文档只记录 tile 内部 row/column、C++/Rust 值和
+   采样窗口/margin 阈值，不记录私有输入路径、名称、CRS、尺寸、分辨率、zoom 范围或
+   tile 总数。
+2. 复核 Rust 与 C++/GDAL 在同一 destination 像元上的 `p1/p2` 源坐标、pooled window 与
+   margin gate；诊断产物放在 `/private/tmp`。
+3. 若根因在项目侧，补一个不依赖私有数据的最小回归测试；若根因锁定在 Cargo 依赖侧，
+   先登记证据并请求 Cargo CLI 授权，不直接修改依赖源码。
+4. 修复后先跑定向测试与公开 oracle，再用约 100MB subset 按 P29 脚本执行
+   “先 C++、Rust timeout = 2x C++ 墙钟”的滚动复测。
+
+#### P33 实施记录
+
+2026-08-15 实施结果：
+
+- 增加不依赖私有数据的公开回归测试，锁定完全位于内部、旧实现会触发
+  `>90%` 整幅扩展的 source window；项目侧实现改为直接裁剪窗口。
+- `cargo fmt --check` 与 `cargo test --lib terrain_sampling` 通过；公开
+  terrain oracle 120/120 通过。
+- 约 100MB 私有 subset 全量对比：输出路径集合一致，解压后 payload 差异为
+  0。
+- 按 P29 固定流程复测：C++ 完成约 7.673s，Rust timeout 为约 15.346s，Rust
+  约 15.382s 被中断；已生成共同输出的解压后 payload 差异为 0。性能热点
+  分析因 P34 source extra 语义复核暂停。
+
+### P34：P33 source extra 语义复核（进行中）
+
+说明：P33 的临时修复删除了 GDAL `ComputeSourceWindow` 的 `>90%`
+整幅扩展分支，并在该私有样本上恢复一致。继续复核后发现完整语义还有一段
+关键差异：GDAL 整幅扩展时会把窗口尺寸设为全幅，但 `ComputeSourceWindow`
+同时返回 `dfSrcXExtraSize/dfSrcYExtraSize`；`GDALWarpKernel` 计算 average
+缩放时使用 `nSrcXSize - dfSrcXExtraSize` 与 `nSrcYSize - dfSrcYExtraSize`。
+P31 差异像元所在的 `y` 窗口正是这种情形：窗口扩展为全幅，但 extra 使有效
+缩放窗口仍等于裁剪窗口。因此仅删除整幅扩展分支虽能借由等效窗口恢复输出，
+却没有复刻 GDAL 的窗口/extra 分离语义，不能作为最终实现。
+
+#### P34 实施规则
+
+1. 恢复 GDAL `>90%` 的整幅扩展分支，同时实现 source extra 的计算与传递；
+   不得继续用删除分支的方式伪装等价结果。
+2. `average_margin` 必须按 GDALWarpKernel 语义使用“实际读取窗口尺寸 -
+   source extra”计算缩放；窗口读取仍使用扩展后的实际窗口。
+3. 用公开的最小回归测试覆盖“全幅扩展窗口 + 非零 extra + 原有效缩放窗口”
+   的组合，避免只在单一私有样本上验证。
+4. 修复后重新运行定向测试、公开 oracle、私有 subset 全量 payload 对比和
+   P29 超时基准；隐私约束沿用 P31-P33。
+
+#### P34 实施记录
+
+2026-08-15 复核结果：
+
+- 已按 GDAL 源码恢复 `>90%` 整幅扩展，并为 X/Y source window 记录
+  `source extra`；`average_margin` 改按“实际窗口 - extra”计算缩放。
+- 定向测试通过，公开 oracle 120/120 通过。
+- 约 100MB 私有 subset 全量对比发现 7 个 payload 差异；同一输出与 P33
+  直接裁剪窗口实现逐字节一致的比例更高，且 P33 实现曾实现全量 payload
+  一致。差异集中在需要继续建模 GDAL warp memory/chunk 切分的场景，不能把
+  “整幅扩展 + source extra”直接套在整个 VRT block 上。
+- 回滚复验完成：terrain sampling 定向测试和 release 构建通过；同一约
+  100MB 私有 subset 的全量输出路径集合与 C++ 一致，解压后 payload 差异为 0。
+- 该尝试已回滚到 P33 最后一次通过私有全量对比的项目侧实现；不把该等效
+  修复误标为完整 GDAL 语义。后续必须先决定是继续完整建模 warp chunk
+  切分，还是在技术方案中明确记录项目侧裁剪窗口等价边界。
+
+### P35：无效 zoom range 测试期望修正（实施完成）
+
+说明：P34 回滚后的全量验证中，`cargo test` 发现最新提交
+`eda3bdc test(error): update invalid zoom range display expectation` 只修改
+了测试期望，却把生产错误输出中的分号误写为逗号。生产实现自引入该错误
+文本以来一直输出 `invalid zoom range; require:`，因此本轮仅把测试期望修
+回同一文本，不改变 CLI 行为。
+
+#### P35 实施记录
+
+2026-08-15 实施结果：
+
+- `src/error.rs` 的测试期望由逗号修正为分号，与
+  `CtbError::InvalidZoomRange` 的既有 Display 输出一致。
+- `cargo test` 通过，120 项测试全绿。

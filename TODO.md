@@ -617,16 +617,50 @@
 - [x] 回写 P31 实施记录；本轮发现共同输出中 1 个 terrain payload 差异，
       先定位正确性差异，性能优化暂停。
 
-## P32：P31 单 terrain payload 差异定位
+## P32：P31 单 terrain payload 差异定位（实施完成）
 
-- [ ] 登记 P32，定位 Rust/C++ 在约 100MB subset 上共同输出中唯一 payload
+- [x] 登记 P32，定位 Rust/C++ 在约 100MB subset 上共同输出中唯一 payload
       不一致的 terrain 文件；文档继续遵守隐私约束，不记录测试文件路径、
       名称、CRS、尺寸、分辨率、zoom 范围或 tile 数量。
-- [ ] 复现差异文件在单独完整运行下仍稳定存在，排除 Rust timeout 截断造成
+- [x] 复现差异文件在单独完整运行下仍稳定存在，排除 Rust timeout 截断造成
       的半成品输出。
-- [ ] 对比 Rust 与 GDAL/C++ 的 overview 选择、source window、margin 和
+- [x] 对比 Rust 与 GDAL/C++ 的 overview 选择、source window、margin 和
       差异像元参与平均的源像素/权重，记录根因。
-- [ ] 按根因选择项目侧修复；若需要改 Cargo 依赖侧代码，先整理方案并请求
+- [x] 按根因选择项目侧修复；若需要改 Cargo 依赖侧代码，先整理方案并请求
       Cargo CLI 授权。
-- [ ] 修复后通过既有正确性测试，并按“先 C++、Rust timeout = 2x C++ 墙钟”
+- [x] 修复后通过既有正确性测试，并按“先 C++、Rust timeout = 2x C++ 墙钟”
       规则滚动复测，再回到性能热点分析。
+
+## P33：P32 阈值差异复核与项目侧修复（实施完成）
+
+- [x] 输出 Rust 在差异像元的 `p1/p2` 源坐标、pooled window 和 margin gate 数值，与
+      C++/GDAL 诊断结果逐项对比。
+- [x] 锁定差异根因：proj4rs 数值、approx transformer 递归或 source window 整数化；
+      写回技术方案并保持隐私约束。
+- [x] 若根因在项目侧，补最小公开回归测试并修复；若根因在依赖侧，整理证据并请求
+      Cargo CLI 授权。
+- [x] 运行定向测试和公开 oracle，确认 P31 差异采样不再复现。
+- [x] 使用约 100MB subset 调用 P29 脚本滚动复测，保持 Rust timeout 为 C++ 墙钟两倍。
+
+## P34：P33 source extra 语义复核
+
+- [x] 登记 P34，说明 P33 删除整幅扩展分支只是私有样本上的等效修复，还缺少
+      GDAL source extra 语义。
+- [x] 恢复 `>90%` 整幅扩展分支，并为 source window 返回 X/Y extra。
+- [x] 将 average 缩放改为使用实际窗口尺寸减去对应 source extra，并补公开
+      回归测试。
+- [x] 运行定向测试和公开 oracle；公开 oracle 120/120 通过。
+- [x] 用约 100MB subset 做全量 payload 对比；发现 7 个 payload 差异，
+      推翻“直接套用整幅扩展 + source extra”的假设。
+- [x] 回滚失败的 P34 代码尝试，恢复 P33 最后一次私有全量一致的实现；
+      定向测试、release 构建和私有全量 payload 0 差异复验通过。
+- [ ] 向用户确认后续路线：完整建模 GDAL warp memory/chunk 切分，或明确
+      记录项目侧裁剪窗口等价边界；未确认前不继续性能优化。
+
+## P35：无效 zoom range 测试期望修正（实施完成）
+
+- [x] 登记 P35，记录 `eda3bdc` 中测试期望分号被误写为逗号导致完整测试
+      失败的根因。
+- [x] 仅修正 `src/error.rs` 单元测试期望，使其与生产 Display 输出一致；
+      不修改生产代码和 CLI 行为。
+- [x] 重新运行 `cargo test`，确认 120 项测试全部通过。

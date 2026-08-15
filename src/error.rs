@@ -116,7 +116,7 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "invalid zoom range, require: maximum (15) >= start (8) >= end (12)"
+            "invalid zoom range; require: maximum (15) >= start (8) >= end (12)"
         );
     }
 }

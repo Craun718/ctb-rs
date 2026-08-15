@@ -595,29 +595,14 @@ fn compute_source_window_with_transform(
     let max_x_clamped = max_x.ceil().min(base_width_f) as i32;
     let max_y_clamped = max_y.ceil().min(base_height_f) as i32;
 
-    let (src_x_off, src_x_size) = if f64::from(max_x_clamped - min_x_clamped) > 0.9 * base_width_f {
-        (0i32, base_width as i32)
-    } else {
-        let offset = min_x_clamped.max(0).min(base_width as i32);
-        (
-            offset,
-            (max_x_clamped - offset)
-                .max(0)
-                .min(base_width as i32 - offset),
-        )
-    };
-    let (src_y_off, src_y_size) = if f64::from(max_y_clamped - min_y_clamped) > 0.9 * base_height_f
-    {
-        (0i32, base_height as i32)
-    } else {
-        let offset = min_y_clamped.max(0).min(base_height as i32);
-        (
-            offset,
-            (max_y_clamped - offset)
-                .max(0)
-                .min(base_height as i32 - offset),
-        )
-    };
+    let src_x_off = min_x_clamped.max(0).min(base_width as i32);
+    let src_x_size = (max_x_clamped - src_x_off)
+        .max(0)
+        .min(base_width as i32 - src_x_off);
+    let src_y_off = min_y_clamped.max(0).min(base_height as i32);
+    let src_y_size = (max_y_clamped - src_y_off)
+        .max(0)
+        .min(base_height as i32 - src_y_off);
 
     Ok((src_x_off, src_y_off, src_x_size, src_y_size))
 }
@@ -636,7 +621,7 @@ fn warp_scale(destination_size: i32, source_size: i32) -> f64 {
     let destination = f64::from(destination_size);
     let source = f64::from(source_size);
     let source_extra = 0.0;
-    let mut df_scale = destination / (source - source_extra);
+    let mut df_scale = destination / source;
     if source >= destination && source <= destination + source_extra {
         df_scale = 1.0;
     }
@@ -1210,6 +1195,20 @@ mod tests {
                 expected,
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn compute_source_window_keeps_interior_ninety_percent_window() -> Result<(), CtbError> {
+        // P33 oracle: the old >90% shortcut expanded a fully interior source
+        // footprint to the whole dataset, changing both the warp margin gate
+        // and participating source samples.
+        let overlap = AffineTransform::north_up(0.0, 5200.0, 1.0, -1.0)?;
+        let source_transform = AffineTransform::north_up(0.0, 5_321.0, 1.0, -1.0)?;
+        assert_eq!(
+            compute_source_window(&overlap, &source_transform, 10_000, 5200, 5079, 5079),
+            (0, 121, 5079, 5079),
+        );
         Ok(())
     }
 
