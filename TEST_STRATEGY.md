@@ -1013,3 +1013,31 @@ Rust timeout、Rust 完成/超时状态和 payload 差分结论，不记录测�
 2026-08-15 实施结果：
 
 - `cargo test` 通过，120 项测试全绿。
+
+## 30. P37 应用层采样与转换优化
+
+P37 在输出一致性边界下优化两个项目侧热点：平均采样循环和 native
+GeoTIFF block cache 命中后的 raw bytes 到 `f64` 转换。两项优化都必须保持
+读取窗口、NoData、权重公式、浮点计算顺序和数值转换语义不变。
+
+### 30.1 P37 验证门禁
+
+- 平均采样保留既有 `sample_average_pixel` 单元测试，并覆盖窗口分片读取的
+  首末行列访问。
+- raw bytes 到 `f64` 的专用转换用本机字节序 fixture 覆盖 GeoTIFF 现有
+  支持的全部数值类型，并验证长度不匹配时返回错误。
+- `cargo fmt --check`、`cargo test`、`cargo build --release` 必须通过。
+- 约 100MB 私有 subset 必须复跑 P29 timeout 流程和完整输出对比，42/42
+  解压后 payload 保持一致。
+
+### 30.2 P37 实施结果
+
+2026-08-15 实施结果：
+
+- 平均采样既有测试通过，3×3 加权 oracle 覆盖首末行列和中间样本。
+- raw bytes 到 `f64` 转换新增单元测试，覆盖全部 8 种支持类型，并验证
+  样本数不匹配时返回 `RasterRead` 错误。
+- `cargo fmt --check`、`cargo test`、`cargo build --release` 通过；完整测试
+  为 122 项全绿。
+- P29 timeout 流程已复跑；该轮 Rust 超时前没有共同 terrain。随后完整
+  Rust 运行与 C++ 输出路径一致，42/42 解压后 payload 差异为 0。

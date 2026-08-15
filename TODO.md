@@ -685,7 +685,9 @@
       基准与输出差分；42/42 payload 一致，但 timeout 目标仍不满足。
 - [x] 对 P37 完整运行后期单独采样：8 秒处 LZW 仍约占 42%，平均采样路径
       约占 52%，坐标变换与 gzip 输出合计不足 1%。
-- [ ] 按 P37 技术方案优化 `sample_average_pixel` 的重复转换、权重分支和
+- [x] 按 P37 技术方案优化 `sample_average_pixel` 的重复转换、权重分支和
       内层 bounds check，保持浮点计算顺序不变。
-- [ ] 复跑完整测试、release 构建和 42/42 payload 差分；若 timeout 仍不满足，
+- [x] 为 native GeoTIFF block cache 命中路径增加项目侧 raw bytes 到 f64
+      专用转换，保持支持的 `RasterDataType` 数值语义不变。
+- [x] 复跑完整测试、release 构建和 42/42 payload 差分；若 timeout 仍不满足，
       再评估是否提出依赖变更授权请求。

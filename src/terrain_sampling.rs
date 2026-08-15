@@ -198,6 +198,7 @@ impl TerrainSamplePlan {
                 window.samples.len()
             )));
         }
+        let average_window = AverageWindow::new(&window)?;
         let mut heights = Vec::with_capacity(HEIGHTMAP_SAMPLE_COUNT);
         let mut x1 = vec![0.0; self.warp_block_width as usize];
         let mut y1 = vec![0.0; self.warp_block_width as usize];
@@ -214,14 +215,14 @@ impl TerrainSamplePlan {
             )?;
             for column in 0..self.heightmap_size {
                 let value = sample_average_pixel(
-                    &window,
+                    &average_window,
                     x1[column as usize],
                     y1[column as usize],
                     x2[column as usize],
                     y2[column as usize],
                     margin_x,
                     margin_y,
-                );
+                )?;
                 heights.push(round_to_working_type(value, level.metadata.sample_type));
             }
         }
@@ -635,26 +636,73 @@ fn warp_scale(destination_size: i32, source_size: i32) -> f64 {
     df_scale
 }
 
+/// A pooled source window whose layout has been validated once for repeated
+/// heightmap-pixel averaging.
+struct AverageWindow<'a> {
+    offset_x: f64,
+    offset_y: f64,
+    width: usize,
+    width_f64: f64,
+    height_f64: f64,
+    samples: &'a [f64],
+}
+
+impl<'a> AverageWindow<'a> {
+    fn new(window: &'a RasterWindow) -> Result<Self, CtbError> {
+        let width =
+            usize::try_from(window.request.width).map_err(|_| CtbError::InvalidRasterWindow)?;
+        let height =
+            usize::try_from(window.request.height).map_err(|_| CtbError::InvalidRasterWindow)?;
+        let count = width
+            .checked_mul(height)
+            .ok_or(CtbError::InvalidRasterWindow)?;
+        if window.samples.len() != count {
+            return Err(CtbError::RasterRead(format!(
+                "source window returned {} samples, expected {count}",
+                window.samples.len()
+            )));
+        }
+        Ok(Self {
+            offset_x: f64::from(window.request.x),
+            offset_y: f64::from(window.request.y),
+            width,
+            width_f64: f64::from(window.request.width),
+            height_f64: f64::from(window.request.height),
+            samples: &window.samples,
+        })
+    }
+
+    fn row(&self, row: usize, start: usize, len: usize) -> Result<&[f64], CtbError> {
+        let offset = row
+            .checked_mul(self.width)
+            .and_then(|value| value.checked_add(start))
+            .ok_or(CtbError::InvalidRasterWindow)?;
+        let end = offset
+            .checked_add(len)
+            .ok_or(CtbError::InvalidRasterWindow)?;
+        self.samples
+            .get(offset..end)
+            .ok_or(CtbError::InvalidRasterWindow)
+    }
+}
+
 /// GWKAverageOrModeComputeSourceCoords plus the GRA_Average weighted
 /// incremental average loop (gdalwarpkernel.cpp:6919, 7140).
 fn sample_average_pixel(
-    window: &RasterWindow,
+    window: &AverageWindow<'_>,
     x1: f64,
     y1: f64,
     x2: f64,
     y2: f64,
     margin_x: i32,
     margin_y: i32,
-) -> f64 {
-    let window_width = usize::try_from(window.request.width).expect(
-        "RasterWindow width is a u32 from a validated request and fits usize on supported targets",
-    );
+) -> Result<f64, CtbError> {
     let margin_x_f = f64::from(margin_x);
     let margin_y_f = f64::from(margin_y);
-    let offset_x = f64::from(window.request.x);
-    let offset_y = f64::from(window.request.y);
-    let window_width_f = f64::from(window.request.width);
-    let window_height_f = f64::from(window.request.height);
+    let offset_x = window.offset_x;
+    let offset_y = window.offset_y;
+    let window_width_f = window.width_f64;
+    let window_height_f = window.height_f64;
 
     if !(x1 - offset_x >= -margin_x_f
         && x2 - offset_x >= -margin_x_f
@@ -665,7 +713,7 @@ fn sample_average_pixel(
         && y1 - offset_y - window_height_f <= margin_y_f
         && y2 - offset_y - window_height_f <= margin_y_f)
     {
-        return 0.0;
+        return Ok(0.0);
     }
 
     let df_x_min = x1.min(x2) - offset_x;
@@ -674,10 +722,10 @@ fn sample_average_pixel(
     let df_y_max = y1.max(y2) - offset_y;
 
     if !(df_x_max > -COORD_EPS && df_x_min < window_width_f + COORD_EPS) {
-        return 0.0;
+        return Ok(0.0);
     }
     if !(df_y_max > -COORD_EPS && df_y_min < window_height_f + COORD_EPS) {
-        return 0.0;
+        return Ok(0.0);
     }
 
     let i_src_x_min = ((df_x_min + COORD_EPS).max(0.0)).floor() as i32;
@@ -691,29 +739,71 @@ fn sample_average_pixel(
         i_src_y_max += 1;
     }
 
+    let src_x_min = usize::try_from(i_src_x_min).map_err(|_| CtbError::InvalidRasterWindow)?;
+    let src_y_min = usize::try_from(i_src_y_min).map_err(|_| CtbError::InvalidRasterWindow)?;
+    let src_x_count =
+        usize::try_from(i_src_x_max - i_src_x_min).map_err(|_| CtbError::InvalidRasterWindow)?;
+    let src_y_count =
+        usize::try_from(i_src_y_max - i_src_y_min).map_err(|_| CtbError::InvalidRasterWindow)?;
+    let first_weight_y =
+        compute_weight_y(i_src_y_min, i_src_y_min, i_src_y_max, df_y_min, df_y_max);
+    let last_weight_y = if src_y_count > 1 {
+        compute_weight_y(
+            i_src_y_max - 1,
+            i_src_y_min,
+            i_src_y_max,
+            df_y_min,
+            df_y_max,
+        )
+    } else {
+        0.0
+    };
+
     let mut value = 0.0;
     let mut total_weight = 0.0;
-    for i_src_y in i_src_y_min..i_src_y_max {
-        let df_weight_y = compute_weight_y(i_src_y, i_src_y_min, i_src_y_max, df_y_min, df_y_max);
-        for i_src_x in i_src_x_min..i_src_x_max {
-            let df_weight = compute_weight(
-                i_src_x,
+    for local_y in 0..src_y_count {
+        let df_weight_y = if local_y == 0 {
+            first_weight_y
+        } else if local_y + 1 == src_y_count {
+            last_weight_y
+        } else {
+            1.0
+        };
+        let first_weight_x = compute_weight(
+            i_src_x_min,
+            df_weight_y,
+            i_src_x_min,
+            i_src_x_max,
+            df_x_min,
+            df_x_max,
+        );
+        let last_weight_x = if src_x_count > 1 {
+            compute_weight(
+                i_src_x_max - 1,
                 df_weight_y,
                 i_src_x_min,
                 i_src_x_max,
                 df_x_min,
                 df_x_max,
-            );
+            )
+        } else {
+            0.0
+        };
+        let row_y = src_y_min
+            .checked_add(local_y)
+            .ok_or(CtbError::InvalidRasterWindow)?;
+        let row = window.row(row_y, src_x_min, src_x_count)?;
+        for (local_x, sample) in row.iter().enumerate() {
+            let df_weight = if local_x == 0 {
+                first_weight_x
+            } else if local_x + 1 == src_x_count {
+                last_weight_x
+            } else {
+                df_weight_y
+            };
             if df_weight <= 0.0 {
                 continue;
             }
-            let local_x = usize::try_from(i_src_x).expect(
-                "loop index is clamped to [0, src_x_size), and the window length was validated",
-            );
-            let local_y = usize::try_from(i_src_y).expect(
-                "loop index is clamped to [0, src_y_size), and the window length was validated",
-            );
-            let sample = window.samples[local_y * window_width + local_x];
             if !sample.is_finite() {
                 continue;
             }
@@ -722,7 +812,7 @@ fn sample_average_pixel(
             value = ratio.mul_add(sample - value, value);
         }
     }
-    value
+    Ok(value)
 }
 
 fn compute_weight_y(
@@ -1280,10 +1370,17 @@ mod tests {
         let far = AffineTransform::north_up(10.0, 10.0, 1.0, -1.0)?;
         let (x1, y1) = dst_to_src(0.0, 0.0, &far, &source);
         let (x2, y2) = dst_to_src(1.0, 1.0, &far, &source);
-        assert_eq!(sample_average_pixel(&window, x1, y1, x2, y2, 2, 2), 0.0,);
+        let average_window = AverageWindow::new(&window)?;
+        assert_eq!(
+            sample_average_pixel(&average_window, x1, y1, x2, y2, 2, 2)?,
+            0.0,
+        );
         let (x1, y1) = dst_to_src(0.0, 0.0, &source, &source);
         let (x2, y2) = dst_to_src(1.0, 1.0, &source, &source);
-        assert_eq!(sample_average_pixel(&window, x1, y1, x2, y2, 2, 2), 7.0,);
+        assert_eq!(
+            sample_average_pixel(&average_window, x1, y1, x2, y2, 2, 2)?,
+            7.0,
+        );
         Ok(())
     }
 
@@ -1318,7 +1415,8 @@ mod tests {
         // column 0 (0..1), not at synthetic half-pixel offsets. The source
         // footprint is therefore (0,0.5)-(2,2.5), giving a weighted mean of
         // 45.375 for this 3x3 window.
-        let value = sample_average_pixel(&window, x1[0], y1[0], x2[0], y2[0], 2, 2);
+        let average_window = AverageWindow::new(&window)?;
+        let value = sample_average_pixel(&average_window, x1[0], y1[0], x2[0], y2[0], 2, 2)?;
         assert!((value - 45.375).abs() < 1e-12, "value was {value}");
         Ok(())
     }

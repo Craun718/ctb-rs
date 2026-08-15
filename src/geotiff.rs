@@ -6,7 +6,7 @@ use std::{
 
 use oxigeo::{
     DatasetFormat, RasterDataType,
-    core_types::{buffer::convert_raw_into, io::FileDataSource},
+    core_types::io::FileDataSource,
     geotiff::{
         CogReader, GeoTiffReader, RasterType,
         tiff::{ImageInfo, TiffFile, TiffTag},
@@ -360,12 +360,64 @@ impl GeoTiffBlockCache {
                     let destination = samples.get_mut(dst_offset..dst_end).ok_or_else(|| {
                         CtbError::RasterRead("GeoTIFF window buffer underrun".to_owned())
                     })?;
-                    convert_raw_into(source, cached.data_type, destination)
-                        .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+                    convert_raw_into_f64(source, cached.data_type, destination)?;
                 }
             }
         }
         Ok(())
+    }
+}
+
+fn convert_fixed_size<const N: usize>(
+    source: &[u8],
+    destination: &mut [f64],
+    mut convert: impl FnMut([u8; N]) -> f64,
+) -> Result<(), CtbError> {
+    if !source.len().is_multiple_of(N) || source.len() / N != destination.len() {
+        return Err(CtbError::RasterRead(
+            "GeoTIFF raw sample count does not match destination".to_owned(),
+        ));
+    }
+    for (chunk, output) in source.chunks_exact(N).zip(destination.iter_mut()) {
+        let bytes: [u8; N] = chunk
+            .try_into()
+            .map_err(|_| CtbError::RasterRead("GeoTIFF raw sample is truncated".to_owned()))?;
+        *output = convert(bytes);
+    }
+    Ok(())
+}
+
+fn convert_raw_into_f64(
+    source: &[u8],
+    source_type: RasterDataType,
+    destination: &mut [f64],
+) -> Result<(), CtbError> {
+    match source_type {
+        RasterDataType::UInt8 => convert_fixed_size::<1>(source, destination, |bytes| {
+            f64::from(u8::from_ne_bytes(bytes))
+        }),
+        RasterDataType::Int8 => convert_fixed_size::<1>(source, destination, |bytes| {
+            f64::from(i8::from_ne_bytes(bytes))
+        }),
+        RasterDataType::UInt16 => convert_fixed_size::<2>(source, destination, |bytes| {
+            f64::from(u16::from_ne_bytes(bytes))
+        }),
+        RasterDataType::Int16 => convert_fixed_size::<2>(source, destination, |bytes| {
+            f64::from(i16::from_ne_bytes(bytes))
+        }),
+        RasterDataType::UInt32 => convert_fixed_size::<4>(source, destination, |bytes| {
+            f64::from(u32::from_ne_bytes(bytes))
+        }),
+        RasterDataType::Int32 => convert_fixed_size::<4>(source, destination, |bytes| {
+            f64::from(i32::from_ne_bytes(bytes))
+        }),
+        RasterDataType::Float32 => convert_fixed_size::<4>(source, destination, |bytes| {
+            f64::from(f32::from_ne_bytes(bytes))
+        }),
+        RasterDataType::Float64 => convert_fixed_size::<8>(source, destination, f64::from_ne_bytes),
+        unsupported => Err(CtbError::RasterRead(format!(
+            "unsupported cached GeoTIFF sample type: {unsupported:?}"
+        ))),
     }
 }
 
@@ -894,6 +946,53 @@ mod tests {
 
     fn fixture_path(name: &str) -> std::path::PathBuf {
         env::temp_dir().join(format!("ctb-rs-{name}-{}.tif", std::process::id()))
+    }
+
+    #[test]
+    fn converts_cached_raw_bytes_to_f64_for_supported_types() -> Result<(), CtbError> {
+        macro_rules! assert_conversion {
+            ($data_type:ident, $values:expr, $convert:ident) => {{
+                let values = Vec::from($values);
+                let source = values
+                    .iter()
+                    .flat_map(|value| value.to_ne_bytes())
+                    .collect::<Vec<_>>();
+                let mut destination = vec![0.0_f64; values.len()];
+                convert_raw_into_f64(&source, RasterDataType::$data_type, &mut destination)?;
+                let expected = values
+                    .iter()
+                    .map(|value| f64::$convert(*value))
+                    .collect::<Vec<_>>();
+                assert_eq!(destination, expected);
+            }};
+        }
+
+        assert_conversion!(UInt8, [0_u8, 127, 255], from);
+        assert_conversion!(Int8, [i8::MIN, -1, 0, i8::MAX], from);
+        assert_conversion!(UInt16, [0_u16, 12345, u16::MAX], from);
+        assert_conversion!(Int16, [i16::MIN, -1, 0, i16::MAX], from);
+        assert_conversion!(UInt32, [0_u32, 123_456_789, u32::MAX], from);
+        assert_conversion!(Int32, [i32::MIN, -1, 0, i32::MAX], from);
+        assert_conversion!(Float32, [-1.5_f32, 0.0, f32::MIN_POSITIVE, f32::MAX], from);
+
+        let values = [-1.5_f64, 0.0, f64::MIN_POSITIVE];
+        let source = values
+            .iter()
+            .flat_map(|value| value.to_ne_bytes())
+            .collect::<Vec<_>>();
+        let mut destination = vec![0.0_f64; values.len()];
+        convert_raw_into_f64(&source, RasterDataType::Float64, &mut destination)?;
+        assert_eq!(destination, values);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_cached_raw_f64_conversion_count_mismatch() {
+        let mut destination = [0.0_f64; 2];
+        assert!(matches!(
+            convert_raw_into_f64(&[1_u8], RasterDataType::UInt8, &mut destination),
+            Err(CtbError::RasterRead(_))
+        ));
     }
 
     fn mark_pixel_is_point(path: &Path) -> Result<(), Box<dyn std::error::Error>> {

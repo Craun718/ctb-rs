@@ -3022,7 +3022,8 @@ warp chunk 切分。已验证范围为既有公开 oracle 与约 100MB 私有 su
 变换与 gzip 输出合计不足 1%。在 `read_samples` 内，缓存命中分支的
 `convert_raw_into_with` 约占 12%，说明 native cache 已开始发挥作用。
 
-本轮仅优化 `sample_average_pixel` 的项目侧执行方式：
+经用户确认，应用层先处理两个已确认大头：`sample_average_pixel` 与
+native cache 命中路径的 raw bytes 到 `f64` 转换。本节先登记平均采样：
 
 1. 保留 `compute_weight_y`、`compute_weight` 的公式、分支含义、增量平均
    顺序和 `mul_add` 使用方式，不改变任何浮点结果的计算顺序。
@@ -3031,3 +3032,39 @@ warp chunk 切分。已验证范围为既有公开 oracle 与约 100MB 私有 su
    消除内层重复 `i32 -> usize` 转换和逐元素 bounds check。
 4. 该微优化不改变读取窗口、NoData density 语义或舍入边界；验收仍以完整
    测试和 42/42 解压后 payload 一致为准。
+
+#### P37 GeoTIFF raw bytes 到 f64 专用转换
+
+后期采样中，native cache 命中后的 raw bytes 到 `f64` 转换约占工作线程
+12%。当前路径调用 OxiGeo 的动态 `convert_raw_into`，该通用函数需要按
+源类型和目标类型分派并做通用长度检查；项目内的调用目标固定为 `f64`，
+且 `CachedBlock.bytes` 已经是按本机字节序规范化后的 raw bytes。
+
+本阶段只在项目侧增加私有转换路径：
+
+1. `GeoTiffBlockCache::read_window` 缓存命中分支改用项目内专用函数，将
+   raw bytes 按 `RasterDataType` 的本机字节序布局直接转换到目标 `f64`。
+2. 仅覆盖现有 GeoTIFF 读取已支持的 `UInt8`、`Int8`、`UInt16`、`Int16`、
+   `UInt32`、`Int32`、`Float32` 与 `Float64`；其余类型返回读取错误。
+3. 整数样本保持到 `f64` 的既有精确转换，`Float32` 保持 `f64::from(f32)`，
+   `Float64` 保持本机字节重解释；源样本数与目标长度不一致时返回错误。
+4. 不修改 Cargo 依赖、LZW 实现或 block cache 语义。该优化只减少缓存命中
+   后的通用分派开销，验收与平均采样项相同。
+
+#### P37 应用层优化实施记录
+
+2026-08-15 实施结果：
+
+- `sample_average_pixel` 改为先构造一次已验证的窗口布局；逐源行通过切片
+  读取样本，Y 首末权重和每行 X 首末权重预计算，中间样本使用常量权重。
+  增量平均的浮点运算顺序保持不变。
+- native GeoTIFF block cache 命中路径改用项目侧 raw bytes 到 `f64` 专用
+  转换，覆盖既有 8 种数值类型；长度不匹配或未支持类型返回读取错误。
+- `cargo fmt --check`、`cargo test`、`cargo build --release` 通过；完整测试
+  为 122 项全绿。
+- P29 固定顺序复测中 C++ 完成约 3.649s，Rust timeout 为约 7.298s；Rust
+  超时前尚未生成 terrain，因此该轮没有共同 payload。随后用最终 release
+  二进制完整执行约 11.86s。
+- 完整输出路径集合一致，42/42 解压后 payload 差异为 0。相对 P37 首轮
+  完整执行约 12.98s，本轮约减少 1.12s；该计时仅作为同一机器上的单次
+  应用层收益参考。
