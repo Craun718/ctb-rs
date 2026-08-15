@@ -219,8 +219,14 @@ fn run() -> Result<(), Box<dyn Error>> {
             None => GeoTiffRasterSource::open(&input),
         };
         source.map(|source| {
-            Box::new(CachedRasterSource::new_with_nodata_cache(source, 64, 64))
-                as Box<dyn ctb_rs::raster::RasterSource>
+            if shared_block_cache.is_some() {
+                // The shared native cache already deduplicates decoded blocks;
+                // an additional f64 block cache only repeats conversion/copies.
+                Box::new(source) as Box<dyn ctb_rs::raster::RasterSource>
+            } else {
+                Box::new(CachedRasterSource::new_with_nodata_cache(source, 64, 64))
+                    as Box<dyn ctb_rs::raster::RasterSource>
+            }
         })
     };
     let verbosity = 1_i16 + i16::from(arguments.verbose) - i16::from(arguments.quiet);

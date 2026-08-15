@@ -664,3 +664,28 @@
 - [x] 仅修正 `src/error.rs` 单元测试期望，使其与生产 Display 输出一致；
       不修改生产代码和 CLI 行为。
 - [x] 重新运行 `cargo test`，确认 120 项测试全部通过。
+
+## P36：P34 路线决策与基准证据复核（实施完成）
+
+- [x] 复核当前工作区、P34 未决约束和既有 staged 差异；本轮未写入 stage
+      或 commit。
+- [x] 只读复核 GDAL/CTB 参考源码，确认必须按目标窗口递归切分 warp chunk，
+      并逐 chunk 传递 source window/source extra。
+- [x] 检查 `/private/tmp` 遗留的 P36 输出目录；因缺少可审计计时和 profile
+      记录，不把它们作为正式基准证据。
+- [x] 用户选择 P36 路线：完整建模 GDAL warp memory/chunk 切分，或明确接受
+      P33 裁剪窗口等价边界。
+- [x] 路线确认结果：最终输出一致优先，接受 P33 裁剪窗口等价边界；
+      后续若出现输出不一致样本，再重新复核 GDAL 语义。
+- [x] 路线确认后，重新运行约 100MB subset 的 P29 固定流程，采集当前
+      热点 profile，并确认完整输出 payload 一致。
+- [x] 根据 P37 热点结论，移除 native GeoTIFF block cache 成功路径上的
+      外层 f64 block cache。
+- [x] 运行完整测试、重建 release，并复跑约 100MB subset 的 P29 timeout
+      基准与输出差分；42/42 payload 一致，但 timeout 目标仍不满足。
+- [x] 对 P37 完整运行后期单独采样：8 秒处 LZW 仍约占 42%，平均采样路径
+      约占 52%，坐标变换与 gzip 输出合计不足 1%。
+- [ ] 按 P37 技术方案优化 `sample_average_pixel` 的重复转换、权重分支和
+      内层 bounds check，保持浮点计算顺序不变。
+- [ ] 复跑完整测试、release 构建和 42/42 payload 差分；若 timeout 仍不满足，
+      再评估是否提出依赖变更授权请求。

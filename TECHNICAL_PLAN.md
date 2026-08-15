@@ -2928,3 +2928,106 @@ P31 差异像元所在的 `y` 窗口正是这种情形：窗口扩展为全幅�
 - `src/error.rs` 的测试期望由逗号修正为分号，与
   `CtbError::InvalidZoomRange` 的既有 Display 输出一致。
 - `cargo test` 通过，120 项测试全绿。
+
+### P36：P34 路线决策与基准证据复核（实施完成）
+
+说明：继续性能迭代前，先复核 P34 的未决语义路线和当前外部基准证据。
+当前实现仍是 P33 的项目侧直接裁剪窗口方案；它在约 100MB 私有 subset 上
+达到全量 payload 一致，但尚未复刻 GDAL 的整幅扩展、source extra 与 warp
+chunk 分离语义，不能被标记为最终语义实现。
+
+#### P36 复核结果
+
+2026-08-15 当前状态：
+
+- 只读复核 GDAL `decb67c35ec249c1bae55f53238d5a69e7eff153`：
+  `CollectChunkListInternal` 会先对每个目标窗口调用
+  `ComputeSourceWindow`，在 working memory 超过 `dfWarpMemoryLimit` 或
+  source fill ratio 启发式触发时递归切分目标窗口；每个 chunk 单独携带
+  source window、source extra 和目标窗口。CTB 默认
+  `warpMemoryLimit = 0`，`GDALWarpOperation::Initialize` 将其解析为
+  64 MiB。
+- 因此 P34 失败尝试的边界更明确：不能把整幅扩展窗口和 source extra
+  直接套在整个 65×65 VRT block 上；必须按 GDAL chunk 递归结果逐 chunk
+  计算窗口、extra 与 average scale，再合并目标输出。
+- 参考路径当前位于 `clone-github/gdal` 与
+  `clone-github/cesium-terrain-builder`；CTB 参考提交为
+  `d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f`。
+- `/private/tmp` 存在上一轮遗留的 `ctb-p36-*` 输出目录，但仓库没有对应
+  的计时、profile、路径集合或 payload 结论记录。这些产物缺少可审计命令
+  证据，不作为正式 100MB subset 基准，后续需按 P29 脚本重新执行。
+- 本轮未修改代码和 Cargo 配置，也未写入 stage 或 commit。
+
+#### P36 路线选项
+
+1. 完整建模 GDAL warp memory/chunk 切分：恢复整幅扩展与 source extra，
+   实现递归 chunk、逐 chunk working memory/fill ratio 判定和输出合并。
+   该路线符合“以 C++/GDAL 行为为准”的项目约束，是继续性能优化前的
+   推荐路线。
+2. 保留 P33 项目侧裁剪窗口等价实现：必须在技术方案中明确记录其未复刻
+   GDAL source extra/chunk 语义的适用边界和已验证样本范围。该路线只有
+   在用户明确接受该边界时才能作为后续性能优化的基线。
+
+未获得用户对上述路线的选择前，不继续修改采样实现，也不把遗留 P36 临时
+产物写成正式性能结论。
+
+#### P36 路线决策
+
+2026-08-15 用户确认“最终输出结果一致即可”。因此后续性能优化采用路线 2：
+保留 P33 项目侧直接裁剪窗口实现，将“输出路径与解压后 payload 与 C++
+一致”作为该实现的验收边界；不继续为 P33 场景补建 GDAL source extra 与
+warp chunk 切分。已验证范围为既有公开 oracle 与约 100MB 私有 subset；
+若后续引入无法保持最终输出一致的输入形态，必须重新登记并复核 GDAL
+语义。
+
+### P37：GeoTIFF 双层采样缓存复核与优化（实施中）
+
+说明：P36 确认输出一致优先后，重新执行约 100MB subset 的 P29 流程并采样
+当前热点。C++ 完成后 Rust 仍超时，完整复跑输出与 C++ 一致。热点显示
+`CachedRasterSource::read_sampling_window` 在 native GeoTIFF block cache 之上
+再次拼装 64×64 f64 block，主要消耗为缓存命中后的 `memmove` 与重复转换。
+
+#### P37 实施规则
+
+1. 仅当 `GeoTiffRasterSource::new_shared_block_cache` 成功建立跨 worker
+   native block cache 时，CLI 直接使用该 source，不再叠加
+   `CachedRasterSource`。
+2. native cache 建立失败的 GeoTIFF/VRT 路径保持既有外层缓存行为，不改变
+   NoData、overview 选择和窗口读取语义。
+3. 优化必须保持约 100MB subset 的输出路径集合和解压后 payload 逐字节一致；
+   完整测试、release 构建和 P29 timeout 基准必须复跑。
+
+#### P37 当前验证与热点结论
+
+2026-08-15 P37 首轮结果：
+
+- `cargo fmt --check`、`cargo test`、`cargo build --release` 通过；
+  `cargo test` 为 120 项全绿。
+- P29 固定顺序基准：C++ 约 5.100s，Rust timeout 为其 2 倍即 10.200s；
+  Rust 在约 10.236s 超时，超时前产生 12 个输出，12 个已产生 payload
+  均与 C++ 一致。
+- Rust 随后完整执行约 12.98s，42/42 输出路径一致，解压后 payload 差异为 0。
+- 优化前外层缓存中的 `memmove` 与重复类型转换热点消失；早期采样显示主要
+  读成本转移到 `GeoTiffRasterSource::read_samples` 内的
+  `oxiarc_lzw::decompress`，其中包含 LZW 字典分配/重置、输出向量增长和
+  字符串复制。该样本发生在 native block cache 尚未完整建立阶段。
+- P37 继续项：对完整运行的后期阶段单独采样，确认 cache 稳定后平均采样、
+  坐标计算、GeoTIFF 窗口读取或 gzip 输出是否转为瓶颈；仅接受最终输出
+  保持一致的项目侧优化。若仍需更换 LZW 解码实现，必须先取得依赖变更授权。
+
+#### P37 平均采样微优化
+
+8 秒处、缓存接近稳定后的 2 秒采样显示：工作线程约 42% 仍在
+`read_samples`/LZW，约 52% 进入 `sample_heights` 的平均采样路径；坐标
+变换与 gzip 输出合计不足 1%。在 `read_samples` 内，缓存命中分支的
+`convert_raw_into_with` 约占 12%，说明 native cache 已开始发挥作用。
+
+本轮仅优化 `sample_average_pixel` 的项目侧执行方式：
+
+1. 保留 `compute_weight_y`、`compute_weight` 的公式、分支含义、增量平均
+   顺序和 `mul_add` 使用方式，不改变任何浮点结果的计算顺序。
+2. 将 Y 权重与 X 首末权重从内层循环提升为逐目标像元/逐源行的少量预计算。
+3. 使用已验证长度的窗口按 `chunks_exact` 分行，再与源 X 区间迭代器配对，
+   消除内层重复 `i32 -> usize` 转换和逐元素 bounds check。
+4. 该微优化不改变读取窗口、NoData density 语义或舍入边界；验收仍以完整
+   测试和 42/42 解压后 payload 一致为准。
