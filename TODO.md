@@ -700,3 +700,13 @@
       和现有 profile 证据解释低效原因。
 - [x] 复核文档未记录私有基准元数据，运行 `git diff --check`。
 - [x] stage 并提交 P38 文档。
+
+## P39：oxiarc-lzw 自身性能问题说明（实施完成）
+
+- [x] 复核 `oxiarc-lzw 0.4.0` 的公共 API、decoder、dictionary 与 bitstream
+      源码行为。
+- [x] 新增 `OXIARC_LZW_PERFORMANCE_ISSUES.md`，只说明 crate 自身性能表现和
+      可能成因。
+- [x] 复核文档不包含外部工程上下文、解决方法或修改建议，运行
+      `git diff --check`。
+- [x] stage 并提交 P39 文档。

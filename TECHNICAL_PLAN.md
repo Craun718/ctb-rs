@@ -3093,3 +3093,26 @@ native cache 命中路径的 raw bytes 到 `f64` 转换。本节先登记平均�
 one-shot decoder 生命周期、完整字符串字典、重复 reset、输出增长与 OxiGeo
 owned buffer 边界复制；MSB bit reader 与 predictor 分别列为非主因和独立第二
 热点。文档未记录私有基准元数据，`git diff --check` 通过。
+
+### P39：oxiarc-lzw 自身性能问题说明（实施完成）
+
+说明：在 P38 的调用链分析之外，新增一份只面向 `oxiarc-lzw 0.4.0` crate
+自身的性能说明文档。文档仅描述库当前源码中的性能表现、对象生命周期、
+数据结构和分配/复制行为，以及这些行为可能导致开销的原因。
+
+#### P39 实施规则
+
+1. 输出独立的 `OXIARC_LZW_PERFORMANCE_ISSUES.md`。
+2. 文档不引用项目业务代码、其他工程或外部实现；不提供解决方法、优化路线
+   或修改建议，只做现状和成因分析。
+3. 不修改 Cargo 依赖、依赖源码或生产代码。
+4. 验收为源码引用复核、禁用词/外部上下文扫描和 `git diff --check`；完成后
+   按仓库流程 stage 并提交。
+
+#### P39 实施记录
+
+2026-08-16 新增 `OXIARC_LZW_PERFORMANCE_ISSUES.md`，仅基于 `oxiarc-lzw`
+0.4.0 自身源码说明 one-shot 生命周期、重复 reset、完整字符串字典、解码
+主循环复制、输出扩容和 MSB 位流读取的现状表现及成因。文档不包含外部工程
+上下文、解决方法或修改建议；外部上下文/建议措辞扫描与 `git diff --check`
+均通过。
