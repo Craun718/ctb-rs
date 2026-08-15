@@ -691,3 +691,12 @@
       专用转换，保持支持的 `RasterDataType` 数值语义不变。
 - [x] 复跑完整测试、release 构建和 42/42 payload 差分；若 timeout 仍不满足，
       再评估是否提出依赖变更授权请求。
+
+## P38：oxiarc-lzw 解码性能源码分析（实施完成）
+
+- [x] 复核 `Cargo.lock` 实际使用的 `oxiarc-lzw 0.4.0`，并读取 decoder、
+      dictionary、bitstream 与 oxigeo 调用链源码。
+- [x] 新增 `OXIARC_LZW_PERFORMANCE_ANALYSIS.md`，从源码结构、对象生命周期
+      和现有 profile 证据解释低效原因。
+- [x] 复核文档未记录私有基准元数据，运行 `git diff --check`。
+- [x] stage 并提交 P38 文档。

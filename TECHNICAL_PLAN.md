@@ -3068,3 +3068,28 @@ native cache 命中路径的 raw bytes 到 `f64` 转换。本节先登记平均�
 - 完整输出路径集合一致，42/42 解压后 payload 差异为 0。相对 P37 首轮
   完整执行约 12.98s，本轮约减少 1.12s；该计时仅作为同一机器上的单次
   应用层收益参考。
+
+### P38：oxiarc-lzw 解码性能源码分析（实施完成）
+
+说明：P37 应用层优化后，现有采样仍显示 LZW 解码链路为主要热点。本阶段
+只做文档分析，复核 `Cargo.lock` 实际使用的 `oxiarc-lzw 0.4.0` 源码及其在
+`oxigeo-geotiff` 中的调用边界，解释解码效率较低的结构性原因，并与现有
+采样证据互相印证。
+
+#### P38 实施规则
+
+1. 输出独立的 `OXIARC_LZW_PERFORMANCE_ANALYSIS.md`，覆盖解码器生命周期、
+   字典表示、字符串复制、输出缓冲增长和 OxiGeo 调用边界。
+2. 仅做源码分析与既有 profile 证据归纳；不修改 Cargo 依赖、依赖源码或
+   项目生产代码，不把 0.4.1 视为候选修复。
+3. 文档不得记录私有数据路径、名称、CRS、尺寸、分辨率、zoom 范围或
+   tile 数量等基准元数据。
+4. 验收为文档源码引用复核与 `git diff --check`；完成后按仓库流程 stage
+   并提交。
+
+#### P38 实施记录
+
+2026-08-16 新增 `OXIARC_LZW_PERFORMANCE_ANALYSIS.md`，确认主要开销来自
+one-shot decoder 生命周期、完整字符串字典、重复 reset、输出增长与 OxiGeo
+owned buffer 边界复制；MSB bit reader 与 predictor 分别列为非主因和独立第二
+热点。文档未记录私有基准元数据，`git diff --check` 通过。
