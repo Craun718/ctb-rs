@@ -524,8 +524,8 @@
 - [x] 记录可复现的墙钟结果；若负载不稳定，明确不将单次墙钟作为正式结论。
 - [x] 根据热点与墙钟差距回写后续优化方向，并更新 P23 剩余项。
 - [x] 回写 P24 实施记录与验证证据。
-- [ ] 经授权后推进 `oxiarc_lzw`/`oxigeo` 依赖侧优化，并复核私有数据下的
-      GeoTIFF block cache 预算与访问模式。
+- [x] P40 已整树移除 `oxigeo`/`oxiarc` 依赖，原依赖侧优化后续项不再适用；
+      私有 subset 输出差分已通过。
 
 ## P25：Terrain 跨 CRS Average 使用完整 VRT source window
 
@@ -713,15 +713,15 @@
 
 ## P40：移除 OxiGeo 依赖树
 
-- [ ] 通过 Cargo CLI 添加 `geotiff-reader@0.8.1`、`geotiff-writer@0.8.1`、
+- [x] 通过 Cargo CLI 添加 `geotiff-reader@0.8.1`、`geotiff-writer@0.8.1`、
       `quick-xml@0.41.0`，移除 `oxigeo@0.2.3` 与 `oxigeo-geotiff@0.2.3`。
-- [ ] 将 GeoTIFF reader 迁回 `geotiff-reader`，保留 metadata、NoData、
+- [x] 将 GeoTIFF reader 迁回 `geotiff-reader`，保留 metadata、NoData、
       overview、BigTIFF/压缩读取和共享 decoded-block cache。
-- [ ] 将 GeoTIFF writer 与 ctb-export 迁回 `geotiff-writer`，保持样本类型、
+- [x] 将 GeoTIFF writer 与 ctb-export 迁回 `geotiff-writer`，保持样本类型、
       NoData、GeoTransform、BigTIFF、Predictor、tile/strip 和压缩语义。
-- [ ] 用 `quick-xml` 实现项目内标准 VRT 兼容层，保持现有 GeoTIFF source 的
+- [x] 用 `quick-xml` 实现项目内标准 VRT 兼容层，保持现有 GeoTIFF source 的
       VRT 输入路径；复杂 VRT 特性不能静默输出错误像素。
-- [ ] 迁移单元/CLI fixture 辅助函数与格式拒绝测试，更新 README 和 CLI help。
-- [ ] 运行 fmt/test/clippy/release、公开 oracle、P29 私有 subset 输出差分。
-- [ ] 运行 `cargo tree --all-features` 并确认没有任何 `oxigeo*` / `oxiarc*`
+- [x] 迁移单元/CLI fixture 辅助函数与格式拒绝测试，更新 README 和 CLI help。
+- [x] 运行 fmt/test/clippy/release、公开 oracle、P29 私有 subset 输出差分。
+- [x] 运行 `cargo tree --all-features` 并确认没有任何 `oxigeo*` / `oxiarc*`
       依赖；回写实施记录。

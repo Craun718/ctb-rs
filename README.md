@@ -20,7 +20,8 @@
 ## 特性
 
 - **纯 Rust，无 GDAL/PROJ FFI**：不链接 GDAL、PROJ 或任何 C/C++ GIS FFI；GeoTIFF/VRT
-  栅格读写由 OxiGeo 0.2.3 承担，通用 EPSG 坐标变换使用纯 Rust proj4rs。
+  输入读取使用 `geotiff-reader`，GeoTIFF 写出使用 `geotiff-writer`，标准 VRT XML
+  由项目内兼容层解析；通用 EPSG 坐标变换使用纯 Rust proj4rs。
 - **行为基准对齐**：数值公式、迭代顺序、边界包含规则、默认参数、数据类型转换和错误条件均以
   C++ CTB 为唯一基准，不新增原版没有的算法、接口或命令行语义。
 - **TMS 双 profile**：Global Geodetic（EPSG:4326）与 Global Mercator（EPSG:3857），
@@ -90,9 +91,8 @@ ctb-extents --output-dir ./extents dem.tif
 
 ## 栅格格式
 
-输入支持 OxiGeo 0.2.3 的 GeoTIFF（含 BigTIFF）与 VRT；输出支持 CTB Terrain 和 GeoTIFF。
-OxiGeo 0.2.3 可以探测 NetCDF、HDF5、JPEG2000 等格式，但当前版本没有这些格式的像素读取
-实现，所以 `.nc`、`.h5`、`.jp2` 等输入会在写出任何切片前返回不支持错误。
+输入支持 GeoTIFF（含 BigTIFF）与标准 VRT XML；输出支持 CTB Terrain 和 GeoTIFF。
+`.nc`、`.h5`、`.jp2` 等其它栅格输入会在写出任何切片前返回不支持错误。
 
 ## 构建
 

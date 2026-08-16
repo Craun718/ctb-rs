@@ -3117,7 +3117,7 @@ owned buffer 边界复制；MSB bit reader 与 predictor 分别列为非主因�
 上下文、解决方法或修改建议；外部上下文/建议措辞扫描与 `git diff --check`
 均通过。
 
-### P40：移除 OxiGeo 依赖树（待实施）
+### P40：移除 OxiGeo 依赖树（实施完成）
 
 说明：用户要求替换全部 OxiGeo 库。P40 的目标是让 `cargo tree` 不再出现
 `oxigeo`、`oxigeo-geotiff`、`oxigeo-vrt`、`oxigeo-core`、`oxigeo-proj`
@@ -3158,3 +3158,33 @@ GDAL/PROJ/C++ GIS FFI 约束，不通过引入系统 GDAL 来换取 VRT 兼容�
 4. 使用 P29 固定流程复跑约 100MB 私有 subset，要求输出路径集合一致且
    42/42 解压后 payload 差异为 0；性能时间只记录为同机参考，不得牺牲输出
    一致性换取速度。
+
+#### P40 实施记录
+
+2026-08-16 实施结果：
+
+- 依赖已通过 Cargo CLI 变更为 `geotiff-reader@0.8.1`（`local` feature）、
+  `geotiff-writer@0.8.1`、`quick-xml@0.41.0` 与 `ndarray@0.17.2`；
+  `oxigeo@0.2.3`、`oxigeo-geotiff@0.2.3` 及其传递依赖全部移除。
+- Reader 使用 `GeoTiffFile` 与 819 MiB / 65536-slot decoded-block cache。
+  `ctb-tile` worker source factory 在 GeoTIFF 输入时共享同一个
+  `Arc<GeoTiffFile>`；VRT 输入继续使用标准 XML reader，不进入 GeoTIFF cache。
+- Writer 迁回 `geotiff-writer` 后保持 GTiff 创建选项、样本类型和 `ctb-export`
+  行为；JPEG/LERC 按 writer 当前能力保留成功路径，不兼容样本类型仍前置失败。
+- 项目内 VRT 兼容层解析标准 `VRTDataset` XML，支持 GeoTIFF/嵌套 VRT source、
+  相对路径、source/destination rectangle、缩放、NoData 与多 source。warped
+  VRT、pixel function、非 GeoTIFF source、递归与损坏 XML 显式返回错误。
+- 格式探测只读取 TIFF/BigTIFF header 或最多 64 KiB VRT 前缀，覆盖
+  little/big endian 的 Classic TIFF 与 BigTIFF；其它输入在任何 tile 写出前
+  返回 `UnsupportedRaster`。
+- `geotiff-reader@0.8.1` 按 GDAL 实测行为暴露 PixelIsPoint 的外角 affine
+  transform；P40 测试断言不做额外半像元偏移。
+- 门禁通过：`cargo fmt --check`、`cargo test --all-targets`（120 项）、
+  `cargo clippy --all-targets -- -D warnings`、`cargo build --release`、
+  `git diff --check`。
+- 公开 oracle 5 source × 12 resampling × 2 range 共 120/120 通过，解压后 payload
+  一致。
+- P29 约 100MB 私有 subset：C++ 与 Rust 输出路径集合一致，均为 42 个 terrain；
+  42/42 解压后 payload 差异为 0，Rust 在 2 倍 C++ 墙钟上限内完成。按隐私约束，
+  不记录该输入的路径、名称、CRS、尺寸、分辨率、zoom 或 tile 元数据。
+- `cargo tree --all-features` 无任何 `oxigeo*` / `oxiarc*` crate。

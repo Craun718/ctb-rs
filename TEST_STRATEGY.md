@@ -1052,7 +1052,7 @@ P40 的测试基线是“依赖替换不可改变可观察输出”。GeoTIFF �
 必备覆盖：
 
 - Reader：4326/3857/任意 proj4rs EPSG、8 种数值样本、NoData 原值透传、
-  PixelIsPoint 半像元偏移、tile/strip、BigTIFF、LZW/DEFLATE/ZSTD、overview
+  PixelIsPoint 外角 transform、tile/strip、BigTIFF、LZW/DEFLATE/ZSTD、overview
   元数据和 C++ 已证明的 base IFD 读取行为。
 - Cache：同一 GeoTIFF source 被多线程共享时，重复窗口不得重复解码；缓存边界
   与直接 reader 输出一致。
@@ -1068,3 +1068,26 @@ P40 的测试基线是“依赖替换不可改变可观察输出”。GeoTIFF �
   `cargo clippy --all-targets -- -D warnings`、`cargo build --release`、
   `scripts/verify-ctb-oracle.zsh`、P29 私有 subset 42/42 解压 payload 一致，
   以及 `cargo tree --all-features` 无 `oxigeo*` / `oxiarc*`。
+
+### 31.1 P40 实施结果
+
+2026-08-16 实施结果：
+
+- GeoTIFF 读取迁移到 `geotiff-reader@0.8.1`，跨 worker 共享
+  `Arc<GeoTiffFile>` 与其 decoded-block cache；缓存配置为 819 MiB、65536 slots。
+  overview 选择继续保留 C++ 已验证的 overview metadata + base IFD 读取行为。
+- GeoTIFF 写出迁移到 `geotiff-writer@0.8.1`；`ctb-export`、样本类型、NoData、
+  GeoTransform、BigTIFF、Predictor、tile/strip 和 NONE/DEFLATE/LZW/ZSTD/JPEG/LERC
+  语义由既有单元/CLI 矩阵覆盖。
+- 新增 `src/vrt.rs`：`quick-xml` 解析标准 VRT XML，覆盖相对路径、嵌套 VRT、
+  source/destination rectangle、缩放、NoData 与多 source；损坏 XML、缺失 source、
+  递归、warped VRT、pixel function 和非 GeoTIFF source 显式失败。
+- 输入格式探测识别 Classic TIFF 与 BigTIFF 的 little/big endian header，VRT 只
+  读取最多 64 KiB 前缀；其它格式不再读取整个文件后拒绝。
+- `cargo fmt --check`、`cargo test --all-targets`（120 项）、
+  `cargo clippy --all-targets -- -D warnings`、`cargo build --release` 通过。
+- 公开 oracle 5 source × 12 resampling × 2 range 共 120/120 通过，解压后 payload
+  一致。
+- P29 约 100MB 私有 subset 流程：C++ 与 Rust 均生成 42 个 terrain，路径集合一致，
+  42/42 解压后 payload 差异为 0；Rust 在本轮 2 倍 C++ 墙钟上限内完成。
+- `cargo tree --all-features` 不包含任何 `oxigeo*` 或 `oxiarc*` crate。
