@@ -725,3 +725,11 @@
 - [x] 运行 fmt/test/clippy/release、公开 oracle、P29 私有 subset 输出差分。
 - [x] 运行 `cargo tree --all-features` 并确认没有任何 `oxigeo*` / `oxiarc*`
       依赖；回写实施记录。
+
+## P41：500MB 级私有 subset 对比测试
+
+- [x] 登记 P41，沿用 P29 固定流程和私有数据隐私约束。
+- [x] 定位或生成约 500MB subset，测试产物只放在 `/private/tmp`。
+- [x] 先运行 C++ 0.4.1，再按两倍墙钟运行 Rust。
+- [x] 比较完整输出路径集合和全部 `.terrain` 解压后 payload。
+- [x] 回写可公开的聚合计时与差分结论。

@@ -3188,3 +3188,39 @@ GDAL/PROJ/C++ GIS FFI 约束，不通过引入系统 GDAL 来换取 VRT 兼容�
   42/42 解压后 payload 差异为 0，Rust 在 2 倍 C++ 墙钟上限内完成。按隐私约束，
   不记录该输入的路径、名称、CRS、尺寸、分辨率、zoom 或 tile 元数据。
 - `cargo tree --all-features` 无任何 `oxigeo*` / `oxiarc*` crate。
+
+### P41：500MB 级私有 subset 对比测试（实施完成）
+
+说明：用户要求测试 500MB 级私有 subset。本轮不修改生产代码和依赖，只复用
+P29 固定顺序：先运行 C++ 0.4.1 记录墙钟，再以两倍墙钟作为 Rust timeout，
+随后比较完整输出路径集合与全部 `.terrain` 解压后 payload。
+
+#### P41 实施规则
+
+1. 优先复用现有约 500MB subset；若不存在，则从既有私有 DEM 生成一个测试
+   subset，测试产物放在 `/private/tmp`，不进入工作树。
+2. 使用 `scripts/benchmark-ctb-cpp-rust-timeout.zsh`，保持同一输入、同一 CLI
+   参数和同一线程数；不手工计算 timeout。
+3. 除脚本输出的共同 payload 差分外，还必须比较 C++/Rust 的完整输出路径集合。
+4. 隐私约束沿用 P26/P29：文档只记录 subset 文件体积、计时、完成状态、
+   输出数量和聚合差分结论，不记录路径、名称、CRS、尺寸、分辨率、zoom 或
+   tile 布局。
+
+#### P41 验收标准
+
+1. C++ 正常完成并记录墙钟。
+2. Rust 在两倍墙钟内完成，或超时后完整复跑并与 C++ 比较。
+3. 输出路径集合一致，全部解压后 payload 差异为 0。
+
+#### P41 实施记录
+
+2026-08-16 实施结果：
+
+- 生成 509.0 MiB 的私有 DEM 连续窗口 subset，测试输入与全部输出只保存在
+  `/private/tmp`，未进入工作树。
+- 按固定顺序运行 C++ 0.4.1 与 Rust release binary；Rust timeout 由脚本按
+  两倍 C++ 墙钟自动设置为 86.344s，未手工计算。
+- C++ 墙钟 43.172s；Rust 墙钟 48.570s，状态 0，未超时。Rust 耗时约为
+  C++ 的 1.13 倍。
+- C++ 与 Rust 均生成 96 个 `.terrain` 输出；完整相对路径集合一致，96/96
+  解压后 payload 差异为 0。
