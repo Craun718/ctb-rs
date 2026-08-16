@@ -1113,3 +1113,14 @@ zoom 范围或 tile 布局。
   的 1.13 倍。
 - C++ 与 Rust 均生成 96 个 `.terrain`；完整相对路径集合一致，96/96 解压后
   payload 差异为 0。
+
+## 33. P42 1GB 级私有 subset 对比测试
+
+P42 不改变实现，只验证 P41 后更大体积输入下的输出一致性和同机耗时趋势。
+测试继续使用 `scripts/benchmark-ctb-cpp-rust-timeout.zsh`：C++ 先运行并记录
+墙钟，Rust timeout 自动设为两倍 C++ 墙钟。脚本比较共同 payload 后，还需额外
+比较完整输出路径集合，避免仅凭共同文件遗漏缺失或多余输出。
+
+隐私约束不变：文档只记录 subset 体积、C++ 墙钟、Rust timeout/耗时、完成状态、
+输出数量和 payload 差分结论，不记录私有输入路径、名称、CRS、尺寸、分辨率、
+zoom 范围或 tile 布局。
