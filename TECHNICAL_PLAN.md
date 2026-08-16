@@ -3261,3 +3261,47 @@ P29/P41 固定顺序：先运行 C++ 0.4.1 记录墙钟，再以两倍墙钟作�
   C++ 的 1.86 倍。
 - C++ 与 Rust 均生成 89 个 `.terrain` 输出；完整相对路径集合一致，89/89
   解压后 payload 差异为 0。
+
+### P43：1GB LZW 热点复核与 GeoTIFF 采样转换优化（待实施）
+
+说明：用户要求继续热点分析和优化。P42 的无 Predictor LZW 输入将 Rust/C++
+墙钟差距放大到 1.86 倍，适合作为热点样本。本轮先用 macOS `sample` 复核
+当前实现，再仅实施不改变依赖树和输出语义的应用层优化。
+
+#### P43 热点复核结论
+
+1. 当前 release 采样显示主要 CPU 栈位于
+   `TerrainSamplePlan::sample_heights` ->
+   `GeoTiffRasterSource::read_sampling_window` ->
+   `tiff_reader::read_band_window_from_ifd` -> `weezl::decode`。
+2. `weezl` LZW 解码是最大单项；其次包括解码输出复制、内层 Rayon/cache
+   锁等待，以及项目侧样本转 `f64`。坐标变换不是当前大头。
+3. `geotiff-reader 0.8.1` 的 `local` feature 会间接启用
+   `tiff-reader/default`，因此 Rayon/JPEG/WebP/ZSTD 被传入当前二进制。
+    `RAYON_NUM_THREADS=1/2/4` 对照均慢于默认值，不能用简单线程数调整解决。
+4. 使用真实 49,239 条 LZW strip 的临时微基准显示：解码 3,476,273,400
+    字节输出时 `weezl 0.1.12` 为 5.099s，`0.2.1` 为 3.571s，吞吐约
+    1.43 倍。`tiff-reader 0.8.1` 依赖 `weezl ^0.1`，Cargo CLI 不能覆盖
+    该传递依赖到不兼容的 0.2；未经用户明确授权不得手写
+    `[patch.crates-io]` 或引入本地 fork。
+
+#### P43 应用层优化方案
+
+1. `read_geotiff_window` 改用 `read_band_window_bytes` / overview bytes API
+   获取已按窗口拷贝的 sample bytes，再按 GeoTIFF SampleFormat、BitsPerSample
+   与字节序直接转换为 `f64`。
+2. 移除 typed `ArrayD<T>` 中间缓冲，减少一次 `Vec<T>` 分配和样本复制；
+    样本类型仍先由既有 metadata/IFD 探测约束，不能接受未支持编码。
+3. 转换必须保持 8/16/32/64 位整型与浮点、little/big endian、NoData 原值
+    透传和 overview 读取行为完全一致。
+4. 生产代码不引入 `unwrap`；穷尽分支的必要不变量只允许带说明 `expect`。
+
+#### P43 验收门禁
+
+1. GeoTIFF 读取单元测试覆盖各支持样本类型、字节序、窗口和 overview，并
+    保持既有 BigTIFF/压缩/Predictor 测试通过。
+2. `cargo fmt --check`、`cargo test --all-targets`、
+    `cargo clippy --all-targets -- -D warnings`、`cargo build --release`
+    通过。
+3. 使用 P42 约 1GB subset、同一 CLI 参数和线程数复测；输出路径集合与
+    89/89 解压 payload 必须与优化前/C++ 完全一致，只记录聚合耗时。

@@ -1114,6 +1114,24 @@ zoom 范围或 tile 布局。
 - C++ 与 Rust 均生成 89 个 `.terrain`；完整相对路径集合一致，89/89 解压后
   payload 差异为 0。
 
+## 34. P43 1GB LZW 热点复核与 GeoTIFF 采样转换优化
+
+P43 先用同机采样确认 P40 后的真实热点，再实施项目侧零语义变化优化。热点
+样本沿用 P42 约 1GB 私有 subset；文档只记录聚合采样结论、耗时、输出数量和
+差分结果，不记录私有输入路径、名称、CRS、尺寸、分辨率、窗口、zoom 或 tile
+布局。
+
+### 34.1 P43 验证门禁
+
+- 现有 GeoTIFF 单元/CLI 矩阵覆盖样本类型、字节序、BigTIFF、压缩、
+  Predictor、overview、NoData 和窗口读取。
+- `cargo fmt --check`、`cargo test --all-targets`、
+  `cargo clippy --all-targets -- -D warnings`、`cargo build --release` 通过。
+- 使用 P42 约 1GB subset、同一 CLI 参数和线程数复测；C++/优化后 Rust 的
+  完整输出路径集合一致，89/89 解压后 payload 差异为 0。
+- 记录优化前后 Rust 墙钟；C++ 基线沿用 P42 只作同机参考，不把性能收益置于
+  输出一致性之上。
+
 ### 32.1 P41 实施结果
 
 2026-08-16 实施结果：

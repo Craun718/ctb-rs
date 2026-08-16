@@ -741,3 +741,13 @@
 - [x] 先运行 C++ 0.4.1，再按两倍墙钟运行 Rust。
 - [x] 比较完整输出路径集合和全部 `.terrain` 解压后 payload。
 - [x] 回写可公开的聚合计时与差分结论。
+
+## P43：1GB LZW 热点复核与 GeoTIFF 采样转换优化
+
+- [ ] 复核 1GB LZW 输入的当前 release 热点与并行行为。
+- [ ] 复核 `tiff-reader` decoded bytes API 与样本类型/字节序语义。
+- [ ] 将 GeoTIFF 窗口读取改为 decoded bytes 直接转 `f64`，移除 typed
+      `ArrayD<T>` 中间缓冲。
+- [ ] 运行 fmt/test/clippy/release 门禁。
+- [ ] 复测约 1GB subset，比较完整路径集合与全部解压 payload。
+- [ ] 回写热点结论、优化结果与剩余瓶颈。
