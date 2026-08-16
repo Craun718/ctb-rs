@@ -1041,3 +1041,30 @@ GeoTIFF block cache 命中后的 raw bytes 到 `f64` 转换。两项优化都必
   为 122 项全绿。
 - P29 timeout 流程已复跑；该轮 Rust 超时前没有共同 terrain。随后完整
   Rust 运行与 C++ 输出路径一致，42/42 解压后 payload 差异为 0。
+
+## 31. P40 OxiGeo 依赖树移除
+
+P40 的测试基线是“依赖替换不可改变可观察输出”。GeoTIFF 读取与写出分别迁移到
+`geotiff-reader@0.8.1` 与 `geotiff-writer@0.8.1`；标准 VRT XML 由项目内
+`quick-xml` 兼容层解析。测试不得引用 OxiGeo API，也不能把当前依赖实现当作
+行为基准。
+
+必备覆盖：
+
+- Reader：4326/3857/任意 proj4rs EPSG、8 种数值样本、NoData 原值透传、
+  PixelIsPoint 半像元偏移、tile/strip、BigTIFF、LZW/DEFLATE/ZSTD、overview
+  元数据和 C++ 已证明的 base IFD 读取行为。
+- Cache：同一 GeoTIFF source 被多线程共享时，重复窗口不得重复解码；缓存边界
+  与直接 reader 输出一致。
+- Writer：样本类型、NoData、GeoTransform、EPSG、Classic/BigTIFF、Predictor、
+  tile/strip 与 NONE/DEFLATE/LZW/ZSTD/JPEG/LERC 写读回；JPEG/LERC 的样本类型
+  约束沿用既有测试。
+- VRT：simple identity、相对路径、source/dst rectangle 裁剪、缩放、band
+  NoData、多 source 覆盖、损坏 XML 与缺失 source 的错误路径；warped/pixel
+  function/非 GeoTIFF source 必须显式拒绝。
+- CLI：VRT 输入仍能生成 terrain/extents；非 GeoTIFF/VRT 扩展在任何输出写入前
+  失败；错误文本不再声称由 OxiGeo capability guard 拒绝。
+- 门禁：`cargo fmt --check`、`cargo test --all-targets`、
+  `cargo clippy --all-targets -- -D warnings`、`cargo build --release`、
+  `scripts/verify-ctb-oracle.zsh`、P29 私有 subset 42/42 解压 payload 一致，
+  以及 `cargo tree --all-features` 无 `oxigeo*` / `oxiarc*`。

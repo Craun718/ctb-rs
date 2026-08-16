@@ -3116,3 +3116,45 @@ owned buffer 边界复制；MSB bit reader 与 predictor 分别列为非主因�
 主循环复制、输出扩容和 MSB 位流读取的现状表现及成因。文档不包含外部工程
 上下文、解决方法或修改建议；外部上下文/建议措辞扫描与 `git diff --check`
 均通过。
+
+### P40：移除 OxiGeo 依赖树（待实施）
+
+说明：用户要求替换全部 OxiGeo 库。P40 的目标是让 `cargo tree` 不再出现
+`oxigeo`、`oxigeo-geotiff`、`oxigeo-vrt`、`oxigeo-core`、`oxigeo-proj`
+及其 `oxiarc` 传递依赖，同时保持本项目已验证的输出语义。项目继续遵守零
+GDAL/PROJ/C++ GIS FFI 约束，不通过引入系统 GDAL 来换取 VRT 兼容性。
+
+#### P40 实施规则
+
+1. 通过 Cargo CLI 添加 `geotiff-reader@0.8.1`（`local` feature，不启用默认
+   Rayon）、`geotiff-writer@0.8.1` 与 `quick-xml@0.41.0`；依赖移除同样只能
+   通过 Cargo CLI 完成。
+2. GeoTIFF 读取、overview、BigTIFF、压缩、NoData、样本类型和窗口读取回到
+   `geotiff-reader`，并使用其线程安全 decoded-block cache；不得把 GDAL、
+   PROJ 或 OxiGeo 依赖带回依赖树。
+3. GeoTIFF 写出回到 `geotiff-writer`，保持既有 BigTIFF、Predictor、tile/strip、
+   NoData、样本类型与压缩行为；writer 已支持的 JPEG/LERC 不得因迁移重新降级。
+4. 项目内实现标准 VRT XML 兼容层：解析 `VRTDataset`、`GeoTransform`、`SRS`、
+   `VRTRasterBand`、`SimpleSource`/`ComplexSource` 的 source/destination
+   rectangle、相对路径与 band NoData；读取时递归打开 GeoTIFF source 并按
+   destination rectangle 复制/缩放样本。warped VRT、pixel function 和非
+   GeoTIFF source 若实现不能保持语义，必须在打开时返回明确错误，不得静默
+   给出错误像素。
+5. `GeoTiffRasterSource` 对外接口保持不变；`ctb-tile` 的 worker source
+   factory 继续共享 decoded block cache，不能退化为每个 worker 独立重复解码。
+6. 输入格式探测不再使用 OxiGeo capability guard。文件头只用于区分 GeoTIFF
+   与 VRT；其它格式在写出任何 tile 前返回 `UnsupportedRaster`。
+7. 生产代码不使用 `unwrap`；已证明的不变量只能使用带说明的 `expect`。
+8. README、CLI help 和错误文本移除 OxiGeo 版本承诺，但不得宣称支持新的
+   非 GeoTIFF/VRT 输入格式。
+
+#### P40 验收门禁
+
+1. `cargo fmt --check`、`cargo test --all-targets`、
+   `cargo clippy --all-targets -- -D warnings`、`cargo build --release` 通过。
+2. `cargo tree --all-features` 不包含任何 `oxigeo*` 或 `oxiarc*` crate。
+3. 现有公开 oracle 和多线程回归通过；替换后至少复跑
+   `scripts/verify-ctb-oracle.zsh`，Terrain 输出解压后 payload 保持一致。
+4. 使用 P29 固定流程复跑约 100MB 私有 subset，要求输出路径集合一致且
+   42/42 解压后 payload 差异为 0；性能时间只记录为同机参考，不得牺牲输出
+   一致性换取速度。

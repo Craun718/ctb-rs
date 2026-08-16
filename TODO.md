@@ -710,3 +710,18 @@
 - [x] 复核文档不包含外部工程上下文、解决方法或修改建议，运行
       `git diff --check`。
 - [x] stage 并提交 P39 文档。
+
+## P40：移除 OxiGeo 依赖树
+
+- [ ] 通过 Cargo CLI 添加 `geotiff-reader@0.8.1`、`geotiff-writer@0.8.1`、
+      `quick-xml@0.41.0`，移除 `oxigeo@0.2.3` 与 `oxigeo-geotiff@0.2.3`。
+- [ ] 将 GeoTIFF reader 迁回 `geotiff-reader`，保留 metadata、NoData、
+      overview、BigTIFF/压缩读取和共享 decoded-block cache。
+- [ ] 将 GeoTIFF writer 与 ctb-export 迁回 `geotiff-writer`，保持样本类型、
+      NoData、GeoTransform、BigTIFF、Predictor、tile/strip 和压缩语义。
+- [ ] 用 `quick-xml` 实现项目内标准 VRT 兼容层，保持现有 GeoTIFF source 的
+      VRT 输入路径；复杂 VRT 特性不能静默输出错误像素。
+- [ ] 迁移单元/CLI fixture 辅助函数与格式拒绝测试，更新 README 和 CLI help。
+- [ ] 运行 fmt/test/clippy/release、公开 oracle、P29 私有 subset 输出差分。
+- [ ] 运行 `cargo tree --all-features` 并确认没有任何 `oxigeo*` / `oxiarc*`
+      依赖；回写实施记录。
