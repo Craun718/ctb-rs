@@ -343,37 +343,96 @@ fn read_geotiff_window(
     let height = usize::try_from(request.height).map_err(|_| CtbError::InvalidRasterWindow)?;
     let width = usize::try_from(request.width).map_err(|_| CtbError::InvalidRasterWindow)?;
     let band_index = band.saturating_sub(1);
+    let base_sample_type = geotiff_sample_type(file)?;
+    let tiff = file.tiff();
+    let ifd = if let Some(overview) = overview {
+        file.overview_ifd(overview)
+            .map_err(|error| CtbError::RasterRead(error.to_string()))?
+    } else {
+        tiff.ifd(file.base_ifd_index())
+            .map_err(|error| CtbError::RasterRead(error.to_string()))?
+    };
+    let format = ifd
+        .sample_format()
+        .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+    let bits = ifd
+        .bits_per_sample()
+        .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+    let sample_type = geotiff_sample_type_from_values(&format, &bits)?;
+    if sample_type != base_sample_type {
+        return Err(CtbError::RasterRead(
+            "overview sample type differs from the base raster".to_owned(),
+        ));
+    }
+    let bytes = tiff
+        .read_band_window_bytes_from_ifd(ifd, band_index, row, column, height, width)
+        .map_err(|error| CtbError::RasterRead(error.to_string()))?;
 
-    macro_rules! read_as {
-        ($sample_type:ty) => {{
-            let result = if let Some(overview) = overview {
-                file.read_overview_band_window::<$sample_type>(
-                    overview, band_index, row, column, height, width,
-                )
-            } else {
-                file.read_band_window::<$sample_type>(band_index, row, column, height, width)
-            };
-            result
-                .map(|array| {
-                    array
-                        .iter()
-                        .map(|sample| f64::from(*sample))
-                        .collect::<Vec<_>>()
-                })
-                .map_err(|error| CtbError::RasterRead(error.to_string()))
-        }};
+    convert_native_sample_bytes(&bytes, sample_type, width, height)
+}
+
+fn convert_native_sample_bytes(
+    bytes: &[u8],
+    sample_type: RasterSampleType,
+    width: usize,
+    height: usize,
+) -> Result<Vec<f64>, CtbError> {
+    let sample_count = width
+        .checked_mul(height)
+        .ok_or(CtbError::InvalidRasterWindow)?;
+    let sample_size = match sample_type {
+        RasterSampleType::Unsigned8 | RasterSampleType::Signed8 => 1,
+        RasterSampleType::Unsigned16 | RasterSampleType::Signed16 => 2,
+        RasterSampleType::Unsigned32 | RasterSampleType::Signed32 | RasterSampleType::Float32 => 4,
+        RasterSampleType::Float64 => 8,
+    };
+    let expected_bytes = sample_count
+        .checked_mul(sample_size)
+        .ok_or(CtbError::InvalidRasterWindow)?;
+    if bytes.len() != expected_bytes {
+        return Err(CtbError::RasterRead(format!(
+            "GeoTIFF band window returned {} bytes, expected {expected_bytes}",
+            bytes.len()
+        )));
     }
 
-    match geotiff_sample_type(file)? {
-        RasterSampleType::Unsigned8 => read_as!(u8),
-        RasterSampleType::Signed8 => read_as!(i8),
-        RasterSampleType::Unsigned16 => read_as!(u16),
-        RasterSampleType::Signed16 => read_as!(i16),
-        RasterSampleType::Unsigned32 => read_as!(u32),
-        RasterSampleType::Signed32 => read_as!(i32),
-        RasterSampleType::Float32 => read_as!(f32),
-        RasterSampleType::Float64 => read_as!(f64),
+    let mut samples = Vec::with_capacity(sample_count);
+    match sample_type {
+        RasterSampleType::Unsigned8 => samples.extend(bytes.iter().map(|value| f64::from(*value))),
+        RasterSampleType::Signed8 => {
+            samples.extend(bytes.iter().map(|value| f64::from(*value as i8)))
+        }
+        RasterSampleType::Unsigned16 => samples.extend(bytes.chunks_exact(2).map(|value| {
+            f64::from(u16::from_ne_bytes(
+                value.try_into().expect("chunk has two bytes"),
+            ))
+        })),
+        RasterSampleType::Signed16 => samples.extend(bytes.chunks_exact(2).map(|value| {
+            f64::from(i16::from_ne_bytes(
+                value.try_into().expect("chunk has two bytes"),
+            ))
+        })),
+        RasterSampleType::Unsigned32 => samples.extend(bytes.chunks_exact(4).map(|value| {
+            f64::from(u32::from_ne_bytes(
+                value.try_into().expect("chunk has four bytes"),
+            ))
+        })),
+        RasterSampleType::Signed32 => samples.extend(bytes.chunks_exact(4).map(|value| {
+            f64::from(i32::from_ne_bytes(
+                value.try_into().expect("chunk has four bytes"),
+            ))
+        })),
+        RasterSampleType::Float32 => samples.extend(bytes.chunks_exact(4).map(|value| {
+            let bits = u32::from_ne_bytes(value.try_into().expect("chunk has four bytes"));
+            f64::from(f32::from_bits(bits))
+        })),
+        RasterSampleType::Float64 => samples.extend(
+            bytes
+                .chunks_exact(8)
+                .map(|value| f64::from_ne_bytes(value.try_into().expect("chunk has eight bytes"))),
+        ),
     }
+    Ok(samples)
 }
 
 fn geotiff_sample_type(file: &GeoTiffFile) -> Result<RasterSampleType, CtbError> {
@@ -387,6 +446,13 @@ fn geotiff_sample_type(file: &GeoTiffFile) -> Result<RasterSampleType, CtbError>
     let bits = ifd
         .bits_per_sample()
         .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+    geotiff_sample_type_from_values(&format, &bits)
+}
+
+fn geotiff_sample_type_from_values(
+    format: &[u16],
+    bits: &[u16],
+) -> Result<RasterSampleType, CtbError> {
     let sample_format = format
         .first()
         .copied()

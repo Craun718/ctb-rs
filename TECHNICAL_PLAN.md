@@ -3262,7 +3262,7 @@ P29/P41 固定顺序：先运行 C++ 0.4.1 记录墙钟，再以两倍墙钟作�
 - C++ 与 Rust 均生成 89 个 `.terrain` 输出；完整相对路径集合一致，89/89
   解压后 payload 差异为 0。
 
-### P43：1GB LZW 热点复核与 GeoTIFF 采样转换优化（待实施）
+### P43：1GB LZW 热点复核与 GeoTIFF 采样转换优化（实施完成）
 
 说明：用户要求继续热点分析和优化。P42 的无 Predictor LZW 输入将 Rust/C++
 墙钟差距放大到 1.86 倍，适合作为热点样本。本轮先用 macOS `sample` 复核
@@ -3287,9 +3287,10 @@ P29/P41 固定顺序：先运行 C++ 0.4.1 记录墙钟，再以两倍墙钟作�
 
 #### P43 应用层优化方案
 
-1. `read_geotiff_window` 改用 `read_band_window_bytes` / overview bytes API
-   获取已按窗口拷贝的 sample bytes，再按 GeoTIFF SampleFormat、BitsPerSample
-   与字节序直接转换为 `f64`。
+1. `read_geotiff_window` 按 base/overview IFD 改用
+   `read_band_window_bytes_from_ifd` 获取已按窗口拷贝的 native-endian
+   sample bytes，再按 GeoTIFF SampleFormat 与 BitsPerSample 直接转换为
+   `f64`。
 2. 移除 typed `ArrayD<T>` 中间缓冲，减少一次 `Vec<T>` 分配和样本复制；
     样本类型仍先由既有 metadata/IFD 探测约束，不能接受未支持编码。
 3. 转换必须保持 8/16/32/64 位整型与浮点、little/big endian、NoData 原值
@@ -3305,3 +3306,20 @@ P29/P41 固定顺序：先运行 C++ 0.4.1 记录墙钟，再以两倍墙钟作�
     通过。
 3. 使用 P42 约 1GB subset、同一 CLI 参数和线程数复测；输出路径集合与
     89/89 解压 payload 必须与优化前/C++ 完全一致，只记录聚合耗时。
+
+#### P43 实施记录
+
+2026-08-16 实施结果：
+
+- `read_geotiff_window` 改为按 base/overview IFD 调用
+    `read_band_window_bytes_from_ifd`，将 native-endian decoded band bytes
+    直接转换为 `f64`，移除 typed `ArrayD<T>` 中间缓冲；同时校验 overview
+    IFD 的样本类型与 base IFD 一致，保持原 typed API 的拒绝语义。
+- 验证门禁通过：`cargo fmt --check`、`cargo test --all-targets`（120 项）、
+    `cargo clippy --all-targets -- -D warnings`、`cargo build --release`。
+- 优化后 5 秒采样中，顶层热点仍为 `weezl::DecodeState::advance`，其次为
+    解码/窗口拼装相关 `memmove`、cache 锁等待与内层 Rayon 等待；项目侧
+    平均采样和 bytes 到 `f64` 转换已降为小头。
+- P42 约 1GB subset 的最终 release 两轮复测墙钟为 33.25s 和 31.74s；
+    P42 Rust 基线为 35.249s。两轮与 C++ P42 基线 18.938s 相比约为
+    1.76x/1.68x，输出路径集合均一致，89/89 解压 payload 差异为 0。
