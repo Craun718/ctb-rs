@@ -766,6 +766,10 @@
       `terrain_tiles` 写入 step summary；`ctb-tile` 非零退出则 CI 失败。
 - [x] 实机首跑教训：容器内看不到宿主机 `/tmp` 下的输出目录，已把输出目录
       改到被挂载的 workspace 下（修复 `The output directory does not exist`）。
+- [x] 实机合并 run 教训：脚本用 `gzip -dc` 比较 payload，runner 没有
+      `gzip`（`command not found: gzip`，exit 127），已补装 `gzip`/`coreutils`。
+- [x] 采用 fail-fast：workflow 有共享 `checkout` job，两个基准 job 均
+      `needs: checkout`；并设置 concurrency 取消同一 ref 上仍在跑的旧 run。
 - [x] 本地校验 workflow YAML 可解析、`git diff --check` 无空白错误。
 - [ ] 推送到 GitHub 后确认实机 CI 能成功拉取 LFS、拉取并运行预编译
       `ctb-tile` 镜像并输出切片耗时；在此之前不将 P44 标记为实施完成。
@@ -776,8 +780,8 @@
       release `ctb-tile` 对合成 DEM 的切片墙钟，并校验单线程/多线程输出
       `.terrain` payload 一致；不进入 Rust 测试矩阵，也不设性能门禁。
 - [x] 在 `.github/workflows/ctb-benchmark.yml` 注册 `ctb-rs-slice-timing` job，
-      触发事件为 `push` / `pull_request`；job 安装 `gdal-bin`、
-      `cargo build --release --locked --bin ctb-tile`，再以
+      触发事件为 `push` / `pull_request`；job 安装 `gdal-bin`、`gzip`、
+      `coreutils`，`cargo build --release --locked --bin ctb-tile`，再以
       `CTB_RS_BIN=target/release/ctb-tile` 运行
       `scripts/benchmark-ctb-tile.sh 512 2`。
 - [x] job 解析脚本输出的 `single/parallel workers=… seconds=… tiles=…`，

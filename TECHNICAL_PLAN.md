@@ -3336,7 +3336,9 @@ P29/P41 固定顺序：先运行 C++ 0.4.1 记录墙钟，再以两倍墙钟作�
 
 1. 在 `.github/workflows/ctb-benchmark.yml` 注册 `ctb-cpp-slice-timing` job，
    与 P45 的 `ctb-rs-slice-timing` 处于同一 workflow；触发事件为 `push` 与
-   `pull_request`，均运行在 `ubuntu-24.04`。
+   `pull_request`，均运行在 `ubuntu-24.04`。workflow 采用 fail-fast：单独的
+   `checkout` job 先做 LFS 检出，两个 benchmark job 都 `needs: checkout`，
+   checkout 失败即跳过；并按 `github.ref` 设置 concurrency 取消已在跑的旧 run。
 2. `actions/checkout@v7` 检出 ctb-rs 并启用 `lfs: true`，拉取 LFS 管理的
    `demo/guangxi_8_cities.tif` 作为基准输入。
 3. 使用 Docker Hub 预编译镜像 `homme/cesium-terrain-builder:0.4.1`
@@ -3379,10 +3381,10 @@ tile 数写入 step summary。该 CI 与 P44 外部 C++ 基准相互独立，同
    `.github/workflows/ctb-benchmark.yml`。
 2. `actions/checkout@v7` 检出 ctb-rs 并启用 `lfs: true`；该 job 使用仓库内
    `tests/fixtures/oracle-source.asc` 合成输入，不依赖私有数据。
-3. 只安装 `gdal-bin`（脚本用 `gdal_translate` 把 Asc grid 转为 tiled/DEFLATE
-   GeoTIFF 作为基准输入），不放 runner 时需要额外依赖；`scripts/benchmark-ctb-tile.sh`
-   已改为 POSIX sh，可用 `sh` 直接运行，`cargo build --release --locked --bin
-   ctb-tile`。
+3. 安装 `gdal-bin`、`gzip`、`coreutils`（脚本用 `gdal_translate` 合成输入，
+   用 `gzip -dc` 解压比较 payload；实机首跑教训：runner 上找不到 `gzip`），
+   不放 runner 时需要额外依赖；`scripts/benchmark-ctb-tile.sh` 已改为 POSIX
+   sh，可用 `sh` 直接运行，`cargo build --release --locked --bin ctb-tile`。
 4. 以 `CTB_RS_BIN=target/release/ctb-tile` 调用
    `scripts/benchmark-ctb-tile.sh 512 2`（512×512 合成 DEM、单线程与 2 线程
    各跑一次并做 `.terrain` payload 一致性校验），脚本失败即 job 失败。
@@ -3405,5 +3407,7 @@ YAML 可解析、`git diff --check` 通过；因本机 Homebrew GDAL 动态库�
 本地实跑脚本。实机首跑失败：`zsh: command not found`（runner 未装 zsh）。
 随后与 P44 合并为同一 `.github/workflows/ctb-benchmark.yml`；按用户要求不再安装
 `zsh`，把 `scripts/benchmark-ctb-tile.zsh` 改用 POSIX sh 重写为
-`scripts/benchmark-ctb-tile.sh`。实机 CI 结果待推送到 GitHub 后确认，未确认前
+`scripts/benchmark-ctb-tile.sh`。随后合并 run 又报 `command not found: gzip`，
+已把 `gzip`/`coreutils` 加入 apt 安装；同时加入 fail-fast：共享 `checkout` job
++ `needs` + concurrency cancel。实机 CI 结果待推送到 GitHub 后确认，未确认前
 保持“实施进行中”。

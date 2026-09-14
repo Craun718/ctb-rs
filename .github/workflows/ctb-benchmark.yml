@@ -8,21 +8,33 @@ name: ctb-benchmark
 #   2. ctb-rs-slice-timing: run ctb-rs's reproducible developer benchmark
 #      (scripts/benchmark-ctb-tile.sh) and publish wall-clock timings.
 # Neither job enforces a performance gate; both only record timings.
+# Fast-fail: checkout runs once as a prerequisite job, both benchmark jobs use
+# `needs` so a checkout/LFS failure skips them immediately, and concurrency
+# cancels superseded runs on the same ref.
 
 on:
   push:
   pull_request:
 
+concurrency:
+  group: ctb-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  ctb-cpp-slice-timing:
+  checkout:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 30
     steps:
-      - name: Check out ctb-rs with LFS demo data
+      - name: Check out repository with LFS demo data
         uses: actions/checkout@v7
         with:
           lfs: true
 
+  ctb-cpp-slice-timing:
+    runs-on: ubuntu-24.04
+    needs: checkout
+    timeout-minutes: 120
+    steps:
       - name: Measure ctb-tile tiling time
         run: |
           set -euxo pipefail
@@ -62,13 +74,9 @@ jobs:
 
   ctb-rs-slice-timing:
     runs-on: ubuntu-24.04
+    needs: checkout
     timeout-minutes: 120
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-        with:
-          lfs: true
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -83,11 +91,11 @@ jobs:
           restore-keys: |
             ctb-rs-benchmark-${{ runner.os }}-
 
-      - name: Install GDAL (fixture synthesis; benchmark script is POSIX sh)
+      - name: Install GDAL and utils (fixture synthesis + payload diff)
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y gdal-bin
+          sudo apt-get install -y gdal-bin gzip coreutils
 
       - name: Build release ctb-tile
         run: |
