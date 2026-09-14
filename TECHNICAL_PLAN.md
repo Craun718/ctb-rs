@@ -3324,7 +3324,7 @@ P29/P41 固定顺序：先运行 C++ 0.4.1 记录墙钟，再以两倍墙钟作�
     P42 Rust 基线为 35.249s。两轮与 C++ P42 基线 18.938s 相比约为
     1.76x/1.68x，输出路径集合均一致，89/89 解压 payload 差异为 0。
 
-### P44：ahuarte47 C++ ctb-tile 切片耗时 CI（实施进行中，待实机确认）
+### P44：外部 C++ ctb-tile 切片耗时 CI（与 P45 合并于同一 workflow，待实机确认）
 
 说明：用户要求新增 CI，在 `push` / `pull_request` 时触发，测量
 `ahuarte47/cesium-terrain-builder` 的 `ctb-tile` 对
@@ -3334,21 +3334,24 @@ P29/P41 固定顺序：先运行 C++ 0.4.1 记录墙钟，再以两倍墙钟作�
 
 #### P44 方案
 
-1. 新增独立 workflow `.github/workflows/ctb-cpp-benchmark.yml`，触发事件为
-   `push` 与 `pull_request`，job 运行在 `ubuntu-24.04`。
+1. 在 `.github/workflows/ctb-benchmark.yml` 注册 `ctb-cpp-slice-timing` job，
+   与 P45 的 `ctb-rs-slice-timing` 处于同一 workflow；触发事件为 `push` 与
+   `pull_request`，均运行在 `ubuntu-24.04`。
 2. `actions/checkout@v7` 检出 ctb-rs 并启用 `lfs: true`，拉取 LFS 管理的
    `demo/guangxi_8_cities.tif` 作为基准输入。
 3. 使用 Docker Hub 预编译镜像 `homme/cesium-terrain-builder:0.4.1`
    （内含同版本 0.4.1 的 `ctb-tile`，避免在 runner 上从源码构建；该镜像较旧
    但与上游 `ahuarte47/cesium-terrain-builder` 版本号一致，可作为外部基准）。
 4. 通过 `docker run` 挂载工作目录，对 `demo/guangxi_8_cities.tif` 运行
-   `ctb-tile -q -o <out> <input>`，用 `date +%s.%N` 记录墙钟，输出
+   `ctb-tile -q -o <out> <input>`，输出目录必须位于被挂载的 workspace（实机
+   首跑教训：容器内看不到宿主机 `/tmp` 下的目录，报
+   `The output directory does not exist`），用 `date +%s.%N` 记录墙钟，输出
    `elapsed_seconds`、`terrain_tiles`、`data_size_bytes` 到 GitHub step
    summary；`ctb-tile` 非零退出则 job 失败。
 
 #### P44 验收门禁
 
-1. `.github/workflows/ctb-cpp-benchmark.yml` 能通过 YAML 解析。
+1. `.github/workflows/ctb-benchmark.yml` 能通过 YAML 解析。
 2. `git diff --check` 通过，无空白错误。
 3. 实机 CI 在 push / pull_request 时可拉取 demo LFS、拉取并运行预编译
    `ctb-tile` 镜像，并在 step summary 输出 `ctb_tile_elapsed_seconds`。
@@ -3359,9 +3362,11 @@ P29/P41 固定顺序：先运行 C++ 0.4.1 记录墙钟，再以两倍墙钟作�
 2026-09-14：新增 workflow、TODO 与技术方案记录；本机校验 YAML 可解析且
 `git diff --check` 通过。首次使用源码构建版本推送到 GitHub 后，因构建开销大，
 改为使用预编译镜像 `homme/cesium-terrain-builder:0.4.1` 并同步更新文档。
-实机 CI 结果待推送到 GitHub 后确认，未确认前保持“实施进行中”。
+实机首跑失败：容器内看不到宿主机 `/tmp` 输出目录。随后与 P45 合并为同一
+`.github/workflows/ctb-benchmark.yml`，把 C++ 输出目录改到挂载的 workspace
+下。实机 CI 结果待推送到 GitHub 后确认，未确认前保持“实施进行中”。
 
-### P45：ctb-rs 可复现切片耗时 CI（实施进行中，待实机确认）
+### P45：ctb-rs 可复现切片耗时 CI（与 P44 合并于同一 workflow，待实机确认）
 
 说明：用户要求再新增一个 CI，在 `push` / `pull_request` 时运行项目 Rust
 `ctb-tile` 的可复现 benchmark（`scripts/benchmark-ctb-tile.zsh`），把墙钟与
@@ -3370,12 +3375,14 @@ tile 数写入 step summary。该 CI 与 P44 外部 C++ 基准相互独立，同
 
 #### P45 方案
 
-1. 新增独立 workflow `.github/workflows/ctb-rs-benchmark.yml`，触发事件为
-   `push` 与 `pull_request`，job 运行在 `ubuntu-24.04`。
-2. `actions/checkout@v7` 检出 ctb-rs 并启用 `lfs: true`；该 workflow 本身
-   使用仓库内 `tests/fixtures/oracle-source.asc` 合成输入，不依赖私有数据。
-3. 安装 `gdal-bin`（脚本用 `gdal_translate` 把 Asc grid 转为 tiled/DEFLATE
-   GeoTIFF 作为基准输入），`cargo build --release --locked --bin ctb-tile`。
+1. 注册 `ctb-rs-slice-timing` job，与 P44 的 `ctb-cpp-slice-timing` 位于同一
+   `.github/workflows/ctb-benchmark.yml`。
+2. `actions/checkout@v7` 检出 ctb-rs 并启用 `lfs: true`；该 job 使用仓库内
+   `tests/fixtures/oracle-source.asc` 合成输入，不依赖私有数据。
+3. 安装 `gdal-bin` 与 `zsh`（脚本用 `gdal_translate` 把 Asc grid 转为
+   tiled/DEFLATE GeoTIFF；实机首跑教训：runner 默认无 `zsh`，曾报
+   `zsh: command not found`），`cargo build --release --locked --bin
+   ctb-tile`。
 4. 以 `CTB_RS_BIN=target/release/ctb-tile` 调用
    `scripts/benchmark-ctb-tile.zsh 512 2`（512×512 合成 DEM、单线程与 2 线程
    各跑一次并做 `.terrain` payload 一致性校验），脚本失败即 job 失败。
@@ -3384,7 +3391,7 @@ tile 数写入 step summary。该 CI 与 P44 外部 C++ 基准相互独立，同
 
 #### P45 验收门禁
 
-1. `.github/workflows/ctb-rs-benchmark.yml` 能通过 YAML 解析。
+1. `.github/workflows/ctb-benchmark.yml` 能通过 YAML 解析。
 2. `git diff --check` 通过，无空白错误。
 3. 实机 CI 在 push / pull_request 时可安装 GDAL、构建 release `ctb-tile`、
    跑完 benchmark 并在 step summary 输出 single/parallel 的
@@ -3395,5 +3402,6 @@ tile 数写入 step summary。该 CI 与 P44 外部 C++ 基准相互独立，同
 
 2026-09-14：新增 workflow，并在技术方案、测试策略与 TODO 登记。本地校验
 YAML 可解析、`git diff --check` 通过；因本机 Homebrew GDAL 动态库损坏无法
-本地实跑脚本，实机 CI 结果待推送到 GitHub 后确认，未确认前保持
-“实施进行中”。
+本地实跑脚本。实机首跑失败：`zsh: command not found`（runner 未装 zsh）。
+随后与 P44 合并为同一 `.github/workflows/ctb-benchmark.yml` 并安装 `zsh`。
+实机 CI 结果待推送到 GitHub 后确认，未确认前保持“实施进行中”。

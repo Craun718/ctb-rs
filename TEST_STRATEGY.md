@@ -1179,10 +1179,12 @@ oracle 差分或私有数据对比流程。它使用 Docker Hub 预编译镜像
 
 ### 35.1 P44 验证范围
 
-- `.github/workflows/ctb-cpp-benchmark.yml` 能被 YAML 解析。
+- `.github/workflows/ctb-benchmark.yml`（`ctb-cpp-slice-timing` job）能被 YAML 解析。
 - `git diff --check` 无空白错误。
 - workflow 在 `push` / `pull_request` 时触发；LFS 拉取 demo 输入、拉取并运行
   预编译 `ctb-tile` 镜像、`ctb-tile` 非零退出会使 CI 失败。
+- 输出目录必须位于被挂载的 workspace（此前容器看不到宿主机 `/tmp` 导致
+  `The output directory does not exist`）。
 - 不要求输出与项目 Rust `ctb-tile` 一致，也不作为本项目正确性或性能门禁。
 
 ## 36. P45 ctb-rs 可复现切片耗时 CI（不属于 Rust 测试矩阵）
@@ -1195,8 +1197,9 @@ P45 与本项目 Rust 实现直接相关，但它是一个独立的 CI benchmark
 
 ### 36.1 P45 验证范围
 
-- `.github/workflows/ctb-rs-benchmark.yml` 能被 YAML 解析。
+- `.github/workflows/ctb-benchmark.yml`（`ctb-rs-slice-timing` job）能被 YAML 解析。
 - `git diff --check` 无空白错误。
+- job 需安装 `zsh`（此前 runner 默认无 `zsh`，曾报 `zsh: command not found`）。
 - workflow 在 `push` / `pull_request` 时触发；GDAL 安装、release 构建、
   benchmark 脚本任意一步失败都会使 CI 失败。
 - step summary 输出 commit、single/parallel `elapsed_seconds`、`terrain_tiles`

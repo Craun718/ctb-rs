@@ -1,0 +1,121 @@
+name: ctb-benchmark
+
+# Two independent benchmark jobs, intentionally unrelated to ci.yml's build /
+# release matrix:
+#   1. ctb-cpp-slice-timing: measure how long cesium-terrain-builder's
+#      ctb-tile (0.4.1, prebuilt via homme/cesium-terrain-builder:0.4.1) takes
+#      to tile the demo raster.
+#   2. ctb-rs-slice-timing: run ctb-rs's reproducible developer benchmark
+#      (scripts/benchmark-ctb-tile.zsh) and publish wall-clock timings.
+# Neither job enforces a performance gate; both only record timings.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ctb-cpp-slice-timing:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out ctb-rs with LFS demo data
+        uses: actions/checkout@v7
+        with:
+          lfs: true
+
+      - name: Measure ctb-tile tiling time
+        run: |
+          set -euxo pipefail
+          input="$(pwd)/demo/guangxi_8_cities.tif"
+          test -f "$input"
+          # Output dir must live under the mounted workspace so the container
+          # (which only has $(pwd) bind-mounted) can see and write to it.
+          output_dir="$(pwd)/.bench/cpp-out"
+          mkdir -p "$output_dir"
+          trap 'rm -rf "$output_dir"' EXIT
+
+          start="$(date +%s.%N)"
+          docker run --rm \
+            -v "$(pwd):$(pwd)" -w "$(pwd)" \
+            homme/cesium-terrain-builder:0.4.1 \
+            ctb-tile -q -o "$output_dir" "$input"
+          end="$(date +%s.%N)"
+
+          elapsed_seconds="$(awk -v s="$start" -v e="$end" 'BEGIN { printf "%.3f", e - s }')"
+          terrain_tiles="$(find "$output_dir" -name '*.terrain' -type f | wc -l | tr -d ' ')"
+          data_size_bytes="$(stat -c %s "$input")"
+
+          tee -a "$GITHUB_STEP_SUMMARY" <<EOF
+          ## ctb-cpp-slice-timing (external ctb-tile 0.4.1)
+
+          | metric | value |
+          | --- | --- |
+          | image | homme/cesium-terrain-builder:0.4.1 |
+          | ctb version | 0.4.1 (prebuilt) |
+          | input | $input |
+          | data_size_bytes | $data_size_bytes |
+          | elapsed_seconds | $elapsed_seconds |
+          | terrain_tiles | $terrain_tiles |
+          EOF
+          echo "ctb_tile_elapsed_seconds=$elapsed_seconds"
+          echo "terrain_tiles=$terrain_tiles"
+
+  ctb-rs-slice-timing:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          lfs: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ctb-rs-benchmark-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ctb-rs-benchmark-${{ runner.os }}-
+
+      - name: Install GDAL and zsh (fixture synthesis + benchmark script)
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gdal-bin zsh
+
+      - name: Build release ctb-tile
+        run: |
+          set -euxo pipefail
+          cargo build --release --locked --bin ctb-tile
+
+      - name: Run ctb-rs benchmark
+        run: |
+          set -euxo pipefail
+          output_file="$(mktemp)"
+          trap 'rm -f "$output_file"' EXIT
+          CTB_RS_BIN="$PWD/target/release/ctb-tile" \
+            zsh scripts/benchmark-ctb-tile.zsh 512 2 | tee "$output_file"
+
+          single_seconds="$(sed -n 's/^single workers=1 seconds=\([0-9][0-9]*\) .*/\1/p' "$output_file" | head -n 1)"
+          parallel_seconds="$(sed -n 's/^parallel workers=2 seconds=\([0-9][0-9]*\) .*/\1/p' "$output_file" | head -n 1)"
+          single_tiles="$(sed -n 's/^single workers=1 seconds=[0-9][0-9]* tiles=\([0-9][0-9]*\) .*/\1/p' "$output_file" | head -n 1)"
+          parallel_tiles="$(sed -n 's/^parallel workers=2 seconds=[0-9][0-9]* tiles=\([0-9][0-9]*\) .*/\1/p' "$output_file" | head -n 1)"
+          tee -a "$GITHUB_STEP_SUMMARY" <<MDEOF
+          ## ctb-rs-slice-timing (ctb-rs, 512x512 synthetic DEM)
+
+          | metric | value |
+          | --- | --- |
+          | ctb-rs commit | ${{ github.sha }} |
+          | binaries | $PWD/target/release/ctb-tile |
+          | script | scripts/benchmark-ctb-tile.zsh 512 2 |
+          | single workers=1 elapsed_seconds | $single_seconds |
+          | parallel workers=2 elapsed_seconds | $parallel_seconds |
+          | single terrain_tiles | $single_tiles |
+          | parallel terrain_tiles | $parallel_tiles |
+          MDEOF

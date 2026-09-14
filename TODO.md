@@ -752,34 +752,40 @@
 - [x] 复测约 1GB subset，比较完整路径集合与全部解压 payload。
 - [x] 回写热点结论、优化结果与剩余瓶颈。
 
-## P44：外部 C++ ctb-tile 切片耗时 CI（预编译镜像，实施完成前需实机确认）
+## P44：外部 C++ ctb-tile 切片耗时 CI（已与 P45 合并为同一 workflow，实施完成前需实机确认）
 
 - [x] 登记 P44，说明新增 CI 只测量 `ahuarte47/cesium-terrain-builder` 的
       `ctb-tile` 对 `demo/guangxi_8_cities.tif` 切片所需墙钟，不涉及本项目
       Rust 代码、测试策略或技术实现。
-- [x] 新增 `.github/workflows/ctb-cpp-benchmark.yml`，触发事件为 `push` /
-      `pull_request`；job 使用 Docker Hub 预编译镜像
+- [x] 在 `.github/workflows/ctb-benchmark.yml` 注册 `ctb-cpp-slice-timing` job，
+      触发事件为 `push` / `pull_request`；使用 Docker Hub 预编译镜像
       `homme/cesium-terrain-builder:0.4.1`（内含同版本 0.4.1 的 `ctb-tile`，
       对应 `ahuarte47/cesium-terrain-builder`，避免在 runner 上源码构建）。
 - [x] job 在 `actions/checkout@v7` 开启 `lfs: true` 拉取 LFS 管理的 demo
       tif，通过 `docker run` 运行 `ctb-tile` 后把 `elapsed_seconds`、
       `terrain_tiles` 写入 step summary；`ctb-tile` 非零退出则 CI 失败。
+- [x] 实机首跑教训：容器内看不到宿主机 `/tmp` 下的输出目录，已把输出目录
+      改到被挂载的 workspace 下（修复 `The output directory does not exist`）。
 - [x] 本地校验 workflow YAML 可解析、`git diff --check` 无空白错误。
 - [ ] 推送到 GitHub 后确认实机 CI 能成功拉取 LFS、拉取并运行预编译
       `ctb-tile` 镜像并输出切片耗时；在此之前不将 P44 标记为实施完成。
 
-## P45：ctb-rs 可复现切片耗时 CI（实施完成前需实机确认）
+## P45：ctb-rs 可复现切片耗时 CI（已与 P44 合并为同一 workflow，实施完成前需实机确认）
 
 - [x] 登记 P45，说明新增 CI 运行 `scripts/benchmark-ctb-tile.zsh` 测量本项目
       release `ctb-tile` 对合成 DEM 的切片墙钟，并校验单线程/多线程输出
       `.terrain` payload 一致；不进入 Rust 测试矩阵，也不设性能门禁。
-- [x] 新增 `.github/workflows/ctb-rs-benchmark.yml`，触发事件为 `push` /
-      `pull_request`；job 安装 `gdal-bin`、`cargo build --release --locked
-      --bin ctb-tile`，再以 `CTB_RS_BIN=target/release/ctb-tile` 运行
+- [x] 在 `.github/workflows/ctb-benchmark.yml` 注册 `ctb-rs-slice-timing` job，
+      触发事件为 `push` / `pull_request`；job 安装 `gdal-bin` 与 `zsh`、
+      `cargo build --release --locked --bin ctb-tile`，再以
+      `CTB_RS_BIN=target/release/ctb-tile` 运行
       `scripts/benchmark-ctb-tile.zsh 512 2`。
 - [x] job 解析脚本输出的 `single/parallel workers=… seconds=… tiles=…`，
       连同 commit、二进制路径、脚本命令行写入 GitHub step summary；脚本任意
       一步失败则 job 失败。
+- [x] 实机首跑教训：runner 默认无 `zsh`，已安装 `zsh`（修复
+      `zsh: command not found`）。
 - [x] 本地校验 workflow YAML 可解析、`git diff --check` 无空白错误。
-- [ ] 推送到 GitHub 后确认实机 CI 能安装 GDAL、构建 release 并跑完 benchmark、
-      输出 single/parallel 切片耗时；在此之前不将 P45 标记为实施完成。
+- [ ] 推送到 GitHub 后确认实机 CI 能安装 GDAL/zsh、构建 release 并跑完
+      benchmark、输出 single/parallel 切片耗时；在此之前不将 P45 标记为
+      实施完成。
