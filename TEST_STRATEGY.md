@@ -1203,6 +1203,8 @@ P45 与本项目 Rust 实现直接相关，但它是一个独立的 CI benchmark
   安装 `zsh`；脚本不带 bash 专有的 `set -o pipefail`（runner 的 `/bin/sh` 是
   dash 会报 Illegal option），只用 `set -eu`；runner 需提供 `gzip`/`coreutils`
   （已加入 apt 安装）。
+- `ctb-tile` 要求输出目录已存在；benchmark 脚本在每次运行前先
+  `mkdir -p "$output"`，否则会报 `The output directory does not exist`。
 - workflow 在 `push` / `pull_request` 时触发；采用 fail-fast：concurrency 会
   取消同一 ref 上仍在跑的旧 run。两个 job 各自 `actions/checkout`（job 之间
   不共享 runner 工作目录；`ctb-cpp-slice-timing` 启用 LFS 拉 demo，`ctb-rs-slice-timing`

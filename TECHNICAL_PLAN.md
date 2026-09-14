@@ -3416,6 +3416,7 @@ demo/Cargo.toml 传给下游 benchmark job（cpp job 找不到 LFS tif、rust jo
 找不到 Cargo.toml）；已移除共享 `checkout` job，改为每个 benchmark job 各自
 `actions/checkout`，fail-fast 由 concurrency 取消旧 run 承担。再跑时 script
 又报 `set: Illegal option -o pipefail`（runner 的 `/bin/sh` 是 dash，不认
-bash 专有的 `set -o pipefail`），已只保留 `set -eu`。实机 CI 结果待推送到
-GitHub 后确认，未确认前
+bash 专有的 `set -o pipefail`），已只保留 `set -eu`。再跑时 ctb-rs 二进制又报
+`The output directory does not exist`（输出目录必须先存在），脚本已改为在每次
+运行前 `mkdir -p`。实机 CI 结果待推送到 GitHub 后确认，未确认前
 保持“实施进行中”。

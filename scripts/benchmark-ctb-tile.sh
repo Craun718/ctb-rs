@@ -44,6 +44,7 @@ run_case() {
   name="$1"
   count="$2"
   output="$work_directory/$name"
+  mkdir -p "$output"
   start="$(date +%s)"
   "$ctb_bin" -q -c "$count" -o "$output" "$source_tiff"
   finish="$(date +%s)"
