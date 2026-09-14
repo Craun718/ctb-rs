@@ -1201,10 +1201,10 @@ P45 与本项目 Rust 实现直接相关，但它是一个独立的 CI benchmark
 - `git diff --check` 无空白错误。
 - benchmark 脚本已改为 POSIX sh（`scripts/benchmark-ctb-tile.sh`），CI 不再需要
   安装 `zsh`；runner 需提供 `gzip`/`coreutils`（已加入 apt 安装）。
-- workflow 在 `push` / `pull_request` 时触发；采用 fail-fast：共享 `checkout`
-  job（LFS 检出），两个 benchmark job `needs: checkout`，且 concurrency 会取
-  消同一 ref 上仍在跑的旧 run。GDAL 安装、release 构建、benchmark 脚本任意
-  一步失败都会使 CI 失败。
+- workflow 在 `push` / `pull_request` 时触发；采用 fail-fast：concurrency 会
+  取消同一 ref 上仍在跑的旧 run。两个 job 各自 `actions/checkout`（job 之间
+  不共享 runner 工作目录；`ctb-cpp-slice-timing` 启用 LFS 拉 demo，`ctb-rs-slice-timing`
+  不启用 LFS）。GDAL 安装、release 构建、benchmark 脚本任意一步失败都会使 CI 失败。
 - step summary 输出 commit、single/parallel `elapsed_seconds`、`terrain_tiles`
   与调用命令。
 - 不设性能门禁，只记录当前 commit 的基准数据。

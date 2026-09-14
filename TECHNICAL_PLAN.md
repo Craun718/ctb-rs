@@ -3336,11 +3336,12 @@ P29/P41 固定顺序：先运行 C++ 0.4.1 记录墙钟，再以两倍墙钟作�
 
 1. 在 `.github/workflows/ctb-benchmark.yml` 注册 `ctb-cpp-slice-timing` job，
    与 P45 的 `ctb-rs-slice-timing` 处于同一 workflow；触发事件为 `push` 与
-   `pull_request`，均运行在 `ubuntu-24.04`。workflow 采用 fail-fast：单独的
-   `checkout` job 先做 LFS 检出，两个 benchmark job 都 `needs: checkout`，
-   checkout 失败即跳过；并按 `github.ref` 设置 concurrency 取消已在跑的旧 run。
-2. `actions/checkout@v7` 检出 ctb-rs 并启用 `lfs: true`，拉取 LFS 管理的
-   `demo/guangxi_8_cities.tif` 作为基准输入。
+   `pull_request`，均运行在 `ubuntu-24.04`。workflow 采用 fail-fast：按
+   `github.ref` 设置 concurrency 取消同一 ref 上仍在跑的旧 run；GitHub
+   Actions 的 job 运行在各自独立的 runner 上、不共享工作目录，因此每个
+   benchmark job 都单独做 `actions/checkout`。
+2. `ctb-cpp-slice-timing` job 用 `actions/checkout@v7` 检出 ctb-rs 并启用
+   `lfs: true`，拉取 LFS 管理的 `demo/guangxi_8_cities.tif` 作为基准输入。
 3. 使用 Docker Hub 预编译镜像 `homme/cesium-terrain-builder:0.4.1`
    （内含同版本 0.4.1 的 `ctb-tile`，避免在 runner 上从源码构建；该镜像较旧
    但与上游 `ahuarte47/cesium-terrain-builder` 版本号一致，可作为外部基准）。
@@ -3379,8 +3380,9 @@ tile 数写入 step summary。该 CI 与 P44 外部 C++ 基准相互独立，同
 
 1. 注册 `ctb-rs-slice-timing` job，与 P44 的 `ctb-cpp-slice-timing` 位于同一
    `.github/workflows/ctb-benchmark.yml`。
-2. `actions/checkout@v7` 检出 ctb-rs 并启用 `lfs: true`；该 job 使用仓库内
-   `tests/fixtures/oracle-source.asc` 合成输入，不依赖私有数据。
+2. `ctb-rs-slice-timing` job 用 `actions/checkout@v7` 检出 ctb-rs（不启用
+   LFS，该 job 使用仓库内 `tests/fixtures/oracle-source.asc` 合成输入，不依赖
+   demo LFS 数据）。
 3. 安装 `gdal-bin`、`gzip`、`coreutils`（脚本用 `gdal_translate` 合成输入，
    用 `gzip -dc` 解压比较 payload；实机首跑教训：runner 上找不到 `gzip`），
    不放 runner 时需要额外依赖；`scripts/benchmark-ctb-tile.sh` 已改为 POSIX
@@ -3408,6 +3410,10 @@ YAML 可解析、`git diff --check` 通过；因本机 Homebrew GDAL 动态库�
 随后与 P44 合并为同一 `.github/workflows/ctb-benchmark.yml`；按用户要求不再安装
 `zsh`，把 `scripts/benchmark-ctb-tile.zsh` 改用 POSIX sh 重写为
 `scripts/benchmark-ctb-tile.sh`。随后合并 run 又报 `command not found: gzip`，
-已把 `gzip`/`coreutils` 加入 apt 安装；同时加入 fail-fast：共享 `checkout` job
-+ `needs` + concurrency cancel。实机 CI 结果待推送到 GitHub 后确认，未确认前
+已把 `gzip`/`coreutils` 加入 apt 安装并设置 concurrency cancel。实机再跑
+又失败：GitHub Actions 的 job 之间不共享工作目录，共享 `checkout` job 无法把
+demo/Cargo.toml 传给下游 benchmark job（cpp job 找不到 LFS tif、rust job
+找不到 Cargo.toml）；已移除共享 `checkout` job，改为每个 benchmark job 各自
+`actions/checkout`，fail-fast 由 concurrency 取消旧 run 承担。实机 CI 结果待
+推送到 GitHub 后确认，未确认前
 保持“实施进行中”。

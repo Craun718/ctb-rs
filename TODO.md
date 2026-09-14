@@ -768,8 +768,10 @@
       改到被挂载的 workspace 下（修复 `The output directory does not exist`）。
 - [x] 实机合并 run 教训：脚本用 `gzip -dc` 比较 payload，runner 没有
       `gzip`（`command not found: gzip`，exit 127），已补装 `gzip`/`coreutils`。
-- [x] 采用 fail-fast：workflow 有共享 `checkout` job，两个基准 job 均
-      `needs: checkout`；并设置 concurrency 取消同一 ref 上仍在跑的旧 run。
+- [x] 采用 fail-fast：设置 concurrency 取消同一 ref 上仍在跑的旧 run。实机
+      再跑发现 GitHub Actions 的 job 不共享工作目录，共享 `checkout` job 无法
+      把 demo / Cargo.toml 传给下游 job；已改为两个 benchmark job 各自
+      `actions/checkout`（cpp job 开 `lfs: true`，rust job 不开 LFS）。
 - [x] 本地校验 workflow YAML 可解析、`git diff --check` 无空白错误。
 - [ ] 推送到 GitHub 后确认实机 CI 能成功拉取 LFS、拉取并运行预编译
       `ctb-tile` 镜像并输出切片耗时；在此之前不将 P44 标记为实施完成。

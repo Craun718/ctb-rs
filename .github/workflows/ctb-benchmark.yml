@@ -8,9 +8,9 @@ name: ctb-benchmark
 #   2. ctb-rs-slice-timing: run ctb-rs's reproducible developer benchmark
 #      (scripts/benchmark-ctb-tile.sh) and publish wall-clock timings.
 # Neither job enforces a performance gate; both only record timings.
-# Fast-fail: checkout runs once as a prerequisite job, both benchmark jobs use
-# `needs` so a checkout/LFS failure skips them immediately, and concurrency
-# cancels superseded runs on the same ref.
+# Fast-fail: concurrency cancels superseded runs on the same ref. Runs execute
+# on separate runners, so each job checks out the repository it needs (the
+# C++ job fetches LFS because it consumes demo/guangxi_8_cities.tif).
 
 on:
   push:
@@ -21,20 +21,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  checkout:
+  ctb-cpp-slice-timing:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - name: Check out repository with LFS demo data
         uses: actions/checkout@v7
         with:
           lfs: true
 
-  ctb-cpp-slice-timing:
-    runs-on: ubuntu-24.04
-    needs: checkout
-    timeout-minutes: 120
-    steps:
       - name: Measure ctb-tile tiling time
         run: |
           set -euxo pipefail
@@ -74,9 +69,11 @@ jobs:
 
   ctb-rs-slice-timing:
     runs-on: ubuntu-24.04
-    needs: checkout
     timeout-minutes: 120
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
