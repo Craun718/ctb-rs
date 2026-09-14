@@ -3414,6 +3414,8 @@ YAML 可解析、`git diff --check` 通过；因本机 Homebrew GDAL 动态库�
 又失败：GitHub Actions 的 job 之间不共享工作目录，共享 `checkout` job 无法把
 demo/Cargo.toml 传给下游 benchmark job（cpp job 找不到 LFS tif、rust job
 找不到 Cargo.toml）；已移除共享 `checkout` job，改为每个 benchmark job 各自
-`actions/checkout`，fail-fast 由 concurrency 取消旧 run 承担。实机 CI 结果待
-推送到 GitHub 后确认，未确认前
+`actions/checkout`，fail-fast 由 concurrency 取消旧 run 承担。再跑时 script
+又报 `set: Illegal option -o pipefail`（runner 的 `/bin/sh` 是 dash，不认
+bash 专有的 `set -o pipefail`），已只保留 `set -eu`。实机 CI 结果待推送到
+GitHub 后确认，未确认前
 保持“实施进行中”。

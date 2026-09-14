@@ -8,7 +8,7 @@
 # benchmark does not enter cargo test and writes all generated data under a
 # temporary directory.
 
-set -euo pipefail
+set -eu
 
 repo_root="$(git rev-parse --show-toplevel)"
 fixture="$repo_root/tests/fixtures/oracle-source.asc"

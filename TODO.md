@@ -768,6 +768,8 @@
       改到被挂载的 workspace 下（修复 `The output directory does not exist`）。
 - [x] 实机合并 run 教训：脚本用 `gzip -dc` 比较 payload，runner 没有
       `gzip`（`command not found: gzip`，exit 127），已补装 `gzip`/`coreutils`。
+- [x] 实机 run 又报 `set: Illegal option -o pipefail`：runner 的 `/bin/sh` 是
+      dash 不认 `set -o pipefail`，已把脚本改为只 `set -eu`。
 - [x] 采用 fail-fast：设置 concurrency 取消同一 ref 上仍在跑的旧 run。实机
       再跑发现 GitHub Actions 的 job 不共享工作目录，共享 `checkout` job 无法
       把 demo / Cargo.toml 传给下游 job；已改为两个 benchmark job 各自
