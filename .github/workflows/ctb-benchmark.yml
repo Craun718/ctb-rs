@@ -45,7 +45,7 @@ jobs:
           docker run --rm \
             -v "$(pwd):$(pwd)" -w "$(pwd)" \
             homme/cesium-terrain-builder:0.4.1 \
-            ctb-tile -q -o "$output_dir" "$input"
+            ctb-tile -q -c "$(nproc || echo 2)" -o "$output_dir" "$input"
           end="$(date +%s.%N)"
 
           elapsed_seconds="$(awk -v s="$start" -v e="$end" 'BEGIN { printf "%.3f", e - s }')"
