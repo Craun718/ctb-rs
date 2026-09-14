@@ -1192,14 +1192,15 @@ oracle 差分或私有数据对比流程。它使用 Docker Hub 预编译镜像
 P45 与本项目 Rust 实现直接相关，但它是一个独立的 CI benchmark，不进入
 `cargo test`、oracle 差分或私有数据对比流程。它使用仓库内
 `tests/fixtures/oracle-source.asc` 合成 GeoTIFF 输入，调用
-`scripts/benchmark-ctb-tile.zsh 512 2` 对 release `ctb-tile` 分别以单线程
+`scripts/benchmark-ctb-tile.sh 512 2` 对 release `ctb-tile` 分别以单线程
 和 2 线程计时，并校验两轮输出的 `.terrain` 路径与解压 payload 一致。
 
 ### 36.1 P45 验证范围
 
 - `.github/workflows/ctb-benchmark.yml`（`ctb-rs-slice-timing` job）能被 YAML 解析。
 - `git diff --check` 无空白错误。
-- job 需安装 `zsh`（此前 runner 默认无 `zsh`，曾报 `zsh: command not found`）。
+- benchmark 脚本已改为 POSIX sh（`scripts/benchmark-ctb-tile.sh`），CI 不再需要
+  安装 `zsh`。
 - workflow 在 `push` / `pull_request` 时触发；GDAL 安装、release 构建、
   benchmark 脚本任意一步失败都会使 CI 失败。
 - step summary 输出 commit、single/parallel `elapsed_seconds`、`terrain_tiles`

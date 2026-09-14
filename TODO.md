@@ -772,20 +772,21 @@
 
 ## P45：ctb-rs 可复现切片耗时 CI（已与 P44 合并为同一 workflow，实施完成前需实机确认）
 
-- [x] 登记 P45，说明新增 CI 运行 `scripts/benchmark-ctb-tile.zsh` 测量本项目
+- [x] 登记 P45，说明新增 CI 运行 `scripts/benchmark-ctb-tile.sh` 测量本项目
       release `ctb-tile` 对合成 DEM 的切片墙钟，并校验单线程/多线程输出
       `.terrain` payload 一致；不进入 Rust 测试矩阵，也不设性能门禁。
 - [x] 在 `.github/workflows/ctb-benchmark.yml` 注册 `ctb-rs-slice-timing` job，
-      触发事件为 `push` / `pull_request`；job 安装 `gdal-bin` 与 `zsh`、
+      触发事件为 `push` / `pull_request`；job 安装 `gdal-bin`、
       `cargo build --release --locked --bin ctb-tile`，再以
       `CTB_RS_BIN=target/release/ctb-tile` 运行
-      `scripts/benchmark-ctb-tile.zsh 512 2`。
+      `scripts/benchmark-ctb-tile.sh 512 2`。
 - [x] job 解析脚本输出的 `single/parallel workers=… seconds=… tiles=…`，
       连同 commit、二进制路径、脚本命令行写入 GitHub step summary；脚本任意
       一步失败则 job 失败。
-- [x] 实机首跑教训：runner 默认无 `zsh`，已安装 `zsh`（修复
-      `zsh: command not found`）。
+- [x] 实机首跑教训：runner 默认无 `zsh`；按用户要求不安装 `zsh`，已把
+      `scripts/benchmark-ctb-tile.zsh` 用 POSIX sh 改写为
+      `scripts/benchmark-ctb-tile.sh`。
 - [x] 本地校验 workflow YAML 可解析、`git diff --check` 无空白错误。
-- [ ] 推送到 GitHub 后确认实机 CI 能安装 GDAL/zsh、构建 release 并跑完
+- [ ] 推送到 GitHub 后确认实机 CI 能安装 GDAL、构建 release 并跑完
       benchmark、输出 single/parallel 切片耗时；在此之前不将 P45 标记为
       实施完成。

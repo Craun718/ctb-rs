@@ -6,7 +6,7 @@ name: ctb-benchmark
 #      ctb-tile (0.4.1, prebuilt via homme/cesium-terrain-builder:0.4.1) takes
 #      to tile the demo raster.
 #   2. ctb-rs-slice-timing: run ctb-rs's reproducible developer benchmark
-#      (scripts/benchmark-ctb-tile.zsh) and publish wall-clock timings.
+#      (scripts/benchmark-ctb-tile.sh) and publish wall-clock timings.
 # Neither job enforces a performance gate; both only record timings.
 
 on:
@@ -83,11 +83,11 @@ jobs:
           restore-keys: |
             ctb-rs-benchmark-${{ runner.os }}-
 
-      - name: Install GDAL and zsh (fixture synthesis + benchmark script)
+      - name: Install GDAL (fixture synthesis; benchmark script is POSIX sh)
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y gdal-bin zsh
+          sudo apt-get install -y gdal-bin
 
       - name: Build release ctb-tile
         run: |
@@ -100,7 +100,7 @@ jobs:
           output_file="$(mktemp)"
           trap 'rm -f "$output_file"' EXIT
           CTB_RS_BIN="$PWD/target/release/ctb-tile" \
-            zsh scripts/benchmark-ctb-tile.zsh 512 2 | tee "$output_file"
+            sh scripts/benchmark-ctb-tile.sh 512 2 | tee "$output_file"
 
           single_seconds="$(sed -n 's/^single workers=1 seconds=\([0-9][0-9]*\) .*/\1/p' "$output_file" | head -n 1)"
           parallel_seconds="$(sed -n 's/^parallel workers=2 seconds=\([0-9][0-9]*\) .*/\1/p' "$output_file" | head -n 1)"
@@ -113,7 +113,7 @@ jobs:
           | --- | --- |
           | ctb-rs commit | ${{ github.sha }} |
           | binaries | $PWD/target/release/ctb-tile |
-          | script | scripts/benchmark-ctb-tile.zsh 512 2 |
+          | script | scripts/benchmark-ctb-tile.sh 512 2 |
           | single workers=1 elapsed_seconds | $single_seconds |
           | parallel workers=2 elapsed_seconds | $parallel_seconds |
           | single terrain_tiles | $single_tiles |

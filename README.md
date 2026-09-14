@@ -124,7 +124,7 @@ cargo test
 `scripts/` 下提供与 C++ 基准程序对比的验证脚本：
 
 - `verify-ctb-oracle.zsh`：对照 C++ CTB 输出做切片差分。
-- `benchmark-ctb-tile.zsh`：`ctb-tile` 性能基准。
+- `benchmark-ctb-tile.sh`：`ctb-tile` 性能基准。
 - `benchmark-ctb-cpp-rust-timeout.zsh`：先跑 C++ 并记录墙钟，再以两倍
   C++ 墙钟作为 Rust timeout，比较共同 `.terrain` 输出。
 
