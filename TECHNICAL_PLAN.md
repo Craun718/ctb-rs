@@ -3336,29 +3336,27 @@ P29/P41 固定顺序：先运行 C++ 0.4.1 记录墙钟，再以两倍墙钟作�
 
 1. 新增独立 workflow `.github/workflows/ctb-cpp-benchmark.yml`，触发事件为
    `push` 与 `pull_request`，job 运行在 `ubuntu-24.04`。
-2. 第一次 `actions/checkout@v7` 检出 ctb-rs 并启用 `lfs: true`，拉取 LFS
-   管理的 `demo/guangxi_8_cities.tif` 作为基准输入。
-3. 第二次 `actions/checkout@v7` 检出外部仓库
-   `ahuarte47/cesium-terrain-builder` 固定提交
-   `d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f`，保存到 `ctb-src/`。
-4. 通过 apt 安装 `cmake`、`g++`、`libgdal-dev`、`gdal-bin`，按 Release
-   构建 `ctb-tile`，命令复用本机验证过的 GDAL 3.x CMake 配置
-   （`CMAKE_POLICY_VERSION_MINIMUM=3.5`）。
-5. 对 `demo/guangxi_8_cities.tif` 运行
-   `ctb-build/tools/ctb-tile -q -o <out> <input>`，用 `date +%s.%N` 记录
-   墙钟，输出 `elapsed_seconds`、`terrain_tiles`、`data_size_bytes` 到
-   GitHub step summary；`ctb-tile` 非零退出则 job 失败。
+2. `actions/checkout@v7` 检出 ctb-rs 并启用 `lfs: true`，拉取 LFS 管理的
+   `demo/guangxi_8_cities.tif` 作为基准输入。
+3. 使用 Docker Hub 预编译镜像 `homme/cesium-terrain-builder:0.4.1`
+   （内含同版本 0.4.1 的 `ctb-tile`，避免在 runner 上从源码构建；该镜像较旧
+   但与上游 `ahuarte47/cesium-terrain-builder` 版本号一致，可作为外部基准）。
+4. 通过 `docker run` 挂载工作目录，对 `demo/guangxi_8_cities.tif` 运行
+   `ctb-tile -q -o <out> <input>`，用 `date +%s.%N` 记录墙钟，输出
+   `elapsed_seconds`、`terrain_tiles`、`data_size_bytes` 到 GitHub step
+   summary；`ctb-tile` 非零退出则 job 失败。
 
 #### P44 验收门禁
 
 1. `.github/workflows/ctb-cpp-benchmark.yml` 能通过 YAML 解析。
 2. `git diff --check` 通过，无空白错误。
-3. 实机 CI 在 push / pull_request 时可拉取 demo LFS、完成 C++ 构建，并在
-   step summary 输出 `ctb_tile_elapsed_seconds`。
+3. 实机 CI 在 push / pull_request 时可拉取 demo LFS、拉取并运行预编译
+   `ctb-tile` 镜像，并在 step summary 输出 `ctb_tile_elapsed_seconds`。
 4. 不修改 Cargo 依赖或 Rust 生产代码；不改变 `ci.yml` 现有构建/发布行为。
 
 #### P44 实施记录
 
 2026-09-14：新增 workflow、TODO 与技术方案记录；本机校验 YAML 可解析且
-`git diff --check` 通过。实机 CI 结果待推送到 GitHub 后确认，未确认前保持
-“实施进行中”。
+`git diff --check` 通过。首次使用源码构建版本推送到 GitHub 后，因构建开销大，
+改为使用预编译镜像 `homme/cesium-terrain-builder:0.4.1` 并同步更新文档。
+实机 CI 结果待推送到 GitHub 后确认，未确认前保持“实施进行中”。

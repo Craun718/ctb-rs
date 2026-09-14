@@ -1,8 +1,9 @@
 name: ctb-cpp-benchmark
 
-# Measure how long ahuarte47/cesium-terrain-builder's ctb-tile takes to produce
-# terrain tiles from the demo raster. This job is intentionally unrelated to the
-# Rust implementation in this repository; it only benchmarks the external C++ tool.
+# Measure how long cesium-terrain-builder's ctb-tile (0.4.1, prebuilt via
+# homme/cesium-terrain-builder:0.4.1) takes to produce terrain tiles from the
+# demo raster. This job is intentionally unrelated to the Rust implementation
+# in this repository; it only benchmarks the external C++ tool.
 
 on:
   push:
@@ -11,43 +12,26 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     steps:
       - name: Check out ctb-rs with LFS demo data
         uses: actions/checkout@v7
         with:
           lfs: true
 
-      - name: Check out ahuarte47/cesium-terrain-builder
-        uses: actions/checkout@v7
-        with:
-          repository: ahuarte47/cesium-terrain-builder
-          ref: d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f
-          path: ctb-src
-
-      - name: Install system dependencies
-        run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y cmake g++ libgdal-dev gdal-bin
-
-      - name: Build ctb-tile
-        run: |
-          set -euxo pipefail
-          cmake -S ctb-src -B ctb-build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-          cmake --build ctb-build --parallel 2
-
       - name: Measure ctb-tile tiling time
         run: |
           set -euxo pipefail
-          input=demo/guangxi_8_cities.tif
+          input="$(pwd)/demo/guangxi_8_cities.tif"
           test -f "$input"
           output_dir="$(mktemp -d)"
           trap 'rm -rf "$output_dir"' EXIT
 
           start="$(date +%s.%N)"
-          ctb-build/tools/ctb-tile -q -o "$output_dir" "$input"
+          docker run --rm \
+            -v "$(pwd):$(pwd)" -w "$(pwd)" \
+            homme/cesium-terrain-builder:0.4.1 \
+            ctb-tile -q -o "$output_dir" "$input"
           end="$(date +%s.%N)"
 
           elapsed_seconds="$(awk -v s="$start" -v e="$end" 'BEGIN { printf "%.3f", e - s }')"
@@ -57,7 +41,8 @@ jobs:
           tee -a "$GITHUB_STEP_SUMMARY" <<EOF
           | metric | value |
           | --- | --- |
-          | ctb commit | d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f |
+          | image | homme/cesium-terrain-builder:0.4.1 |
+          | ctb version | 0.4.1 (prebuilt) |
           | input | $input |
           | data_size_bytes | $data_size_bytes |
           | elapsed_seconds | $elapsed_seconds |

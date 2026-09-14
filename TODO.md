@@ -752,18 +752,18 @@
 - [x] 复测约 1GB subset，比较完整路径集合与全部解压 payload。
 - [x] 回写热点结论、优化结果与剩余瓶颈。
 
-## P44：ahuarte47 C++ ctb-tile 切片耗时 CI（实施完成前需实机确认）
+## P44：外部 C++ ctb-tile 切片耗时 CI（预编译镜像，实施完成前需实机确认）
 
 - [x] 登记 P44，说明新增 CI 只测量 `ahuarte47/cesium-terrain-builder` 的
       `ctb-tile` 对 `demo/guangxi_8_cities.tif` 切片所需墙钟，不涉及本项目
       Rust 代码、测试策略或技术实现。
 - [x] 新增 `.github/workflows/ctb-cpp-benchmark.yml`，触发事件为 `push` /
-      `pull_request`；job 固定克隆 ahuarte47 提交
-      `d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f`，并通过 apt `libgdal-dev`
-      构建 `ctb-tile`。
+      `pull_request`；job 使用 Docker Hub 预编译镜像
+      `homme/cesium-terrain-builder:0.4.1`（内含同版本 0.4.1 的 `ctb-tile`，
+      对应 `ahuarte47/cesium-terrain-builder`，避免在 runner 上源码构建）。
 - [x] job 在 `actions/checkout@v7` 开启 `lfs: true` 拉取 LFS 管理的 demo
-      tif，运行 `ctb-tile` 后把 `elapsed_seconds`、`terrain_tiles` 写入 step
-      summary；`ctb-tile` 非零退出则 CI 失败。
+      tif，通过 `docker run` 运行 `ctb-tile` 后把 `elapsed_seconds`、
+      `terrain_tiles` 写入 step summary；`ctb-tile` 非零退出则 CI 失败。
 - [x] 本地校验 workflow YAML 可解析、`git diff --check` 无空白错误。
-- [ ] 推送到 GitHub 后确认实机 CI 能成功拉取 LFS、构建 C++ 并输出切片耗时；
-      在此之前不将 P44 标记为实施完成。
+- [ ] 推送到 GitHub 后确认实机 CI 能成功拉取 LFS、拉取并运行预编译
+      `ctb-tile` 镜像并输出切片耗时；在此之前不将 P44 标记为实施完成。
