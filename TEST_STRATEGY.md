@@ -1167,3 +1167,19 @@ P43 先用同机采样确认 P40 后的真实热点，再实施项目侧零语�
   Rayon 等待；项目侧采样与 bytes 到 `f64` 转换为小头。
 - 最终 release 两轮复测墙钟为 33.25s 和 31.74s；两轮完整路径集合均与 C++
   一致，89/89 解压 payload 差异为 0。
+
+## 35. P44 外部 C++ ctb-tile 切片耗时 CI（不属于 Rust 测试矩阵）
+
+P44 是独立于本项目 Rust 实现的 GitHub Actions 基准，不进入 `cargo test`、
+oracle 差分或私有数据对比流程。它只验证外部
+`ahuarte47/cesium-terrain-builder@d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f`
+的 `ctb-tile` 在 CI runner 上能构建并对 `demo/guangxi_8_cities.tif` 完成
+地形切片，输出 `elapsed_seconds` 与 `terrain_tiles` 到 step summary。
+
+### 35.1 P44 验证范围
+
+- `.github/workflows/ctb-cpp-benchmark.yml` 能被 YAML 解析。
+- `git diff --check` 无空白错误。
+- workflow 在 `push` / `pull_request` 时触发；LFS 拉取 demo 输入、C++ 构建、
+  `ctb-tile` 非零退出会使 CI 失败。
+- 不要求输出与项目 Rust `ctb-tile` 一致，也不作为本项目正确性或性能门禁。
