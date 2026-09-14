@@ -59,8 +59,10 @@ run_case parallel "$workers"
 single="$work_directory/single"
 parallel="$work_directory/parallel"
 
-find "$single" -name '*.terrain' -type f | sort > "$work_directory/single.list"
-find "$parallel" -name '*.terrain' -type f | sort > "$work_directory/parallel.list"
+# Normalize to paths relative to each output dir so the two lists can be
+# compared (absolute prefixes differ even when the tile sets are identical).
+find "$single" -name '*.terrain' -type f | sed "s#^$single/##" | sort > "$work_directory/single.list"
+find "$parallel" -name '*.terrain' -type f | sed "s#^$parallel/##" | sort > "$work_directory/parallel.list"
 diff -u "$work_directory/single.list" "$work_directory/parallel.list"
 
 while IFS= read -r path; do

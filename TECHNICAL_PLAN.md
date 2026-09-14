@@ -3418,5 +3418,7 @@ demo/Cargo.toml 传给下游 benchmark job（cpp job 找不到 LFS tif、rust jo
 又报 `set: Illegal option -o pipefail`（runner 的 `/bin/sh` 是 dash，不认
 bash 专有的 `set -o pipefail`），已只保留 `set -eu`。再跑时 ctb-rs 二进制又报
 `The output directory does not exist`（输出目录必须先存在），脚本已改为在每次
-运行前 `mkdir -p`。实机 CI 结果待推送到 GitHub 后确认，未确认前
+运行前 `mkdir -p`。再跑时 `diff` 又因两轮 `.list` 使用含输出目录前缀的绝对路径
+而被判定不一致，脚本已改为 sed 去掉前缀、只比较相对路径。实机 CI 结果待推送
+到 GitHub 后确认，未确认前
 保持“实施进行中”。
