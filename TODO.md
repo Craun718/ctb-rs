@@ -767,3 +767,19 @@
 - [x] 本地校验 workflow YAML 可解析、`git diff --check` 无空白错误。
 - [ ] 推送到 GitHub 后确认实机 CI 能成功拉取 LFS、拉取并运行预编译
       `ctb-tile` 镜像并输出切片耗时；在此之前不将 P44 标记为实施完成。
+
+## P45：ctb-rs 可复现切片耗时 CI（实施完成前需实机确认）
+
+- [x] 登记 P45，说明新增 CI 运行 `scripts/benchmark-ctb-tile.zsh` 测量本项目
+      release `ctb-tile` 对合成 DEM 的切片墙钟，并校验单线程/多线程输出
+      `.terrain` payload 一致；不进入 Rust 测试矩阵，也不设性能门禁。
+- [x] 新增 `.github/workflows/ctb-rs-benchmark.yml`，触发事件为 `push` /
+      `pull_request`；job 安装 `gdal-bin`、`cargo build --release --locked
+      --bin ctb-tile`，再以 `CTB_RS_BIN=target/release/ctb-tile` 运行
+      `scripts/benchmark-ctb-tile.zsh 512 2`。
+- [x] job 解析脚本输出的 `single/parallel workers=… seconds=… tiles=…`，
+      连同 commit、二进制路径、脚本命令行写入 GitHub step summary；脚本任意
+      一步失败则 job 失败。
+- [x] 本地校验 workflow YAML 可解析、`git diff --check` 无空白错误。
+- [ ] 推送到 GitHub 后确认实机 CI 能安装 GDAL、构建 release 并跑完 benchmark、
+      输出 single/parallel 切片耗时；在此之前不将 P45 标记为实施完成。

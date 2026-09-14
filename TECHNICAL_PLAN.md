@@ -3360,3 +3360,40 @@ P29/P41 固定顺序：先运行 C++ 0.4.1 记录墙钟，再以两倍墙钟作�
 `git diff --check` 通过。首次使用源码构建版本推送到 GitHub 后，因构建开销大，
 改为使用预编译镜像 `homme/cesium-terrain-builder:0.4.1` 并同步更新文档。
 实机 CI 结果待推送到 GitHub 后确认，未确认前保持“实施进行中”。
+
+### P45：ctb-rs 可复现切片耗时 CI（实施进行中，待实机确认）
+
+说明：用户要求再新增一个 CI，在 `push` / `pull_request` 时运行项目 Rust
+`ctb-tile` 的可复现 benchmark（`scripts/benchmark-ctb-tile.zsh`），把墙钟与
+tile 数写入 step summary。该 CI 与 P44 外部 C++ 基准相互独立，同样不影响
+`.github/workflows/ci.yml` 的构建矩阵、release 发布或 Rust 测试门禁。
+
+#### P45 方案
+
+1. 新增独立 workflow `.github/workflows/ctb-rs-benchmark.yml`，触发事件为
+   `push` 与 `pull_request`，job 运行在 `ubuntu-24.04`。
+2. `actions/checkout@v7` 检出 ctb-rs 并启用 `lfs: true`；该 workflow 本身
+   使用仓库内 `tests/fixtures/oracle-source.asc` 合成输入，不依赖私有数据。
+3. 安装 `gdal-bin`（脚本用 `gdal_translate` 把 Asc grid 转为 tiled/DEFLATE
+   GeoTIFF 作为基准输入），`cargo build --release --locked --bin ctb-tile`。
+4. 以 `CTB_RS_BIN=target/release/ctb-tile` 调用
+   `scripts/benchmark-ctb-tile.zsh 512 2`（512×512 合成 DEM、单线程与 2 线程
+   各跑一次并做 `.terrain` payload 一致性校验），脚本失败即 job 失败。
+5. 解析脚本输出的 `single/parallel workers=… seconds=… tiles=…`，连同
+   commit、二进制路径、脚本命令行写入 GitHub step summary。
+
+#### P45 验收门禁
+
+1. `.github/workflows/ctb-rs-benchmark.yml` 能通过 YAML 解析。
+2. `git diff --check` 通过，无空白错误。
+3. 实机 CI 在 push / pull_request 时可安装 GDAL、构建 release `ctb-tile`、
+   跑完 benchmark 并在 step summary 输出 single/parallel 的
+   `elapsed_seconds`、`terrain_tiles`。
+4. 不修改 Cargo 依赖或 Rust 生产代码；不改变 `ci.yml` 现有构建/发布行为。
+
+#### P45 实施记录
+
+2026-09-14：新增 workflow，并在技术方案、测试策略与 TODO 登记。本地校验
+YAML 可解析、`git diff --check` 通过；因本机 Homebrew GDAL 动态库损坏无法
+本地实跑脚本，实机 CI 结果待推送到 GitHub 后确认，未确认前保持
+“实施进行中”。

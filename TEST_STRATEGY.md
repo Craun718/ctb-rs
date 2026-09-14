@@ -1184,3 +1184,21 @@ oracle 差分或私有数据对比流程。它使用 Docker Hub 预编译镜像
 - workflow 在 `push` / `pull_request` 时触发；LFS 拉取 demo 输入、拉取并运行
   预编译 `ctb-tile` 镜像、`ctb-tile` 非零退出会使 CI 失败。
 - 不要求输出与项目 Rust `ctb-tile` 一致，也不作为本项目正确性或性能门禁。
+
+## 36. P45 ctb-rs 可复现切片耗时 CI（不属于 Rust 测试矩阵）
+
+P45 与本项目 Rust 实现直接相关，但它是一个独立的 CI benchmark，不进入
+`cargo test`、oracle 差分或私有数据对比流程。它使用仓库内
+`tests/fixtures/oracle-source.asc` 合成 GeoTIFF 输入，调用
+`scripts/benchmark-ctb-tile.zsh 512 2` 对 release `ctb-tile` 分别以单线程
+和 2 线程计时，并校验两轮输出的 `.terrain` 路径与解压 payload 一致。
+
+### 36.1 P45 验证范围
+
+- `.github/workflows/ctb-rs-benchmark.yml` 能被 YAML 解析。
+- `git diff --check` 无空白错误。
+- workflow 在 `push` / `pull_request` 时触发；GDAL 安装、release 构建、
+  benchmark 脚本任意一步失败都会使 CI 失败。
+- step summary 输出 commit、single/parallel `elapsed_seconds`、`terrain_tiles`
+  与调用命令。
+- 不设性能门禁，只记录当前 commit 的基准数据。
