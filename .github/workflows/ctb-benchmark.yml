@@ -30,6 +30,10 @@ jobs:
         with:
           lfs: true
 
+      - name: Pull ctb-tile docker image
+        run: |
+          docker pull homme/cesium-terrain-builder:0.4.1
+
       - name: Measure ctb-tile tiling time
         run: |
           set -euxo pipefail
