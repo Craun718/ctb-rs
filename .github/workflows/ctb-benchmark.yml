@@ -109,8 +109,8 @@ jobs:
 
           single_seconds="$(sed -n 's/^single workers=1 seconds=\([0-9][0-9]*\) .*/\1/p' "$output_file" | head -n 1)"
           parallel_seconds="$(sed -n 's/^parallel workers=2 seconds=\([0-9][0-9]*\) .*/\1/p' "$output_file" | head -n 1)"
-          single_tiles="$(sed -n 's/^single workers=1 seconds=[0-9][0-9]* tiles=\([0-9][0-9]*\) .*/\1/p' "$output_file" | head -n 1)"
-          parallel_tiles="$(sed -n 's/^parallel workers=2 seconds=[0-9][0-9]* tiles=\([0-9][0-9]*\) .*/\1/p' "$output_file" | head -n 1)"
+          single_tiles="$(sed -n 's/^single workers=1 seconds=[0-9][0-9]* tiles=\([0-9][0-9]*\)$/\1/p' "$output_file" | head -n 1)"
+          parallel_tiles="$(sed -n 's/^parallel workers=2 seconds=[0-9][0-9]* tiles=\([0-9][0-9]*\)$/\1/p' "$output_file" | head -n 1)"
           tee -a "$GITHUB_STEP_SUMMARY" <<MDEOF
           ## ctb-rs-slice-timing (ctb-rs, 512x512 synthetic DEM)
 

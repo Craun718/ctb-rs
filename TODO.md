@@ -774,6 +774,8 @@
       目录已存在，脚本已在每次运行前 `mkdir -p`。
 - [x] 实机 run 又因 `.list` 用含输出目录前缀的绝对路径而 diff 不过，脚本已
       改为 sed 去掉前缀、比较相对路径。
+- [x] 实机 ctb-rs job 的 step summary 中 `terrain_tiles` 为空：sed 解析在
+      `tiles=` 数字后要求尾随空格，已改为 `$` 锚定行尾。
 - [x] 采用 fail-fast：设置 concurrency 取消同一 ref 上仍在跑的旧 run。实机
       再跑发现 GitHub Actions 的 job 不共享工作目录，共享 `checkout` job 无法
       把 demo / Cargo.toml 传给下游 job；已改为两个 benchmark job 各自

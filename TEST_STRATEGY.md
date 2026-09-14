@@ -1207,6 +1207,8 @@ P45 与本项目 Rust 实现直接相关，但它是一个独立的 CI benchmark
   `mkdir -p "$output"`，否则会报 `The output directory does not exist`。
 - 单线程与多线程输出的 `.list` 先 sed 去掉输出目录前缀再比较，避免因绝对
   路径前缀不同而误判 tile 集合不一致。
+- step summary 解析 `tiles=` 用 `$` 锚定行尾（数字后不能有尾随空格要求），
+  否则 `terrain_tiles` 会为空。
 - workflow 在 `push` / `pull_request` 时触发；采用 fail-fast：concurrency 会
   取消同一 ref 上仍在跑的旧 run。两个 job 各自 `actions/checkout`（job 之间
   不共享 runner 工作目录；`ctb-cpp-slice-timing` 启用 LFS 拉 demo，`ctb-rs-slice-timing`
