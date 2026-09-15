@@ -46,10 +46,10 @@ jobs:
           trap 'rm -rf "$output_dir"' EXIT
 
           start="$(date +%s.%N)"
-          docker run --rm \
+          docker run --rm --user "$(id -u):$(id -g)" \
             -v "$(pwd):$(pwd)" -w "$(pwd)" \
             homme/cesium-terrain-builder:0.4.1 \
-            ctb-tile -q -c "$(nproc || echo 2)" -o "$output_dir" "$input"
+            ctb-tile -q -c "$(nproc || echo 2)" -s 14 -e 1 -o "$output_dir" "$input"
           end="$(date +%s.%N)"
 
           elapsed_seconds="$(awk -v s="$start" -v e="$end" 'BEGIN { printf "%.3f", e - s }')"
