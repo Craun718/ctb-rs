@@ -2250,3 +2250,281 @@ P18 后真实 Copernicus DEM 仍比 C++ 慢约 5.4x。`sample` 采样显示低 z
 - workflow YAML 解析通过，矩阵中的 `platform_suffix` 与 artifact 一一对应；
 - `git diff --check` 通过；
 - 模拟四个平台资产名，共 16 个文件且无同名重复。
+
+### P22：Guangxi DSM-DEM C++/Rust 性能基准（已完成）
+
+用户提供的 Guangxi DSM minus DEM 输入是单波段 Float32 GeoTIFF，可直接作为
+同一基准输入；本轮不做数值预处理，也不复制源文件。目标是记录当前 Linux
+机器上 C++ CTB oracle 与 Rust `ctb-tile` 的端到端耗时、CPU/IO 消耗和输出
+规模。本阶段只做性能记录，不新增生产代码，也不把 DSM-DEM 差值语义扩展为
+新的输入规则。
+
+基准规则：
+
+1. 输入固定为
+   `/home/gxrs/文档/data/tmp/Guangxi_DSM_minus_DEM_30m.tif`，元数据以
+   `gdalinfo` 为准；C++ 与 Rust 使用同一绝对路径、同一线程数和同一 zoom
+   范围。
+2. C++ oracle 固定为 ahuarte47/cesium-terrain-builder
+   `d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f`，源码放在
+   `/home/gxrs/coding/clone-github/cesium-terrain-builder`；GDAL 固定为
+   `v3.11.4`，源码放在 `/home/gxrs/coding/clone-github/gdal`。两者均以
+   Release 构建；不修改本项目代码和依赖，也不修改 CTB 源文件。系统
+   GDAL 3.13.3 与旧 CTB 的 vendored overview API 不兼容，不能作为本轮
+   oracle 运行时。
+3. 32400×21600 源在 geodetic 默认范围下预计生成千万级 Terrain tile，禁止把
+   不可承受的默认全量运行当作性能样本。先运行小范围探测和路径计数，再选择
+   有界范围；经用户裁决，主样本改为 `z12->z0` 的有效覆盖区基准。源像素值
+   不做预处理；对每个 zoom 预先排除采样源窗口触及 `-9999` 的 tile：两端输出
+   目录中的相同 tile 路径先写入空 sentinel 文件，再用原生 `-R/--resume`
+   跳过。计时前 sentinel 已建好；结果必须分别记录 excluded、processed、
+   sentinel 字节数和 processed 输出字节数，并明确这不是全量 Guangxi 基准。
+4. 每次运行使用独立新输出目录；计时前只预先写入两端完全相同的空 sentinel
+   文件。C++ 显式记录
+   `GDAL_CACHEMAX=858993459`；Rust 保持现有 GeoTIFF 64 MiB block 缓存和应用层
+   64×64 窗口缓存，不额外注入 GDAL 环境变量。
+5. 当前环境没有 `/usr/bin/time`，计时统一使用 `/tmp/ctb-rs-p22/
+   time-wrapper.sh`：每 50 ms 读取 `/proc/<pid>/status` 的 `VmHWM` 和
+   `/proc/<pid>/stat` 的 utime/stime，退出后再采样一次，汇总 wall/user/sys
+   和采样峰值 RSS。每轮记录 tile 数量和输出字节。两条命令使用相同 `-c`、
+   profile、格式和 zoom 参数；本轮先测 Terrain 输出。
+6. 结果必须保留完整命令与原始耗时。若 C++ 或 Rust 因输入、范围、NoData 或
+   资源限制失败，如实记录失败证据；不修改采样算法或缓存设计。
+
+#### P22 实施记录 1：环境与 z10 探测（已发现行为阻断）
+
+输入为 32400×21600、EPSG:4326、Float32、512×512 block、DEFLATE 加
+predictor 3、NoData `-9999`，大小 1,301,179,340 字节。运行机为 Linux 6.18
+x86_64、32 逻辑 CPU、33.4 GiB RAM。Rust release `ctb-tile` 版本 0.0.1；
+C++ oracle 版本 0.4.1，链接 GDAL 3.11.4。
+
+首次 C++ 探测使用 `GDAL_CACHEMAX=819MiB`，GDAL 报
+`ERROR 5: Unexpected value: 819MiB` 并退回默认缓存；该目录仍保留，作为参数
+失败证据。改用 `GDAL_CACHEMAX=858993459` 后，z10、`-q -c 8`、geodetic、
+Terrain 成功生成 1,820 个 tile，输出 4,423,368 字节，wall 3.502 s，采样
+峰值 RSS 891.5 MiB。
+
+同一参数的 Rust 运行以退出码 1 失败：`Error: elevation -9999 cannot be
+encoded as a CTB u16 terrain height`。C++ 旧实现把
+`(rasterHeights[i] + 1000) * 5` 直接转换为 unsigned short，NoData 负值会被
+绕回为可编码样本；Rust 当前实现返回 `InvalidElevation`。这是行为语义分歧，
+不是计时失败。按项目规则，不得通过预处理输入、改写 nodata 或修改生产代码来
+制造等价样本；主基准暂停，等待用户在维持行为语义的前提下裁决。
+
+#### P22 实施记录 2：用户裁决与有效覆盖区基准（已完成）
+
+用户选择方案 1：不维持 C++ u16 回绕语义、不预处理源像素，也不改用 GTiff；
+改用原生 `-R` 排除 NoData tile。辅助扫描器按 C++/Rust geodetic Terrain
+采样使用的目标网格、overlap transform 和近似源窗口推导 tile 路径；只要一个
+tile 的 pooled source window 内存在 `-9999`，就在 C++ 和 Rust 各自新输出目录
+写入相同空 sentinel。该规则可能排除只被 NoData 污染但平均值仍有编码能力的
+tile，因此这是保守的有效覆盖区工作集。`-R` 跳过发生在采样前，两端语义一
+致；扫描器只在 `/tmp/ctb-rs-p22` 作为基准辅助文件存在，不改仓库生产代码。
+
+扫描结果在 `/tmp/ctb-rs-p22/nodata-sentinels.json`：候选 38,164、排除
+12,929、processed 25,235。其中 z12 为 `28428/9433/18995`，z11 为
+`7210/2482/4728`，z10 为 `1820/665/1155`，z9 为 `486/206/280`，z8 为
+`140/78/62`，z7 为 `48/35/13`，z6 为 `15/13/2`，z5 到 z0 全部排除。C++ 输
+出根是 `/tmp/ctb-rs-p22/cpp-valid-20260921-172503`，Rust 输出根是
+`/tmp/ctb-rs-p22/rust-valid-20260921-172503`；两端各建立 12,929 个
+zero-byte `.terrain` sentinel。
+
+C++ 命令保留原始环境与参数：
+
+```bash
+/tmp/ctb-rs-p22/time-wrapper.sh /tmp/ctb-rs-p22/cpp-z12-z0.metrics env \
+  LD_LIBRARY_PATH=/home/gxrs/coding/clone-github/gdal/install-3.11.4/lib \
+  GDAL_DATA=/home/gxrs/coding/clone-github/gdal/install-3.11.4/share/gdal \
+  GDAL_CACHEMAX=858993459 \
+  /tmp/ctb-rs-p22/build-gdal311/tools/ctb-tile \
+  -q -c 8 -p geodetic -f Terrain -s 12 -e 0 -R \
+  -o /tmp/ctb-rs-p22/cpp-valid-20260921-172503 \
+  /home/gxrs/文档/data/tmp/Guangxi_DSM_minus_DEM_30m.tif
+```
+
+Rust 命令为：
+
+```bash
+/tmp/ctb-rs-p22/time-wrapper.sh /tmp/ctb-rs-p22/rust-z12-z0.metrics \
+  /home/gxrs/coding/ctb-rs/target/release/ctb-tile \
+  -q -c 8 -p geodetic -f Terrain -s 12 -e 0 -R \
+  -o /tmp/ctb-rs-p22/rust-valid-20260921-172503 \
+  /home/gxrs/文档/data/tmp/Guangxi_DSM_minus_DEM_30m.tif
+```
+
+两次串行运行均以退出码 0 完成，stderr 为空。C++ raw metrics 是
+`wall_seconds=12.313`、`user_seconds=83.750`、`system_seconds=4.950`、
+`peak_rss_mib=1879.9`；Rust 是 `wall_seconds=23.124`、
+`user_seconds=164.220`、`system_seconds=5.220`、`peak_rss_mib=2107.2`。
+输出面验证得到两端 processed 均为 25,235，zero-byte sentinel 均为 12,929；
+两端非空 Terrain 相对路径集合完全一致。C++ processed 输出为 92,308,591 字
+节，Rust 为 93,123,902 字节。相对 C++，Rust wall 约为 1.88 倍，用户 CPU 约
+为 1.96 倍，采样峰值 RSS 高约 12.1%，输出体积高约 0.88%。该结果是排除
+NoData 采样窗口后的有效覆盖区基准，不是全量 Guangxi 基准。
+
+### P23：Rust 有效覆盖区热点分析（已完成）
+
+#### P23 实施记录 1：GDB 栈采样与热点归因（已完成）
+
+`samply 0.13.1` 被 `perf_event_paranoid=2` 阻止，宿主 GDB 与 `eu-stack` 被
+Yama `ptrace_scope=1` 阻止；未修改宿主内核设置。改为一次性
+`ubuntu:22.04 --pid=host --privileged` 容器安装 GDB 12.1，从宿主以约 0.2 s
+间隔循环 `thread apply all bt`。采样期间 wall 为 28.171 s，峰值 RSS 为
+2,025.8 MiB；相对 P22 未采样 Rust wall 23.124 s，GDB 停启开销约 21.8%。
+因此以下结果只用于热点归因，不作为新的 wall-time 基准。
+
+采样得到 87 个快照、722 个线程栈。主线程 87/87 停在 worker 等待路径；扣除
+主线程后活动线程样本为 635 个。含调用方累计统计中，COG `read_tile_into`
+占 491 个（77.3%），`read_window_into` / `scatter_bytes` 占 500 个
+（78.7%），外层 `TerrainSamplePlan::sample_heights` 占 604 个（95.1%）。
+最后一项是宽泛工作入口，不能解读为采样数学是主热点。
+
+叶子函数归因显示 `oxiarc_deflate::inflate_huffman_cached` 占 290 个
+（45.7%），`apply_predictor_reverse` 占 67 个（10.6%），zlib
+`Adler32::update` 占 36 个（5.7%），`copy_match` 占 23 个（3.6%），
+Huffman 表和解码相关合计约 30 个（4.7%）。含调用方的源 GeoTIFF/COG
+`decompress_into_partial` 路径占 406 个（64.0%）。输出 gzip
+`miniz_oxide::deflate::compress_inner` 及 optimize 自身约 21 个（3.3%），
+`HeightmapTerrain::encode_gzip` 含调用方 24 个（3.8%）。因此 Rust 版当前
+主要热点在源 TIFF/COG block/window 读取的 DEFLATE 解压、Float32 predictor
+反转和块数据拼装；Terrain 采样与输出 gzip 不是第一瓶颈。
+
+在 P22 的同一 Guangxi `z12->z0` 有效覆盖区上定位 Rust `ctb-tile` 的函数级
+CPU 热点。本轮只做性能归因，不修改生产代码、Cargo.toml、CLI 行为或采样语
+义。分析输入仍为未预处理源 TIFF；输出目录独立重建，并从 P22 manifest 建立
+同一 12,929 个 zero-byte sentinel，再使用同一 `-q -c 8 -p geodetic -f
+Terrain -s 12 -e 0 -R` 参数。
+
+当前环境没有 `perf`。优先安装独立 cargo 工具 `samply` 只作为分析器；这不属
+于本项目依赖变更。若内核 `perf_event_paranoid=2` 且 Yama 阻止当前用户
+ptrace，不改宿主 sysctl；使用一次性 `--pid=host --privileged` Docker 容器安
+装 GDB，由宿主循环对其执行批量 `thread apply all bt`，在采样后删除容器。记
+录采样方式、间隔、快照数、线程样本数和采样开销。结果必须区分自身样本和含
+调用方的累计样本，且不得将性能分析样本当作新的 wall-time 基准。
+
+### P24：georust/geotiff 有效覆盖区基准（已阻断）
+
+在独立分支上评估 [`georust/geotiff`](https://github.com/georust/geotiff) 作为
+Guangxi 源 GeoTIFF 输入层，并用 P22 的 `z12->z0` 有效覆盖区工作集重新计时。
+本轮只授权替换/适配 Rust 输入读取路径，不得修改 Terrain 编码、采样数学、
+CLI 语义或 C++ oracle。若该库缺少本项目所需的 GeoTIFF 结构、CRS、类型、
+压缩或窗口读取能力，应保留失败证据并停止，不强行改算法绕过。
+
+基准仍使用同一 `-q -c 8 -p geodetic -f Terrain -s 12 -e 0 -R` 参数、12,929
+个 zero-byte sentinel 和 25,235 个预期 processed tile。记录 wall/user/sys、
+RSS、输出体积与输出面验证；与 P22 Rust `23.124 s` 和 C++ `12.313 s` 比较，
+但不混合解释 P23 采样耗时。
+
+#### P24 实施记录 1：上游能力与运行阻断
+
+分支 `codex/georust-geotiff-benchmark` 已创建；`georust/geotiff` 克隆到
+`/home/gxrs/coding/clone-github/geotiff`，依赖 commit 是
+`8c769462b048768db31c047f40cab3259efcb4eb`。通过 `cargo add geotiff`
+接入该 commit，随后用 `cargo remove tiff` 移除调查时的多余直接依赖。
+
+上游 API 调查确认：`GeoTiff::read()` 会调用 `decoder.read_image()` 把第一
+IFD 整图载入内存，公开采样入口只有 `get_value_at()` 和
+`get_value_at_pixel()`；没有 COG block/window 读取、overview 读取或 NoData
+API。源 Guangxi TIFF 为 BigTIFF、DEFLATE、Float32、predictor 3、
+`32400x21600`、无 overview，解码后的 Float32 整图约 `2.61 GiB`。因此本次
+适配保留 OxiGeo 读取元数据、仿射、EPSG、NoData 和 PixelIsPoint，把像素路
+径改为 georust 整图缓存并按样本类型转换为 `f64`。
+
+验证结果：`cargo build --release --bin ctb-tile` 通过。
+`cargo test --lib geotiff` 为 15 passed、5 failed；失败项全部是原有
+overview/native block-cache 行为，对应 georust 缺少 overview 和窗口读取能
+力的已知限制，不是 Float32 或基础采样转换失败。
+
+基准工作集使用 P22 manifest 重建在
+`/tmp/ctb-rs-p24/georust-valid-20260921-190330`：12,929 个 sentinel 全部为
+zero-byte，命令前 processed tile 为 0。随后以 P22 参数运行 `ctb-tile`，仅
+输出根不同。命令在 `0.063 s` 退出，退出码 1，采样峰值 RSS `5.3 MiB`，
+stderr 为：
+
+```text
+Error: could not read raster: decoder limits exceeded
+```
+
+根因在 georust 依赖的 `tiff 0.10.3` 默认 `Limits::default()`：整次解码缓冲
+上限为 `256 MiB`。`GeoTiff::read()` 固定使用 `Decoder::new()`，不公开
+`Limits` 或自定义 decoder 入口，因此本图超过默认上限后无法通过项目侧配置
+解除。按本技术方案“缺少能力时保留失败证据并停止”的约束，未修改上游、未
+添加 bypass，也未生成有效 benchmark 耗时。P22 的 Rust `23.124 s` 与 C++
+`12.313 s` 仍是当前有效基线。
+
+### P25：切换到 geotiff-rust 0.10.0 读写驱动
+
+用户指定目标为最新版 `geotiff-rust`。经上游调查，这不是 crates.io 的
+`geotiff@0.1.0`（georust/geotiff，只读且 P24 已被 decoder limit 阻断），
+而是 `roteiro-gis/geotiff-rust` workspace 发布的 `geotiff-reader@0.10.0`
+与 `geotiff-writer@0.10.0`，源码固定在 tag `v0.10.0` / commit
+`9f23742c907f0b6df75bead6786448fd76e3367b`。该版本提供本地 TIFF/BigTIFF
+block/window 读取、overview、NoData、CRS/GeoTransform、Deflate/LZW/ZSTD、
+64 MiB decoded block cache，以及 GeoTIFF 输出、压缩、predictor、tile、
+BigTIFF 和流式 tile writer。VRT 不是 GeoTIFF driver 的职责，继续由 OxiGeo
+VRT reader 支持。
+
+实施边界：
+
+1. 依赖只允许通过 Cargo CLI 变更。移除 georust `geotiff` 直接依赖，接入
+   `geotiff-reader` / `geotiff-writer`；OxiGeo 保留为 VRT 与既有测试/诊断
+   兼容路径，直到确认不再被生产代码引用。
+2. `GeoTiffRasterSource` 的公开语义不变：GeoTIFF 与 VRT 均可打开；GeoTIFF
+   base/overview 窗口读取、NoData、CRS、样本类型和 PixelIsPoint 行为必须
+   与 P10/P18 基线一致。VRT 仍无 overview。
+3. 新驱动内置按 file handle 的 decoded block cache（默认 64 MiB、257
+   slots）。删除项目侧 `GeoTiffBlockCache` 的 GeoTIFF 使用路径，避免双层
+   缓存；应用层 64×64 sampling cache 保持不变。
+4. writer 边界仍只写一个单波段 tile raster。保留现有错误文案中 CTB 语义
+   部分，不承诺 JPEG/LERC 的新能力；P25 只映射现有 None/Deflate/LZW/ZSTD、
+   predictor、tile size 和 BigTIFF 选项。
+5. 若新 reader 对 PixelIsPoint、overview 排序、NoData 字符串或窗口边界与
+   GDAL/C++ oracle 出现不可配置差异，保留失败证据并暂停，不修改采样数学。
+
+实施顺序：
+
+1. 迁移 `GeoTiffRasterSource::from_geotiff` 到
+   `geotiff_reader::GeoTiffFile`，用其 transform/epsg/nodata/band/sample
+   metadata 建立项目 metadata；保留 VRT 的 OxiGeo 分支。
+2. 迁移 base 与 overview 的 `read_samples` 到
+   `read_band_window` / `read_overview_band_window`，按 `TiffSample` 泛型
+   直接转换到 f64；移除项目侧 native block cache 对 GeoTIFF 的接线。
+3. 迁移 `raster_geotiff.rs` 输出到 `geotiff_writer::GeoTiffBuilder`，用
+   typed ndarray 写入，并保留创建选项校验与原子临时文件策略。
+4. 更新测试 fixture 辅助与断言，使生产代码不再依赖 OxiGeo GeoTIFF；保留
+   至少一个跨驱动等价测试或已有 C++ oracle 输出作为行为基准。
+5. 运行格式化、GeoTIFF 单元测试、CLI 集成测试和 clippy；重建 release 后
+   用 Guangxi P22/P24 sentinel 工作集完成端到端验证，并记录输出面与性能。
+
+#### P25 实施记录 1：方案登记（已完成）
+
+本阶段只完成目标 crate 甄别、接口能力核对与实施顺序登记，尚未修改依赖或
+生产代码。关键结论：crates.io 不存在名为 `geotiff-rust` 的单一 crate；
+实际依赖入口是 workspace 成员 `geotiff-reader` 与 `geotiff-writer`。
+
+#### P25 实施记录 2：驱动切换完成（常规验证通过，Guangxi 复核受阻）
+
+依赖已通过 Cargo CLI 切换为 `geotiff-core@0.10.0`、
+`geotiff-reader@0.10.0`、`geotiff-writer@0.10.0`、`tiff-core@0.10.0` 与
+`ndarray@0.17.2`，移除 georust `geotiff` 直接依赖。生产输入路径不再调用
+OxiGeo GeoTIFF reader；OxiGeo 仅保留格式探测与 VRT reader。GeoTIFF 输入
+经 `GeoTiffFile` 读取 metadata、base/overview typed window 和 NoData 字符串，
+移除了项目侧 native block cache，由 tiff-reader 默认 64 MiB / 257 slot decoded
+block cache 承接。RasterTiler 和 `ctb-export` 输出均迁移到 `GeoTiffBuilder`
+typed ndarray，RasterTiler 仍由 `raster_tileset.rs` 的临时文件加 rename 保持
+原子写入。JPEG/LERC 仍按原边界拒绝，不借新 writer 能力扩大接口。
+
+验证结果：`cargo fmt --check`、`cargo test --lib geotiff`（20/20）、
+`cargo test --lib export`（1/1）、`cargo test --test cli`（13/13）、
+`cargo clippy --all-targets -- -D warnings`、`cargo build --release --locked`
+和 `cargo tree --all-features` 通过；依赖树无 GDAL/PROJ/C++ GIS FFI。
+`cargo test` 的库测试为 92/93，唯一失败是 `src/error.rs` 中既有的
+`invalid zoom range` 文案断言，该文件本轮无改动，不计为 P25 回归。另用仓库
+内真实 Copernicus COG 以 release `ctb-tile -s 12 -e 12` 冒烟验证，生成 576
+个非空 Terrain tile、共 1,112,890 字节。
+
+P22/P24 的 Guangxi DSM minus DEM 输入、`/tmp/ctb-rs-p22`/`p24` 工作集和
+12,929 个 sentinel manifest 已被外部清理，当前路径均不存在，因此无法执行
+计划中的 `z12->z0` processed/sentinel/路径/输出体积/性能复核。该缺失是
+外部工件不可用，不推断驱动性能或兼容结论；上述 Copernicus 冒烟仅证明
+真实 COG 读取路径可用。

@@ -1,9 +1,8 @@
 use std::path::Path;
 
-use oxigeo::{
-    GeoTransform, RasterDataType,
-    geotiff::{GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling, WriterConfig},
-};
+use geotiff_core::GeoTransform as GeotiffRustTransform;
+use geotiff_writer::{Compression, GeoTiffBuilder, Predictor};
+use ndarray::Array2;
 
 use crate::{
     CtbError,
@@ -27,42 +26,30 @@ pub fn export_heightmap_to_geotiff(
         .iter()
         .map(|height| i16::from_ne_bytes(height.to_ne_bytes()))
         .collect::<Vec<_>>();
-    let bytes = samples
-        .iter()
-        .flat_map(|sample| sample.to_le_bytes())
-        .collect::<Vec<_>>();
-    let mut config = WriterConfig::new(
-        HEIGHTMAP_TILE_SIZE as u64,
-        HEIGHTMAP_TILE_SIZE as u64,
-        1,
-        RasterDataType::Int16,
-    )
-    .with_geo_transform(GeoTransform::north_up(
-        bounds.min_x,
-        bounds.max_y,
-        pixel_width,
-        -pixel_height,
-    ))
-    .with_epsg_code(4326)
-    .with_overviews(false, OverviewResampling::Average);
-    config.tile_width = None;
-    config.tile_height = None;
-    let mut writer = GeoTiffWriter::create(output, config, GeoTiffWriterOptions::default())
+    let dimensions = (HEIGHTMAP_TILE_SIZE, HEIGHTMAP_TILE_SIZE);
+    let data = Array2::from_shape_vec(dimensions, samples)
         .map_err(|error| CtbError::TilesetIo(error.to_string()))?;
-    writer
-        .write(&bytes)
+    GeoTiffBuilder::new(HEIGHTMAP_TILE_SIZE as u32, HEIGHTMAP_TILE_SIZE as u32)
+        .epsg(4326)
+        .transform(GeotiffRustTransform::from_origin_and_pixel_size(
+            bounds.min_x,
+            bounds.max_y,
+            pixel_width,
+            -pixel_height,
+        ))
+        .compression(Compression::None)
+        .predictor(Predictor::None)
+        .write_2d(output, data.view())
         .map_err(|error| CtbError::TilesetIo(error.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
-    use oxigeo::core_types::io::FileDataSource;
-
     use crate::{
         CtbError,
         terrain::{ChildMask, WaterMask},
     };
-    use oxigeo::geotiff::GeoTiffReader;
+    use geotiff_reader::GeoTiffFile;
 
     use super::*;
 
@@ -82,18 +69,22 @@ mod tests {
             },
             &path,
         )?;
-        let file = GeoTiffReader::open(FileDataSource::open(&path)?)?;
-        assert_eq!(file.epsg_code(), Some(4326));
-        assert_eq!(file.width(), HEIGHTMAP_TILE_SIZE as u64);
-        assert_eq!(file.height(), HEIGHTMAP_TILE_SIZE as u64);
-        let transform = file.geo_transform().ok_or(CtbError::InvalidBounds)?;
+        let file = GeoTiffFile::open(&path)?;
+        assert_eq!(file.epsg(), Some(4326));
+        assert_eq!(file.width(), HEIGHTMAP_TILE_SIZE as u32);
+        assert_eq!(file.height(), HEIGHTMAP_TILE_SIZE as u32);
+        let transform = file.transform().ok_or(CtbError::InvalidBounds)?;
         assert_eq!(transform.origin_x, -180.0);
         assert_eq!(transform.origin_y, 90.0);
         assert_eq!(transform.pixel_width, 180.0 / HEIGHTMAP_TILE_SIZE as f64);
         assert_eq!(transform.pixel_height, -180.0 / HEIGHTMAP_TILE_SIZE as f64);
-        let mut samples = vec![0_i16; 2];
-        file.read_window_into_typed::<i16>(0, 0, 0, 0, 2, 1, &mut samples)?;
-        assert_eq!(samples, vec![5000, -15536]);
+        let samples = file
+            .tiff()
+            .read_window::<i16>(file.base_ifd_index(), 0, 0, 1, 2)?;
+        let samples = samples
+            .as_slice()
+            .ok_or_else(|| CtbError::RasterRead("GeoTIFF raster is not contiguous".to_owned()))?;
+        assert_eq!(samples, [5000, -15536]);
         std::fs::remove_file(path)?;
         Ok(())
     }

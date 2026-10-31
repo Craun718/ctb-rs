@@ -456,3 +456,65 @@
 - [x] 本地校验 workflow YAML、`git diff --check`，并核对预期 16 个资产
       名称无同名覆盖。
 - [x] 回写 P20 实施记录与验证证据。
+
+## P22：Guangxi DSM-DEM C++/Rust 性能基准
+
+- [x] 在 `TECHNICAL_PLAN.md`、`TEST_STRATEGY.md`、`TODO.md` 登记 P22 范围。
+- [x] 记录 Guangxi DSM-DEM 源元数据、机器资源和 C++/Rust 版本。
+- [x] 构建 GDAL `v3.11.4`；系统 GDAL 3.13.3 编译 CTB 的失败证据保留。
+- [x] 在 `/home/gxrs/coding/clone-github` 构建固定 commit 的 C++ CTB
+      oracle，并确认两个二进制可执行。
+- [x] 用小范围探测默认风险和输出规模，选择可重复的有界 zoom 基准范围。
+- [x] 在用户裁决输入兼容策略后，登记有效覆盖区 sentinel 基准；未经授权不改
+      变源像素值或生产代码。
+- [x] 生成 `z12->z0` 每个 zoom 的 NoData excluded tile 清单，并在两端输出目
+      录建立完全相同的空 sentinel；结果为候选 38,164、排除 12,929、预期
+      processed 25,235。
+- [x] 用同一命令语义分别运行 C++ 和 Rust，记录 wall/user/sys、RSS、
+      excluded/processed tile 数量和 processed 输出体积；两端均处理
+      25,235 个 tile 并通过路径集合与 sentinel 验证。
+- [x] 回写 P22 实施记录、失败证据或性能结论；有效覆盖区 wall 为 C++
+      12.313 s、Rust 23.124 s。
+
+## P23：Rust 有效覆盖区热点分析
+
+- [x] 在 `TECHNICAL_PLAN.md` 与 `TODO.md` 登记 P23 目标、约束和降级采样方
+      案。
+- [x] 用 P22 manifest 重建独立 Rust profiling sentinel 工作集，并验证其数
+      量与 P22 完全一致。
+- [x] 使用可记录栈的采样器运行同一有效覆盖区命令，保留采样配置、退出码和
+      样本输出。
+- [x] 归纳自身热点、关键调用路径和 IO/同步特征；不据此修改生产代码。
+
+## P24：georust/geotiff 有效覆盖区基准（已阻断）
+
+- [x] 拉出 `codex/georust-geotiff-benchmark` 分支，并把仓库克隆到
+      `/home/gxrs/coding/clone-github/geotiff`。
+- [x] 通过 Cargo CLI 调查/接入 `georust/geotiff`，确认源 TIFF 的元数据、
+      坐标系、类型、压缩和窗口读取能力。
+- [x] 以 P22 manifest 重建 12,929 个 zero-byte sentinel 的独立 P24 工作集；
+      首次真实 `ctb-tile` 运行被 `tiff` decoder 默认 `256 MiB` 上限阻断，
+      georust 未暴露 limits 配置入口。
+- [ ] 保持 P22 工作集和命令语义，用新输入路径运行有效覆盖区基准。
+- [ ] 验证 processed/sentinel、输出体积和路径集合；回写 wall/user/sys、RSS
+      与基准结论。
+
+## P25：切换到 geotiff-rust 0.10.0 读写驱动
+
+- [x] 甄别目标 crate：`roteiro-gis/geotiff-rust@v0.10.0`，使用
+      `geotiff-reader` / `geotiff-writer`，不是 georust `geotiff@0.1.0`。
+- [x] 核对 reader/writer 公开 API 与现有 GeoTIFF 行为边界，登记 P25 技术
+      方案和实施顺序。
+- [x] 通过 Cargo CLI 更新依赖，移除 georust `geotiff` 直接依赖并锁定
+      `v0.10.0`。
+- [x] 迁移 GeoTIFF 输入打开、metadata、base/overview 窗口读取，VRT 保持
+      OxiGeo。
+- [x] 移除 GeoTIFF 路径的项目侧 native block cache，避免与新驱动内置
+      64 MiB block cache 叠加。
+- [x] 迁移 GeoTIFF 输出 writer、`ctb-export` writer 与创建选项映射。
+- [x] 更新/保留 GeoTIFF 行为测试，运行 fmt、目标测试、clippy 与 CLI 集成
+      测试。
+- [ ] 重建 release，用 P22/P24 sentinel 工作集验证 processed/sentinel、
+      输出体积和路径集合，并记录端到端结果；当前原始输入、manifest 与
+      `/tmp` 工作集已被外部清理，无法执行，已用仓库内 Copernicus COG
+      完成 576 tile 读取冒烟，不替代该门禁。

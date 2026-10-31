@@ -663,3 +663,88 @@ P20 只修改 `.github/workflows/ci.yml` 的上传路径与矩阵元数据，不
 `git diff --check` 通过；模拟 `ctb-{tile,info,export,extents}-{windows-x64.exe,
 macos-arm64,linux-arm64,linux-x64}` 得到 16 个唯一资产名，无同名覆盖。
 未在 GitHub 实际推送新 tag，本轮只完成配置级验证。
+
+## 20. P22 Guangxi DSM-DEM 性能基准
+
+这是真实单波段 GeoTIFF 的端到端性能记录，不是行为兼容门禁。经用户裁决，
+主样本是 `z12->z0` 有效覆盖区：源像素不预处理，采样源窗口触及 `-9999` 的
+tile 在两端以相同空 sentinel 和 `-R` 排除。C++ 和 Rust 使用同一个
+32400×21600 Float32 TIFF、同一线程数和同一有界 zoom 范围；每次运行使用独
+立新输出目录，并保留完整命令、`time-wrapper.sh` 的 wall/user/sys、
+`/proc/<pid>/status` 轮询得到的 `VmHWM`、excluded/processed tile 数量和
+processed 输出体积。
+
+判定方式：
+
+- 默认 z14 可能超过千万 tile，先探测有界范围；不得把放弃的默认全量运行记
+  为成功样本。
+- C++ 记录 `GDAL_CACHEMAX=858993459` 字节，Rust 不注入额外的 GDAL 缓存变
+  量；结果说明两者缓存路径不同，不声称严格同构缓存。
+- 任一实现失败时记录 stderr、退出码和已生成 tile 数；不生成伪造耗时，也不
+  因性能结果修改生产代码。
+- sentinel 判定必须只依据源 NoData 和同一 tile 采样几何，不得根据某实现的
+  实际耗时动态增删工作集；两端不得共用输出目录。
+
+已执行：z10 探测确认 C++ 可生成 1,820 个 Terrain tile；Rust 在同一命令语义
+下因 `-9999` 触发 `InvalidElevation` 并退出 1。C++ 的 `819MiB` 缓存参数被
+GDAL 3.11.4 拒绝，改用 858993459 字节。用户裁决采用有效覆盖区 sentinel 基
+准；旧的 C++ u16 回绕与 Rust `InvalidElevation` 分歧保留为阻断证据，但不再
+作为主性能样本。
+
+主基准两端退出码均为 0：候选 38,164，排除 12,929，processed 25,235；两端
+非空 Terrain 相对路径集合一致，各保留 12,929 个 zero-byte sentinel。C++ 耗
+时 wall 12.313 s、user 83.750 s、sys 4.950 s，采样峰值 RSS 1,879.9 MiB，
+输出 92,308,591 字节。Rust 耗时 wall 23.124 s、user 164.220 s、sys
+5.220 s，采样峰值 RSS 2,107.2 MiB，输出 93,123,902 字节。这是有效覆盖区
+基准，不是全量 Guangxi 基准。
+
+## 21. P24 georust/geotiff 阻断验证
+
+P24 只替换源 GeoTIFF 像素读取路径，不改采样数学、Terrain 编码、CLI 语义或
+C++ oracle。验证必须先检查上游公开 API 是否支持本项目的窗口、overview、
+NoData、类型和压缩需求；缺少能力时保留原始错误并停止，不通过 fork、私有
+字段访问或绕过默认 decoder limits 伪造可行结果。
+
+已执行：P22 manifest 重建出 12,929 个 zero-byte sentinel，命令前 processed
+为 0。release 构建通过；`cargo test --lib geotiff` 中基础 EPSG、类型转换、
+NoData、窗口边界和 PixelIsPoint 共 15 项通过，5 项原有 overview/block-cache
+能力因 georust 不支持而失败。真实命令在 0.063 s 退出 1，stderr 为
+`could not read raster: decoder limits exceeded`。根因是 `GeoTiff::read()`
+固定使用 `tiff` 默认 `256 MiB` 解码上限，而 Guangxi Float32 解码整图约
+2.61 GiB，且 API 无 limits 配置入口。因此没有 P24 有效 wall/user/sys/RSS
+或输出体积样本。
+
+## 22. P25 geotiff-rust 0.10.0 驱动切换
+
+P25 将本地 GeoTIFF 读写边界切换到 `geotiff-reader@0.10.0` /
+`geotiff-writer@0.10.0`。采样数学、Terrain 编码、CLI 语义、VRT 支持和
+C++ oracle 不变。验证按输入、输出、性能三层分层：
+
+- 输入回归保留现有 EPSG、任意 EPSG、样本类型、NoData、窗口边界、tiled/
+  striped、overview 数量与尺寸、PixelIsPoint 和截断文件拒绝测试。GeoTIFF
+  像素结果必须与 P10/P18 基线一致；`GeoTiffBlockCache` 的项目侧测试仅作为
+  迁移前语义记录，迁移后删除或改写为驱动窗口读取测试，不再测试双层缓存。
+- 输出回归保留 RasterTiler georeferencing、整数 round/clamp、压缩、
+  predictor、tile、BigTIFF 和创建选项解析测试；生成文件必须能被新 reader
+  或既有 fixture 验证路径重新读取。TIFF tag 字节序差异继续按 P10 口径视为
+  容器实现差异，payload 与语义必须一致。
+- 常规门禁为 `cargo fmt --check`、`cargo test --lib geotiff`、相关 CLI
+  集成测试和 `cargo clippy --all-targets -- -D warnings`；若遇既有无关失败，
+  单独记录，不用 P25 解释。
+- release 门禁重建 `ctb-tile`，在 P22/P24 的 12,929 sentinel / 25,235
+  processed 工作集上运行同一 `z12->z0` 命令。校验 sentinel 全为 0 字节、
+  processed 路径与 P22 Rust 基线一致、输出体积可比，并记录 wall/user/sys
+  与 RSS。该层是真实输入验证，不替代单元行为门禁。
+
+已执行常规门禁：`cargo fmt --check`、`cargo test --lib geotiff` 20/20、
+`cargo test --lib export` 1/1、`cargo test --test cli` 13/13、
+`cargo clippy --all-targets -- -D warnings`、`cargo build --release --locked`
+与 `cargo tree --all-features`。完整 `cargo test` 为 92/93，唯一失败是
+`src/error.rs` 既有错误文案断言；该文件无 P25 改动，保留为独立基线问题。
+真实 COG 冒烟使用仓库内 Copernicus fixture 与 release `ctb-tile`，z12 生成
+576 个非空 Terrain tile、共 1,112,890 字节。
+
+P22/P24 release 复核当前不可执行：原始 Guangxi DSM minus DEM GeoTIFF、
+sentinel manifest 和 `/tmp/ctb-rs-p22` / `/tmp/ctb-rs-p24` 工作集均已不存在。
+不得用 Copernicus 冒烟替代该差分/性能门禁；待外部工件恢复后仍需重建
+12,929 sentinel / 25,235 processed 工作集并记录完整指标。

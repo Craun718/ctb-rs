@@ -89,9 +89,10 @@ ctb-extents --output-dir ./extents dem.tif
 
 ## 栅格格式
 
-输入支持 OxiGeo 0.2.3 的 GeoTIFF（含 BigTIFF）与 VRT；输出支持 CTB Terrain 和 GeoTIFF。
-OxiGeo 0.2.3 可以探测 NetCDF、HDF5、JPEG2000 等格式，但当前版本没有这些格式的像素读取
-实现，所以 `.nc`、`.h5`、`.jp2` 等输入会在写出任何切片前返回不支持错误。
+GeoTIFF 输入/输出使用 geotiff-rust workspace 的 `geotiff-reader@0.10.0` /
+`geotiff-writer@0.10.0`；VRT 输入继续使用 OxiGeo。OxiGeo 0.2.3 可以探测
+NetCDF、HDF5、JPEG2000 等格式，但当前版本没有这些格式的像素读取实现，所以
+`.nc`、`.h5`、`.jp2` 等输入会在写出任何切片前返回不支持错误。
 
 ## 构建
 
