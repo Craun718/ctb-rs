@@ -72,6 +72,7 @@ jobs:
           data_size_bytes="$(stat -c %s "$input")"
           work_dir="$(mktemp -d "$PWD/.benchmark.XXXXXX")"
           trap 'rm -rf "$work_dir"' EXIT
+          trap 'rc=$?; echo "[DEBUG-p49-a4f2] error rc=$rc line=$LINENO cpp_time=$cpp_time rust_time=$rust_time"' ERR
           mkdir -p "$work_dir/cpp" "$work_dir/rust"
 
           /usr/bin/time -f 'elapsed=%e user=%U sys=%S maxrss_kb=%M' \
