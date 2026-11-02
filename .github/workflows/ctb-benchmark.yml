@@ -13,10 +13,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
-      - name: Check out repository with LFS demo data
+      - name: Check out repository
         uses: actions/checkout@v7
-        with:
-          lfs: true
+
+      - name: Download benchmark DEM
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --quiet https://gist.github.com/623f8303554402ffd07e70f52e57e36c.git "$RUNNER_TEMP/ctb-dem-gist"
+          git -C "$RUNNER_TEMP/ctb-dem-gist" checkout --quiet 51938c266cb4b836fb91674405b1f9911b7376d8
+          mkdir -p .benchmark-data
+          cat "$RUNNER_TEMP"/ctb-dem-gist/himalaya-dem.part{00..11} > .benchmark-data/himalaya-dem.tif
+          echo '250b02ccbaff223846eed44386d1e555fa70970b81ab97fe9401f2b58b0aee0a  .benchmark-data/himalaya-dem.tif' | sha256sum --check
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -42,7 +50,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          input="$PWD/demo/guangxi_8_cities.tif"
+          input="$PWD/.benchmark-data/himalaya-dem.tif"
           test -f "$input"
           workers="$(nproc)"
           data_size_bytes="$(stat -c %s "$input")"
@@ -68,7 +76,7 @@ jobs:
           tee -a "$GITHUB_STEP_SUMMARY" <<MDEOF
           ## C++ and Rust tiling benchmark
 
-          Input: demo/guangxi_8_cities.tif ($data_size_bytes bytes). Both runs use
+          Input: Himalayan DEM ($data_size_bytes bytes). Both runs use
           \`-q -c $workers -s 14 -e 1\` on the same runner, C++ first.
 
           | implementation | version | workers | elapsed_seconds | terrain_tiles | timing scope |
