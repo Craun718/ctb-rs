@@ -228,6 +228,22 @@ fn strict_overlaps(a: Bounds, b: Bounds) -> bool {
     a.min_x < b.max_x && b.min_x < a.max_x && a.min_y < b.max_y && b.min_y < a.max_y
 }
 
+fn prepare_terrain_directories(
+    output_directory: &Path,
+    tiles: &[TileCoord],
+) -> Result<(), CtbError> {
+    let mut directories = BTreeSet::new();
+    for tile in tiles {
+        if let Some(parent) = terrain_path(output_directory, *tile).parent() {
+            directories.insert(parent.to_path_buf());
+        }
+    }
+    for directory in directories {
+        fs::create_dir_all(&directory).map_err(|error| CtbError::TilesetIo(error.to_string()))?;
+    }
+    Ok(())
+}
+
 /// Write CTB heightmap terrain tiles, processing child levels before parents.
 pub fn write_heightmap_tileset(
     source: &dyn RasterSource,
@@ -288,6 +304,7 @@ pub fn write_heightmap_tileset_with_progress(
         .rev()
         .flat_map(|level| level.tiles.iter().copied())
         .collect::<Vec<_>>();
+    prepare_terrain_directories(output_directory, &tiles)?;
     let next_index = AtomicUsize::new(0);
     let completed = AtomicUsize::new(0);
     let first_error = Mutex::new(None::<CtbError>);
@@ -391,6 +408,7 @@ pub fn write_heightmap_tileset_with_factory(
         .rev()
         .flat_map(|level| level.tiles.iter().copied())
         .collect::<Vec<_>>();
+    prepare_terrain_directories(output_directory, &tiles)?;
     let next_index = AtomicUsize::new(0);
     let completed = AtomicUsize::new(0);
     let first_error = Mutex::new(None::<CtbError>);
@@ -488,7 +506,6 @@ fn write_terrain_atomically(terrain: &HeightmapTerrain, path: &Path) -> Result<(
             path.display()
         ))
     })?;
-    fs::create_dir_all(parent).map_err(|error| CtbError::TilesetIo(error.to_string()))?;
     let filename = path.file_name().ok_or_else(|| {
         CtbError::TilesetIo(format!("terrain path {} has no filename", path.display()))
     })?;
@@ -497,10 +514,15 @@ fn write_terrain_atomically(terrain: &HeightmapTerrain, path: &Path) -> Result<(
         filename.to_string_lossy(),
         std::process::id()
     ));
-    terrain
-        .write_gzip(&temporary)
-        .map_err(|error| CtbError::TilesetIo(error.to_string()))?;
-    fs::rename(&temporary, path).map_err(|error| CtbError::TilesetIo(error.to_string()))
+    if let Err(error) = terrain.write_gzip(&temporary) {
+        let _ = fs::remove_file(&temporary);
+        return Err(CtbError::TilesetIo(error.to_string()));
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(CtbError::TilesetIo(error.to_string()));
+    }
+    Ok(())
 }
 
 fn set_child_if_present(

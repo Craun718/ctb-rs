@@ -135,15 +135,22 @@ impl HeightmapTerrain {
         Self::new(heights, children, water_mask)
     }
 
-    pub fn encode_gzip(&self) -> Result<Vec<u8>, CtbError> {
+    fn encode_gzip_to<W: Write>(&self, writer: W) -> Result<(), CtbError> {
         let raw = self.encode_raw()?;
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut encoder = GzEncoder::new(writer, Compression::default());
         encoder
             .write_all(&raw)
             .map_err(|error| CtbError::TerrainCompression(error.to_string()))?;
         encoder
             .finish()
             .map_err(|error| CtbError::TerrainCompression(error.to_string()))
+            .map(|_| ())
+    }
+
+    pub fn encode_gzip(&self) -> Result<Vec<u8>, CtbError> {
+        let mut bytes = Vec::new();
+        self.encode_gzip_to(&mut bytes)?;
+        Ok(bytes)
     }
 
     pub fn decode_gzip(encoded: &[u8]) -> Result<Self, CtbError> {
@@ -168,8 +175,9 @@ impl HeightmapTerrain {
     }
 
     pub fn write_gzip(&self, path: impl AsRef<Path>) -> Result<(), CtbError> {
-        fs::write(path, self.encode_gzip()?)
-            .map_err(|error| CtbError::TerrainCompression(error.to_string()))
+        let file = fs::File::create(path.as_ref())
+            .map_err(|error| CtbError::TerrainCompression(error.to_string()))?;
+        self.encode_gzip_to(file)
     }
 
     pub fn read_gzip(path: impl AsRef<Path>) -> Result<Self, CtbError> {
@@ -316,6 +324,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("ctb-rs-heightmap-{}.terrain", std::process::id()));
         terrain.write_gzip(&path)?;
+        assert_eq!(fs::read(&path)?, terrain.encode_gzip()?);
         assert_eq!(HeightmapTerrain::read_gzip(&path)?, terrain);
         fs::remove_file(path)?;
         Ok(())

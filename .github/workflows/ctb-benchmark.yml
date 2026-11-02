@@ -1,0 +1,136 @@
+name: ctb-benchmark
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ctb-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Download benchmark DEM
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --quiet https://gist.github.com/623f8303554402ffd07e70f52e57e36c.git "$RUNNER_TEMP/ctb-dem-gist"
+          git -C "$RUNNER_TEMP/ctb-dem-gist" checkout --quiet 51938c266cb4b836fb91674405b1f9911b7376d8
+          mkdir -p .benchmark-data
+          cat "$RUNNER_TEMP"/ctb-dem-gist/himalaya-dem.part{00..11} > .benchmark-data/himalaya-dem.tif
+          echo '250b02ccbaff223846eed44386d1e555fa70970b81ab97fe9401f2b58b0aee0a  .benchmark-data/himalaya-dem.tif' | sha256sum --check
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ctb-rs-benchmark-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ctb-rs-benchmark-${{ runner.os }}-
+
+      - name: Build release ctb-tile
+        run: cargo build --release --locked --bin ctb-tile
+
+      - name: Install C++ benchmark dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential cmake gdal-bin git libgdal-dev time
+
+      - name: Build release C++ ctb-tile
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/ahuarte47/cesium-terrain-builder.git \
+            "$RUNNER_TEMP/cesium-terrain-builder"
+          git -C "$RUNNER_TEMP/cesium-terrain-builder" checkout --quiet \
+            d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f
+          cmake -S "$RUNNER_TEMP/cesium-terrain-builder" \
+            -B "$RUNNER_TEMP/cesium-terrain-builder/build" \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/cesium-terrain-builder/build" --parallel
+          test -x "$RUNNER_TEMP/cesium-terrain-builder/build/tools/ctb-tile"
+
+      - name: Compare tiling time
+        shell: bash
+        run: |
+          set -euo pipefail
+          input="$PWD/.benchmark-data/himalaya-dem.tif"
+          test -f "$input"
+          workers="$(nproc)"
+          data_size_bytes="$(stat -c %s "$input")"
+          work_dir="$(mktemp -d "$PWD/.benchmark.XXXXXX")"
+          trap 'rm -rf "$work_dir"' EXIT
+          mkdir -p "$work_dir/cpp" "$work_dir/rust"
+
+          time_value() {
+            awk -v key="$2" '{
+              for (i = 1; i <= NF; ++i) {
+                split($i, field, "=")
+                if (field[1] == key) {
+                  print field[2]
+                  exit
+                }
+              }
+            }' "$1"
+          }
+
+          /usr/bin/time -f 'elapsed=%e user=%U sys=%S maxrss_kb=%M' \
+            -o "$work_dir/cpp.time" \
+            "$RUNNER_TEMP/cesium-terrain-builder/build/tools/ctb-tile" \
+            -q -c "$workers" -s 14 -e 1 -o "$work_dir/cpp" "$input"
+          cpp_tiles="$(find "$work_dir/cpp" -name '*.terrain' -type f | wc -l | tr -d ' ')"
+          cpp_elapsed="$(time_value "$work_dir/cpp.time" elapsed)"
+          cpp_user="$(time_value "$work_dir/cpp.time" user)"
+          cpp_sys="$(time_value "$work_dir/cpp.time" sys)"
+          cpp_maxrss="$(time_value "$work_dir/cpp.time" maxrss_kb)"
+
+          /usr/bin/time -f 'elapsed=%e user=%U sys=%S maxrss_kb=%M' \
+            -o "$work_dir/rust.time" \
+            "$PWD/target/release/ctb-tile" \
+            -q -c "$workers" -s 14 -e 1 -o "$work_dir/rust" "$input"
+          rust_tiles="$(find "$work_dir/rust" -name '*.terrain' -type f | wc -l | tr -d ' ')"
+          rust_elapsed="$(time_value "$work_dir/rust.time" elapsed)"
+          rust_user="$(time_value "$work_dir/rust.time" user)"
+          rust_sys="$(time_value "$work_dir/rust.time" sys)"
+          rust_maxrss="$(time_value "$work_dir/rust.time" maxrss_kb)"
+
+          test "$cpp_tiles" = "$rust_tiles"
+          for value in \
+            "$cpp_elapsed" "$cpp_user" "$cpp_sys" "$cpp_maxrss" \
+            "$rust_elapsed" "$rust_user" "$rust_sys" "$rust_maxrss"; do
+            test -n "$value"
+          done
+
+          input_sha256="$(sha256sum "$input" | awk '{print $1}')"
+          cmake_version="$(cmake --version | head -1)"
+          compiler_version="$(g++ --version | head -1)"
+          gdal_version="$(gdalinfo --version | head -1)"
+
+          tee -a "$GITHUB_STEP_SUMMARY" <<MDEOF
+          ## C++ and Rust tiling benchmark
+
+          Input: Himalayan DEM ($data_size_bytes bytes). Both runs use
+          \`-q -c $workers -s 14 -e 1\` on the same runner, C++ first.
+          Input SHA-256: \`$input_sha256\`
+          C++ source: \`d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f\`
+          Toolchain: \`$cmake_version\`; \`$compiler_version\`; \`$gdal_version\`
+
+          | implementation | version | workers | elapsed_seconds | user_seconds | sys_seconds | maxrss_kb | terrain_tiles | timing scope |
+          | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+          | C++ | 0.4.1 source build | $workers | $cpp_elapsed | $cpp_user | $cpp_sys | $cpp_maxrss | $cpp_tiles | process runtime via /usr/bin/time |
+          | Rust | ${{ github.sha }} | $workers | $rust_elapsed | $rust_user | $rust_sys | $rust_maxrss | $rust_tiles | process runtime via /usr/bin/time |
+
+          These are single runs; filesystem cache and runner load can affect the comparison.
+          MDEOF

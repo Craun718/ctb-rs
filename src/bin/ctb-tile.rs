@@ -1,4 +1,4 @@
-use std::{error::Error, path::PathBuf};
+use std::{error::Error, path::PathBuf, sync::Arc};
 
 use clap::{ArgAction, Parser, ValueEnum};
 use ctb_rs::{
@@ -212,10 +212,21 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     validate_warp_options(arguments.error_threshold, arguments.warp_memory_limit)?;
     let input = arguments.input.clone();
+    let shared_block_cache = GeoTiffRasterSource::new_shared_block_cache(&input).ok();
     let source_factory = move || {
-        GeoTiffRasterSource::open(&input).map(|source| {
-            Box::new(CachedRasterSource::new_with_nodata_cache(source, 64, 64))
-                as Box<dyn ctb_rs::raster::RasterSource>
+        let source = match &shared_block_cache {
+            Some(cache) => GeoTiffRasterSource::open_with_shared_cache(&input, Arc::clone(cache)),
+            None => GeoTiffRasterSource::open(&input),
+        };
+        source.map(|source| {
+            if shared_block_cache.is_some() {
+                // The shared native cache already deduplicates decoded blocks;
+                // an additional f64 block cache only repeats conversion/copies.
+                Box::new(source) as Box<dyn ctb_rs::raster::RasterSource>
+            } else {
+                Box::new(CachedRasterSource::new_with_nodata_cache(source, 64, 64))
+                    as Box<dyn ctb_rs::raster::RasterSource>
+            }
         })
     };
     let verbosity = 1_i16 + i16::from(arguments.verbose) - i16::from(arguments.quiet);

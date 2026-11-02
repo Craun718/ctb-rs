@@ -1,1 +1,2 @@
 tests/Copernicus_DSM_COG_10_N22_00_E108_00_DEM.tif filter=lfs diff=lfs merge=lfs -text
+demo/guangxi_8_cities.tif filter=lfs diff=lfs merge=lfs -text

@@ -14,5 +14,6 @@ pub mod sampling;
 pub mod terrain;
 pub mod terrain_sampling;
 pub mod tileset;
+pub mod vrt;
 
 pub use error::CtbError;

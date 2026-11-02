@@ -1,3 +1,5 @@
+use std::{cell::RefCell, collections::HashMap};
+
 use crate::{CtbError, grid::Bounds};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,42 +62,66 @@ fn projection_for_crs(crs: &Crs) -> Result<proj4rs::Proj, CtbError> {
     })
 }
 
+struct ProjectionPair {
+    source: proj4rs::Proj,
+    target: proj4rs::Proj,
+}
+
+thread_local! {
+    static PROJECTION_CACHE: RefCell<HashMap<(u16, u16), ProjectionPair>> =
+        RefCell::new(HashMap::new());
+}
+
 fn transform_with_proj4rs(
     x: f64,
     y: f64,
     source: &Crs,
     target: &Crs,
 ) -> Result<(f64, f64), CtbError> {
-    let source_projection = projection_for_crs(source)?;
-    let target_projection = projection_for_crs(target)?;
     let source_code = epsg_code(source);
     let target_code = epsg_code(target);
-    let (mut projected_x, mut projected_y) = (x, y);
-    if source_projection.is_latlong() {
-        projected_x = projected_x.to_radians();
-        projected_y = projected_y.to_radians();
-    }
-    let (mut result_x, mut result_y) = proj4rs::adaptors::transform_xy(
-        &source_projection,
-        &target_projection,
-        projected_x,
-        projected_y,
-    )
-    .map_err(|error| {
-        CtbError::UnsupportedCrs(format!(
-            "cannot transform EPSG:{source_code} to EPSG:{target_code}: {error}"
-        ))
-    })?;
-    if target_projection.is_latlong() {
-        result_x = result_x.to_degrees();
-        result_y = result_y.to_degrees();
-    }
-    if !result_x.is_finite() || !result_y.is_finite() {
-        return Err(CtbError::UnsupportedCrs(format!(
-            "cannot transform EPSG:{source_code} to EPSG:{target_code}: result is not finite"
-        )));
-    }
-    Ok((result_x, result_y))
+    PROJECTION_CACHE.with(|projection_cache| {
+        let mut cache = projection_cache.borrow_mut();
+        let pair = match cache.get(&(source_code, target_code)) {
+            Some(pair) => pair,
+            None => {
+                let source_projection = projection_for_crs(source)?;
+                let target_projection = projection_for_crs(target)?;
+                cache.insert(
+                    (source_code, target_code),
+                    ProjectionPair {
+                        source: source_projection,
+                        target: target_projection,
+                    },
+                );
+                cache
+                    .get(&(source_code, target_code))
+                    .expect("projection pair was inserted immediately before reuse")
+            }
+        };
+        let (mut projected_x, mut projected_y) = (x, y);
+        if pair.source.is_latlong() {
+            projected_x = projected_x.to_radians();
+            projected_y = projected_y.to_radians();
+        }
+        let (mut result_x, mut result_y) =
+            proj4rs::adaptors::transform_xy(&pair.source, &pair.target, projected_x, projected_y)
+                .map_err(|error| {
+                CtbError::UnsupportedCrs(format!(
+                    "cannot transform EPSG:{source_code} to EPSG:{target_code}: {error}"
+                ))
+            })?;
+        if pair.target.is_latlong() {
+            result_x = result_x.to_degrees();
+            result_y = result_y.to_degrees();
+        }
+        if !result_x.is_finite() || !result_y.is_finite() {
+            return Err(CtbError::UnsupportedCrs(format!(
+                "cannot transform EPSG:{source_code} to EPSG:{target_code}: result is not finite"
+            )));
+        }
+        Ok((result_x, result_y))
+    })
 }
 
 /// Transform an axis-aligned bounds rectangle by transforming all four corners.
@@ -375,6 +401,28 @@ mod tests {
             transform_coordinate(longitude, latitude, &Crs::Epsg4326, &Crs::Epsg(27700))?;
         assert!((easting - 400_000.0).abs() < 1e-6);
         assert!((northing + 100_000.0).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn cached_generic_epsg_transform_repeats_exactly() -> Result<(), CtbError> {
+        let source = Crs::Epsg(32630);
+        let target = Crs::Epsg4326;
+        let first = transform_coordinate(500_000.0, 0.0, &source, &target)?;
+        for _ in 0..4 {
+            assert_eq!(
+                transform_coordinate(500_000.0, 0.0, &source, &target)?,
+                first
+            );
+        }
+
+        std::thread::scope(|scope| {
+            let handle = scope.spawn(|| transform_coordinate(500_000.0, 0.0, &source, &target));
+            assert_eq!(
+                handle.join().expect("scoped transform thread cannot panic"),
+                Ok(first)
+            );
+        });
         Ok(())
     }
 

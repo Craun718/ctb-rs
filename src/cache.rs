@@ -23,7 +23,7 @@ struct CacheState {
 ///
 /// Sources declaring NoData keep exact source windows by default, because the
 /// current RasterSource contract reports NoData at window granularity rather
-/// than providing a per-pixel validity mask. CTB's OxiGeo direct source keeps
+/// than providing a per-pixel validity mask. CTB's GeoTIFF direct source keeps
 /// NoData sentinels as ordinary f64 samples, so it can opt into block caching
 /// through [`Self::new_with_nodata_cache`].
 pub struct CachedRasterSource<S> {
