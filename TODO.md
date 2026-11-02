@@ -740,5 +740,6 @@
   C++ commit 的 `ctb-tile` 构建输出路径。
 - [X] 根据 GitHub runner 首跑修正 C++ 可执行文件路径为
   `build/tools/ctb-tile`，并在构建步骤断言文件存在且可执行。
+- [ ] 用带标记的 CI 计数输出定位第二轮退出 1 的具体断言。
 - [ ] GitHub runner 实机确认 C++ 源码 Release 构建、两种实现 benchmark、
   tile 数与进程指标汇总；未确认前不将 P49 标记为实施完成。

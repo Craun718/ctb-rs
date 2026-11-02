@@ -163,6 +163,11 @@ GDAL 3.8.4 完成 Release 构建和链接；失败发生在 benchmark 启动 C++
 本轮修正为构建后断言 `build/tools/ctb-tile` 可执行，benchmark 也使用该
 路径；不改 C++ 源码和 GDAL 依赖版本。
 
+第二轮 runner 结果：C++ Release 二进制存在并可启动，C++ 与 Rust benchmark
+均完整运行约 2 分 20 秒；最终退出 1。脚本在 tile 数不等时没有输出计数，
+尚不能区分 tile 数断言与后续空指标断言。临时加入带标记的计数输出以定位，
+确认后移除诊断日志。
+
 ### P47：CI 中统一 C++ 与 Rust 性能对比（实施中）
 
 在同一个 runner 上依次使用相同的 LFS demo、worker 数及 `-q -c -s 14 -e 1`
