@@ -124,6 +124,38 @@ Rust 本地已有 release 11 秒，均成功且各生成 158,728 个瓦片；未
 克隆和重组 SHA-256 校验通过。workflow 下载固定版本并校验完整性后运行，
 不再为该任务拉取原有 LFS DEM；YAML 语法已检查，GitHub runner 实机待验证。
 
+### P49：C++ 源码 Release 基准与进程计时（进行中）
+
+将 P47/P48 的 C++ 基准从 Docker 预编译镜像改为源码 Release 构建。源码固定为
+既有 oracle 基线 `ahuarte47/cesium-terrain-builder` commit
+`d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f`（CTB 0.4.1），在 GitHub
+ubuntu-24.04 runner 上安装 CMake、编译器与 `libgdal-dev` 后执行
+`cmake -DCMAKE_BUILD_TYPE=Release` 构建。C++ 与 Rust 保持同一输入、
+`-q -c <workers> -s 14 -e 1` 参数和输出文件系统，均使用 `/usr/bin/time`
+只统计 `ctb-tile` 进程的 elapsed、user、sys 和 maxrss；Docker 拉取、源码
+构建和 Rust 构建都不进入耗时。
+
+CI 汇总必须记录 C++ source commit、CMake、编译器、GDAL、Rust commit、
+输入 SHA-256、worker 数、tile 数与四项进程指标，并把 timing scope 标为
+`process runtime via /usr/bin/time`。runner 的 apt 包版本允许随平台更新，
+但必须在每次 summary 中如实输出；单次结果仍只作趋势记录，不设性能门禁，
+也不把它视为稳定性能结论。
+
+验收：
+
+1. workflow YAML 可解析，嵌入 shell 通过 `bash -n`，`git diff --check` 通过；
+2. C++ 能从固定 commit 完成 Release 构建并运行 benchmark；
+3. Rust release benchmark 使用相同输入与参数运行；
+4. 两者 tile 数一致，summary 中四项进程指标与版本字段均非空；
+5. GitHub runner 实机通过前，P49 保持实施进行中。
+
+实施记录：已移除 Docker 拉取，workflow 在 runner 上安装 `libgdal-dev`、
+CMake、编译器与 GNU time，固定 checkout C++ commit 后完成 Release 构建；
+C++/Rust benchmark 均由 `/usr/bin/time` 输出 elapsed/user/sys/maxrss。已复核
+固定 commit 的 `tools/CMakeLists.txt`，确认 `ctb-tile` 生成于 build 目录根部。
+workflow YAML、全部嵌入 shell 与 `git diff --check` 通过。源码构建能否链接
+Ubuntu 24.04 当前 GDAL，仍需 GitHub runner 实机验证。
+
 ### P47：CI 中统一 C++ 与 Rust 性能对比（实施中）
 
 在同一个 runner 上依次使用相同的 LFS demo、worker 数及 `-q -c -s 14 -e 1`

@@ -1242,3 +1242,26 @@ P46 只修正 P45 benchmark 的墙钟记录精度，不改变 Rust 生产代码�
   `parallel workers=2 seconds=0.033 tiles=226` 和 `payloads=identical`。
 - workflow 在写入 step summary 前检查四个解析值非空，防止格式回退时继续
   显示空耗时。
+
+## 38. P49 C++ 源码 Release 基准进程计时
+
+P49 只改变 benchmark CI 的 C++ 构建与计时口径，不改变 Rust 生产代码、输入
+DEM、切片参数或输出正确性断言。C++ 固定为
+`ahuarte47/cesium-terrain-builder` commit
+`d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f`，在 ubuntu-24.04 runner 上源码
+Release 构建；C++ 与 Rust 均用 `/usr/bin/time` 包裹 `ctb-tile` 子进程，
+并记录 elapsed、user、sys、maxrss。
+
+### 38.1 P49 验证范围
+
+- `.github/workflows/ctb-benchmark.yml` 可被 YAML 解析，嵌入 run 脚本通过
+  `bash -n`，`git diff --check` 通过。
+- C++ 源码 checkout 到固定 commit 并完成 `CMAKE_BUILD_TYPE=Release` 构建；
+  构建不进入 benchmark 耗时。
+- 两者使用同一 700 MiB DEM、同一 worker 数和 `-q -s 14 -e 1`；`.terrain`
+  文件数必须一致，非零退出状态使 CI 失败。
+- summary 记录输入 SHA-256、C++ source commit、CMake、编译器、GDAL、Rust
+  commit，以及两项实现的四项进程指标；timing scope 统一为
+  `process runtime via /usr/bin/time`。
+- 单次 benchmark 不设性能阈值，不作为稳定性能结论；GitHub runner 实机
+  通过前 P49 保持进行中。

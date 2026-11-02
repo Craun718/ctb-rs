@@ -731,3 +731,12 @@
 - [X] 按 CI 参数本地运行 C++ 和 Rust，各设 180 秒超时并记录结果。
 - [X] 获取广西以外公开 DEM，记录来源和地区（来源许可见数据集页面）。
 - [X] 生成 1 GiB ±5% 的分块 GeoTIFF，验证文件大小、栅格和单块解码大小。
+
+- [X] 登记 P49，固定 C++ benchmark 源码 commit、Release 构建命令和
+  `/usr/bin/time` 进程计时口径。
+- [X] 更新 benchmark workflow：runner 上源码编译 C++，记录 CMake、编译器与
+  GDAL 版本；C++/Rust 均输出 elapsed、user、sys、maxrss。
+- [X] 校验 workflow YAML、全部嵌入 shell、`git diff --check`，并复核固定
+  C++ commit 的 `ctb-tile` 构建输出路径。
+- [ ] GitHub runner 实机确认 C++ 源码 Release 构建、两种实现 benchmark、
+  tile 数与进程指标汇总；未确认前不将 P49 标记为实施完成。

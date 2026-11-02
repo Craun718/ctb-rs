@@ -43,8 +43,23 @@ jobs:
       - name: Build release ctb-tile
         run: cargo build --release --locked --bin ctb-tile
 
-      - name: Pull C++ ctb-tile image
-        run: docker pull homme/cesium-terrain-builder:0.4.1
+      - name: Install C++ benchmark dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential cmake git libgdal-dev time
+
+      - name: Build release C++ ctb-tile
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/ahuarte47/cesium-terrain-builder.git \
+            "$RUNNER_TEMP/cesium-terrain-builder"
+          git -C "$RUNNER_TEMP/cesium-terrain-builder" checkout --quiet \
+            d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f
+          cmake -S "$RUNNER_TEMP/cesium-terrain-builder" \
+            -B "$RUNNER_TEMP/cesium-terrain-builder/build" \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/cesium-terrain-builder/build" --parallel
 
       - name: Compare tiling time
         shell: bash
@@ -58,31 +73,53 @@ jobs:
           trap 'rm -rf "$work_dir"' EXIT
           mkdir -p "$work_dir/cpp" "$work_dir/rust"
 
-          start="$(date +%s.%N)"
-          docker run --rm --user "$(id -u):$(id -g)" \
-            -v "$PWD:$PWD" -w "$PWD" \
-            homme/cesium-terrain-builder:0.4.1 \
-            ctb-tile -q -c "$workers" -s 14 -e 1 -o "$work_dir/cpp" "$input"
-          end="$(date +%s.%N)"
-          cpp_seconds="$(awk -v s="$start" -v e="$end" 'BEGIN { printf "%.3f", e - s }')"
+          /usr/bin/time -f 'elapsed=%e user=%U sys=%S maxrss_kb=%M' \
+            -o "$work_dir/cpp.time" \
+            "$RUNNER_TEMP/cesium-terrain-builder/build/ctb-tile" \
+            -q -c "$workers" -s 14 -e 1 -o "$work_dir/cpp" "$input"
           cpp_tiles="$(find "$work_dir/cpp" -name '*.terrain' -type f | wc -l | tr -d ' ')"
+          cpp_time="$(cat "$work_dir/cpp.time")"
+          cpp_elapsed="$(printf '%s\n' "$cpp_time" | sed -n 's/^elapsed=\([0-9.]*\)$/\1/p')"
+          cpp_user="$(printf '%s\n' "$cpp_time" | sed -n 's/ user=\([0-9.]*\)$/\1/p')"
+          cpp_sys="$(printf '%s\n' "$cpp_time" | sed -n 's/ sys=\([0-9.]*\)$/\1/p')"
+          cpp_maxrss="$(printf '%s\n' "$cpp_time" | sed -n 's/^maxrss_kb=\([0-9]*\)$/\1/p')"
 
-          start="$(date +%s.%N)"
-          "$PWD/target/release/ctb-tile" -q -c "$workers" -s 14 -e 1 -o "$work_dir/rust" "$input"
-          end="$(date +%s.%N)"
-          rust_seconds="$(awk -v s="$start" -v e="$end" 'BEGIN { printf "%.3f", e - s }')"
+          /usr/bin/time -f 'elapsed=%e user=%U sys=%S maxrss_kb=%M' \
+            -o "$work_dir/rust.time" \
+            "$PWD/target/release/ctb-tile" \
+            -q -c "$workers" -s 14 -e 1 -o "$work_dir/rust" "$input"
           rust_tiles="$(find "$work_dir/rust" -name '*.terrain' -type f | wc -l | tr -d ' ')"
+          rust_time="$(cat "$work_dir/rust.time")"
+          rust_elapsed="$(printf '%s\n' "$rust_time" | sed -n 's/^elapsed=\([0-9.]*\)$/\1/p')"
+          rust_user="$(printf '%s\n' "$rust_time" | sed -n 's/ user=\([0-9.]*\)$/\1/p')"
+          rust_sys="$(printf '%s\n' "$rust_time" | sed -n 's/ sys=\([0-9.]*\)$/\1/p')"
+          rust_maxrss="$(printf '%s\n' "$rust_time" | sed -n 's/^maxrss_kb=\([0-9]*\)$/\1/p')"
+
+          test "$cpp_tiles" = "$rust_tiles"
+          for value in \
+            "$cpp_elapsed" "$cpp_user" "$cpp_sys" "$cpp_maxrss" \
+            "$rust_elapsed" "$rust_user" "$rust_sys" "$rust_maxrss"; do
+            test -n "$value"
+          done
+
+          input_sha256="$(sha256sum "$input" | awk '{print $1}')"
+          cmake_version="$(cmake --version | head -1)"
+          compiler_version="$(g++ --version | head -1)"
+          gdal_version="$(gdalinfo --version | head -1)"
 
           tee -a "$GITHUB_STEP_SUMMARY" <<MDEOF
           ## C++ and Rust tiling benchmark
 
           Input: Himalayan DEM ($data_size_bytes bytes). Both runs use
           \`-q -c $workers -s 14 -e 1\` on the same runner, C++ first.
+          Input SHA-256: \`$input_sha256\`
+          C++ source: \`d9c29b2e3f9fb9d9d639a1bdd81cc3f42685fa1f\`
+          Toolchain: \`$cmake_version\`; \`$compiler_version\`; \`$gdal_version\`
 
-          | implementation | version | workers | elapsed_seconds | terrain_tiles | timing scope |
-          | --- | --- | ---: | ---: | ---: | --- |
-          | C++ | 0.4.1 | $workers | $cpp_seconds | $cpp_tiles | docker run including container startup and shutdown |
-          | Rust | ${{ github.sha }} | $workers | $rust_seconds | $rust_tiles | process runtime |
+          | implementation | version | workers | elapsed_seconds | user_seconds | sys_seconds | maxrss_kb | terrain_tiles | timing scope |
+          | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+          | C++ | 0.4.1 source build | $workers | $cpp_elapsed | $cpp_user | $cpp_sys | $cpp_maxrss | $cpp_tiles | process runtime via /usr/bin/time |
+          | Rust | ${{ github.sha }} | $workers | $rust_elapsed | $rust_user | $rust_sys | $rust_maxrss | $rust_tiles | process runtime via /usr/bin/time |
 
           These are single runs; filesystem cache and runner load can affect the comparison.
           MDEOF
