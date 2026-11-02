@@ -743,5 +743,5 @@
 - [X] 用带标记的 ERR 诊断定位第三轮退出 1：GNU time 单行输出被整行 `sed`
   模式解析为空；已改为按 key 解析并移除全部诊断输出。
 - [X] 根据第四轮日志补装 `gdal-bin`，确保 summary 可调用 `gdalinfo --version`。
-- [ ] GitHub runner 实机确认 C++ 源码 Release 构建、两种实现 benchmark、
-  tile 数与进程指标汇总；未确认前不将 P49 标记为实施完成。
+- [X] GitHub runner run `41497723029` 确认 C++ 源码 Release 构建、两种实现
+  benchmark、tile 数与进程指标汇总均通过；记录最终单次基准数据。

@@ -124,7 +124,7 @@ Rust 本地已有 release 11 秒，均成功且各生成 158,728 个瓦片；未
 克隆和重组 SHA-256 校验通过。workflow 下载固定版本并校验完整性后运行，
 不再为该任务拉取原有 LFS DEM；YAML 语法已检查，GitHub runner 实机待验证。
 
-### P49：C++ 源码 Release 基准与进程计时（进行中）
+### P49：C++ 源码 Release 基准与进程计时（已验证）
 
 将 P47/P48 的 C++ 基准从 Docker 预编译镜像改为源码 Release 构建。源码固定为
 既有 oracle 基线 `ahuarte47/cesium-terrain-builder` commit
@@ -174,6 +174,12 @@ trap 定位到 `test -n`：GNU time 的 `-o` 输出是一整行，原 `sed` 表�
 第四轮修复解析后，benchmark 与指标断言已通过，最后的 `gdalinfo --version`
 返回 127：workflow 只安装了 `libgdal-dev`，未安装提供 `gdalinfo` 的
 `gdal-bin`。已把 `gdal-bin` 加入依赖；本轮不再保留任何诊断输出。
+最终 push run `41497723029` 通过。4 workers、同一 700 MiB DEM、
+`-q -s 14 -e 1`：C++ 0.4.1 source build（GNU 13.3.0 / CMake 3.31.6 /
+GDAL 3.8.4）elapsed 58.22s、user 169.38s、sys 33.84s、maxrss 3,851,748 KiB；
+Rust `f1c6101` elapsed 66.68s、user 167.23s、sys 28.78s、maxrss
+6,519,988 KiB；两者均生成 158,728 个 terrain。仍未比较输出内容，单次
+耗时只作趋势记录。
 
 ### P47：CI 中统一 C++ 与 Rust 性能对比（实施中）
 
