@@ -171,6 +171,9 @@ GDAL 3.8.4 完成 Release 构建和链接；失败发生在 benchmark 启动 C++
 trap 定位到 `test -n`：GNU time 的 `-o` 输出是一整行，原 `sed` 表达式错误
 要求整行仅含当前字段，导致所有指标解析为空。已改为按 key 逐 token 解析，
 并移除全部临时诊断输出。
+第四轮修复解析后，benchmark 与指标断言已通过，最后的 `gdalinfo --version`
+返回 127：workflow 只安装了 `libgdal-dev`，未安装提供 `gdalinfo` 的
+`gdal-bin`。已把 `gdal-bin` 加入依赖；本轮不再保留任何诊断输出。
 
 ### P47：CI 中统一 C++ 与 Rust 性能对比（实施中）
 

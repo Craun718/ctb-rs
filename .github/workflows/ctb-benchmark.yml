@@ -47,7 +47,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            build-essential cmake git libgdal-dev time
+            build-essential cmake gdal-bin git libgdal-dev time
 
       - name: Build release C++ ctb-tile
         run: |
