@@ -738,5 +738,7 @@
   GDAL 版本；C++/Rust 均输出 elapsed、user、sys、maxrss。
 - [X] 校验 workflow YAML、全部嵌入 shell、`git diff --check`，并复核固定
   C++ commit 的 `ctb-tile` 构建输出路径。
+- [X] 根据 GitHub runner 首跑修正 C++ 可执行文件路径为
+  `build/tools/ctb-tile`，并在构建步骤断言文件存在且可执行。
 - [ ] GitHub runner 实机确认 C++ 源码 Release 构建、两种实现 benchmark、
   tile 数与进程指标汇总；未确认前不将 P49 标记为实施完成。

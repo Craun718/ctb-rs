@@ -156,6 +156,13 @@ C++/Rust benchmark 均由 `/usr/bin/time` 输出 elapsed/user/sys/maxrss。已�
 workflow YAML、全部嵌入 shell 与 `git diff --check` 通过。源码构建能否链接
 Ubuntu 24.04 当前 GDAL，仍需 GitHub runner 实机验证。
 
+首次 GitHub runner 结果：C++ 使用 Ubuntu 24.04 的 GNU 13.3.0、CMake 与
+GDAL 3.8.4 完成 Release 构建和链接；失败发生在 benchmark 启动 C++ 二进制时
+返回 127。根因是旧 CMake 子目录工程的可执行文件实际生成于
+`build/tools/ctb-tile`，前述“生成于 build 目录根部”的复核结论错误。
+本轮修正为构建后断言 `build/tools/ctb-tile` 可执行，benchmark 也使用该
+路径；不改 C++ 源码和 GDAL 依赖版本。
+
 ### P47：CI 中统一 C++ 与 Rust 性能对比（实施中）
 
 在同一个 runner 上依次使用相同的 LFS demo、worker 数及 `-q -c -s 14 -e 1`

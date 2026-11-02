@@ -1265,3 +1265,11 @@ Release 构建；C++ 与 Rust 均用 `/usr/bin/time` 包裹 `ctb-tile` 子进程
   `process runtime via /usr/bin/time`。
 - 单次 benchmark 不设性能阈值，不作为稳定性能结论；GitHub runner 实机
   通过前 P49 保持进行中。
+
+### 38.2 P49 首跑修复
+
+GitHub runner 首跑证明 C++ 在 Ubuntu 24.04 / GDAL 3.8.4 下可完成 Release
+构建，但 benchmark 因 `/usr/bin/time` 启动 `build/ctb-tile` 返回 127 失败。
+旧 CMake 子目录工程的实际可执行文件路径是 `build/tools/ctb-tile`。修复
+断言该路径存在且可执行，并让 benchmark 调用同一路径；以重新 push 触发的
+`ctb-benchmark` run 作为回归反馈环。

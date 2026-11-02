@@ -60,6 +60,7 @@ jobs:
             -B "$RUNNER_TEMP/cesium-terrain-builder/build" \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build "$RUNNER_TEMP/cesium-terrain-builder/build" --parallel
+          test -x "$RUNNER_TEMP/cesium-terrain-builder/build/tools/ctb-tile"
 
       - name: Compare tiling time
         shell: bash
@@ -75,7 +76,7 @@ jobs:
 
           /usr/bin/time -f 'elapsed=%e user=%U sys=%S maxrss_kb=%M' \
             -o "$work_dir/cpp.time" \
-            "$RUNNER_TEMP/cesium-terrain-builder/build/ctb-tile" \
+            "$RUNNER_TEMP/cesium-terrain-builder/build/tools/ctb-tile" \
             -q -c "$workers" -s 14 -e 1 -o "$work_dir/cpp" "$input"
           cpp_tiles="$(find "$work_dir/cpp" -name '*.terrain' -type f | wc -l | tr -d ' ')"
           cpp_time="$(cat "$work_dir/cpp.time")"
