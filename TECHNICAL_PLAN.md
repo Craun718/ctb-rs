@@ -3424,3 +3424,42 @@ bash 专有的 `set -o pipefail`），已只保留 `set -eu`。再跑时 ctb-rs 
 数字后多要求了一个尾随空格，已修正为 `$` 锚定行尾。c++ job 仍在跑，实机
 CI 结果待确认，确认前
 保持“实施进行中”。
+
+### P46：ctb-rs 基准亚秒耗时精度修复
+
+说明：P45 的实机 run 暴露出 Rust 基准在亚秒任务上把 `seconds` 显示为 `0`。
+根因是 `scripts/benchmark-ctb-tile.sh` 使用 `date +%s` 的整秒时间戳，并用 shell
+整数减法计算耗时；512×512 合成 DEM 的单线程和 2 线程切片均在 1 秒内完成，
+因此被向下截断为 0。该问题只影响计时记录，不影响 tile 生成或 payload 校验。
+
+#### P46 方案
+
+1. `run_case` 采样 `date +%s.%N` 的小数秒时间戳，用 `awk` 按三位小数计算并
+   输出 `seconds`；保持 POSIX sh，不引入 `pipefail` 或 bash/zsh 专有能力。
+2. workflow 的 step summary 解析同步接受 `0.000` 这类三位小数，并保留解析失败
+   即失败的行为；避免脚本输出已修正而 summary 仍为空或只支持整数。
+3. 不改变合成输入、512×512 参数、release 构建方式、单线程/2 线程命令、
+   `.terrain` 路径比较和解压 payload 比较。
+4. C++ job 已使用 `%s.%N` 与 `awk %.3f`，本轮不重复修改。
+
+#### P46 验收门禁
+
+1. `sh -n scripts/benchmark-ctb-tile.sh` 通过。
+2. workflow YAML 可解析，`git diff --check` 通过。
+3. 本地或 CI 的 benchmark 输出中，`single` 与 `parallel` 的 `seconds` 均为
+   三位小数；亚秒任务不得显示为 `0`。
+4. workflow 汇总中的 single/parallel `elapsed_seconds` 非空且与脚本输出一致；
+   tile 数和 `payloads=identical` 结论不变。
+
+#### P46 实施记录
+
+2026-11-02 实施结果：
+
+- `run_case` 改为采样 `date +%s.%N`，由 `awk printf "%.3f"` 输出耗时；
+  输入合成、切片命令和 payload 差分保持不变。
+- workflow 的四个解析值均改为三位小数模式，并在写入 summary 前逐项
+  `test -n`，解析失败会使 job 失败。
+- `sh -n scripts/benchmark-ctb-tile.sh`、Python YAML 解析和
+  `git diff --check` 通过。
+- 本地 release 基准输出：single `seconds=0.058`、parallel `seconds=0.033`，
+  两轮均为 226 个 terrain tile，且 `payloads=identical`。

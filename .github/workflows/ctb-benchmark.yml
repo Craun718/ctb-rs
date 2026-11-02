@@ -111,10 +111,14 @@ jobs:
           CTB_RS_BIN="$PWD/target/release/ctb-tile" \
             sh scripts/benchmark-ctb-tile.sh 512 2 | tee "$output_file"
 
-          single_seconds="$(sed -n 's/^single workers=1 seconds=\([0-9][0-9]*\) .*/\1/p' "$output_file" | head -n 1)"
-          parallel_seconds="$(sed -n 's/^parallel workers=2 seconds=\([0-9][0-9]*\) .*/\1/p' "$output_file" | head -n 1)"
-          single_tiles="$(sed -n 's/^single workers=1 seconds=[0-9][0-9]* tiles=\([0-9][0-9]*\)$/\1/p' "$output_file" | head -n 1)"
-          parallel_tiles="$(sed -n 's/^parallel workers=2 seconds=[0-9][0-9]* tiles=\([0-9][0-9]*\)$/\1/p' "$output_file" | head -n 1)"
+          single_seconds="$(sed -n 's/^single workers=1 seconds=\([0-9][0-9]*\.[0-9][0-9][0-9]\) .*/\1/p' "$output_file" | head -n 1)"
+          parallel_seconds="$(sed -n 's/^parallel workers=2 seconds=\([0-9][0-9]*\.[0-9][0-9][0-9]\) .*/\1/p' "$output_file" | head -n 1)"
+          single_tiles="$(sed -n 's/^single workers=1 seconds=[0-9][0-9]*\.[0-9][0-9][0-9] tiles=\([0-9][0-9]*\)$/\1/p' "$output_file" | head -n 1)"
+          parallel_tiles="$(sed -n 's/^parallel workers=2 seconds=[0-9][0-9]*\.[0-9][0-9][0-9] tiles=\([0-9][0-9]*\)$/\1/p' "$output_file" | head -n 1)"
+          test -n "$single_seconds"
+          test -n "$parallel_seconds"
+          test -n "$single_tiles"
+          test -n "$parallel_tiles"
           tee -a "$GITHUB_STEP_SUMMARY" <<MDEOF
           ## ctb-rs-slice-timing (ctb-rs, 512x512 synthetic DEM)
 

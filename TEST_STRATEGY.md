@@ -1216,3 +1216,29 @@ P45 与本项目 Rust 实现直接相关，但它是一个独立的 CI benchmark
 - step summary 输出 commit、single/parallel `elapsed_seconds`、`terrain_tiles`
   与调用命令。
 - 不设性能门禁，只记录当前 commit 的基准数据。
+
+## 37. P46 ctb-rs 基准亚秒耗时精度
+
+P46 只修正 P45 benchmark 的墙钟记录精度，不改变 Rust 生产代码、合成输入、
+切片参数或输出一致性断言。脚本必须在每个 case 内采样开始/结束的
+`date +%s.%N`，用 `awk printf "%.3f"` 输出差值；workflow 解析必须接受三位
+小数并在解析结果为空时让 job 失败。
+
+验证范围：
+
+- `sh -n scripts/benchmark-ctb-tile.sh`。
+- `.github/workflows/ctb-benchmark.yml` 可被 YAML 解析，且 single/parallel
+  `seconds` 捕获模式匹配三位小数。
+- `git diff --check` 通过。
+- 实跑 benchmark 时，两个 case 的 `seconds` 都为三位小数；亚秒结果不得被
+  截断成 `0`，tile 数与 `payloads=identical` 结论保持不变。
+
+### 37.1 P46 实施结果
+
+2026-11-02 验证通过：
+
+- `sh -n` 与 workflow YAML 解析通过，`git diff --check` 无输出。
+- 本地 release benchmark 输出 `single workers=1 seconds=0.058 tiles=226`、
+  `parallel workers=2 seconds=0.033 tiles=226` 和 `payloads=identical`。
+- workflow 在写入 step summary 前检查四个解析值非空，防止格式回退时继续
+  显示空耗时。

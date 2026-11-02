@@ -45,11 +45,12 @@ run_case() {
   count="$2"
   output="$work_directory/$name"
   mkdir -p "$output"
-  start="$(date +%s)"
+  start="$(date +%s.%N)"
   "$ctb_bin" -q -c "$count" -o "$output" "$source_tiff"
-  finish="$(date +%s)"
+  finish="$(date +%s.%N)"
+  elapsed_seconds="$(awk -v s="$start" -v e="$finish" 'BEGIN { printf "%.3f", e - s }')"
   printf '%s workers=%s seconds=%s tiles=%s\n' \
-    "$name" "$count" "$((finish - start))" \
+    "$name" "$count" "$elapsed_seconds" \
     "$(find "$output" -name '*.terrain' -type f | wc -l | tr -d ' ')"
 }
 

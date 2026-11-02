@@ -804,3 +804,13 @@
 - [ ] 推送到 GitHub 后确认实机 CI 能安装 GDAL、构建 release 并跑完
       benchmark、输出 single/parallel 切片耗时；在此之前不将 P45 标记为
       实施完成。
+
+## P46：ctb-rs 基准亚秒耗时精度修复
+
+- [x] 将 `scripts/benchmark-ctb-tile.sh` 的整秒计时改为 `date +%s.%N` 采样，
+      用 `awk` 输出三位小数，保持 POSIX sh。
+- [x] 将 workflow 的 single/parallel `seconds` 解析同步改为三位小数，确保
+      step summary 的 `elapsed_seconds` 非空。
+- [x] 运行 `sh -n`、workflow YAML 解析和 `git diff --check`。
+- [x] 本地复跑 benchmark，确认亚秒耗时不再为 `0`、tile 数不变且
+      `payloads=identical`。
