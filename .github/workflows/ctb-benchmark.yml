@@ -72,32 +72,40 @@ jobs:
           data_size_bytes="$(stat -c %s "$input")"
           work_dir="$(mktemp -d "$PWD/.benchmark.XXXXXX")"
           trap 'rm -rf "$work_dir"' EXIT
-          trap 'rc=$?; echo "[DEBUG-p49-a4f2] error rc=$rc line=$LINENO cpp_time=$cpp_time rust_time=$rust_time"' ERR
           mkdir -p "$work_dir/cpp" "$work_dir/rust"
+
+          time_value() {
+            awk -v key="$2" '{
+              for (i = 1; i <= NF; ++i) {
+                split($i, field, "=")
+                if (field[1] == key) {
+                  print field[2]
+                  exit
+                }
+              }
+            }' "$1"
+          }
 
           /usr/bin/time -f 'elapsed=%e user=%U sys=%S maxrss_kb=%M' \
             -o "$work_dir/cpp.time" \
             "$RUNNER_TEMP/cesium-terrain-builder/build/tools/ctb-tile" \
             -q -c "$workers" -s 14 -e 1 -o "$work_dir/cpp" "$input"
           cpp_tiles="$(find "$work_dir/cpp" -name '*.terrain' -type f | wc -l | tr -d ' ')"
-          cpp_time="$(cat "$work_dir/cpp.time")"
-          cpp_elapsed="$(printf '%s\n' "$cpp_time" | sed -n 's/^elapsed=\([0-9.]*\)$/\1/p')"
-          cpp_user="$(printf '%s\n' "$cpp_time" | sed -n 's/ user=\([0-9.]*\)$/\1/p')"
-          cpp_sys="$(printf '%s\n' "$cpp_time" | sed -n 's/ sys=\([0-9.]*\)$/\1/p')"
-          cpp_maxrss="$(printf '%s\n' "$cpp_time" | sed -n 's/^maxrss_kb=\([0-9]*\)$/\1/p')"
+          cpp_elapsed="$(time_value "$work_dir/cpp.time" elapsed)"
+          cpp_user="$(time_value "$work_dir/cpp.time" user)"
+          cpp_sys="$(time_value "$work_dir/cpp.time" sys)"
+          cpp_maxrss="$(time_value "$work_dir/cpp.time" maxrss_kb)"
 
           /usr/bin/time -f 'elapsed=%e user=%U sys=%S maxrss_kb=%M' \
             -o "$work_dir/rust.time" \
             "$PWD/target/release/ctb-tile" \
             -q -c "$workers" -s 14 -e 1 -o "$work_dir/rust" "$input"
           rust_tiles="$(find "$work_dir/rust" -name '*.terrain' -type f | wc -l | tr -d ' ')"
-          rust_time="$(cat "$work_dir/rust.time")"
-          rust_elapsed="$(printf '%s\n' "$rust_time" | sed -n 's/^elapsed=\([0-9.]*\)$/\1/p')"
-          rust_user="$(printf '%s\n' "$rust_time" | sed -n 's/ user=\([0-9.]*\)$/\1/p')"
-          rust_sys="$(printf '%s\n' "$rust_time" | sed -n 's/ sys=\([0-9.]*\)$/\1/p')"
-          rust_maxrss="$(printf '%s\n' "$rust_time" | sed -n 's/^maxrss_kb=\([0-9]*\)$/\1/p')"
+          rust_elapsed="$(time_value "$work_dir/rust.time" elapsed)"
+          rust_user="$(time_value "$work_dir/rust.time" user)"
+          rust_sys="$(time_value "$work_dir/rust.time" sys)"
+          rust_maxrss="$(time_value "$work_dir/rust.time" maxrss_kb)"
 
-          echo "[DEBUG-p49-a4f2] cpp_tiles=$cpp_tiles rust_tiles=$rust_tiles"
           test "$cpp_tiles" = "$rust_tiles"
           for value in \
             "$cpp_elapsed" "$cpp_user" "$cpp_sys" "$cpp_maxrss" \

@@ -740,7 +740,7 @@
   C++ commit 的 `ctb-tile` 构建输出路径。
 - [X] 根据 GitHub runner 首跑修正 C++ 可执行文件路径为
   `build/tools/ctb-tile`，并在构建步骤断言文件存在且可执行。
-- [ ] 用带标记的 ERR 诊断定位第三轮退出 1 的具体行；计数已证明 C++/Rust
-  均生成 158,728 个 tile。
+- [X] 用带标记的 ERR 诊断定位第三轮退出 1：GNU time 单行输出被整行 `sed`
+  模式解析为空；已改为按 key 解析并移除全部诊断输出。
 - [ ] GitHub runner 实机确认 C++ 源码 Release 构建、两种实现 benchmark、
   tile 数与进程指标汇总；未确认前不将 P49 标记为实施完成。
