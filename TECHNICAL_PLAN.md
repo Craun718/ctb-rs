@@ -82,6 +82,18 @@ Rust 的 `RasterSource`、缓存和 writer 只能作为 GDAL dataset/VRT 的内�
 
 ## 6. 实施顺序
 
+### P47：CI 中统一 C++ 与 Rust 性能对比（实施中）
+
+在同一个 runner 上依次使用相同的 LFS demo、worker 数及 `-q -c -s 14 -e 1`
+参数运行 C++ 0.4.1 和 Rust release，并在同一张表记录版本、输入大小、worker、
+层级、墙钟和瓦片数。C++ 的墙钟包含 Docker 启停开销，表格明确标注；两个
+程序失败即终止，不把单次测量视为稳定性能结论。保留独立的本地合成数据脚本。
+先检查 YAML 和脚本语法，再在可用环境运行；GitHub runner 的完整验证待实机执行。
+
+实施记录：workflow 已统一输入、参数和汇总表；YAML 解析、各运行步骤的
+`bash -n` 和 `git diff --check` 通过。本地无法访问 Docker daemon，完整对比
+及结果仍需 GitHub runner 验证。
+
 ### P0：重新建立规格基线（进行中）
 
 固定 C++ CTB 版本、构建命令和基准程序输入；建立完整 CLI/库模块兼容矩阵。对当前 Rust

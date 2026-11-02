@@ -1,17 +1,5 @@
 name: ctb-benchmark
 
-# Two independent benchmark jobs, intentionally unrelated to ci.yml's build /
-# release matrix:
-#   1. ctb-cpp-slice-timing: measure how long cesium-terrain-builder's
-#      ctb-tile (0.4.1, prebuilt via homme/cesium-terrain-builder:0.4.1) takes
-#      to tile the demo raster.
-#   2. ctb-rs-slice-timing: run ctb-rs's reproducible developer benchmark
-#      (scripts/benchmark-ctb-tile.sh) and publish wall-clock timings.
-# Neither job enforces a performance gate; both only record timings.
-# Fast-fail: concurrency cancels superseded runs on the same ref. Runs execute
-# on separate runners, so each job checks out the repository it needs (the
-# C++ job fetches LFS because it consumes demo/guangxi_8_cities.tif).
-
 on:
   push:
   pull_request:
@@ -21,62 +9,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ctb-cpp-slice-timing:
+  compare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
       - name: Check out repository with LFS demo data
         uses: actions/checkout@v7
         with:
           lfs: true
-
-      - name: Pull ctb-tile docker image
-        run: |
-          docker pull homme/cesium-terrain-builder:0.4.1
-
-      - name: Measure ctb-tile tiling time
-        run: |
-          set -euxo pipefail
-          input="$(pwd)/demo/guangxi_8_cities.tif"
-          test -f "$input"
-          # Output dir must live under the mounted workspace so the container
-          # (which only has $(pwd) bind-mounted) can see and write to it.
-          output_dir="$(pwd)/.bench/cpp-out"
-          mkdir -p "$output_dir"
-          trap 'rm -rf "$output_dir"' EXIT
-
-          start="$(date +%s.%N)"
-          docker run --rm --user "$(id -u):$(id -g)" \
-            -v "$(pwd):$(pwd)" -w "$(pwd)" \
-            homme/cesium-terrain-builder:0.4.1 \
-            ctb-tile -q -c "$(nproc || echo 2)" -s 14 -e 1 -o "$output_dir" "$input"
-          end="$(date +%s.%N)"
-
-          elapsed_seconds="$(awk -v s="$start" -v e="$end" 'BEGIN { printf "%.3f", e - s }')"
-          terrain_tiles="$(find "$output_dir" -name '*.terrain' -type f | wc -l | tr -d ' ')"
-          data_size_bytes="$(stat -c %s "$input")"
-
-          tee -a "$GITHUB_STEP_SUMMARY" <<EOF
-          ## ctb-cpp-slice-timing (external ctb-tile 0.4.1)
-
-          | metric | value |
-          | --- | --- |
-          | image | homme/cesium-terrain-builder:0.4.1 |
-          | ctb version | 0.4.1 (prebuilt) |
-          | input | $input |
-          | data_size_bytes | $data_size_bytes |
-          | elapsed_seconds | $elapsed_seconds |
-          | terrain_tiles | $terrain_tiles |
-          EOF
-          echo "ctb_tile_elapsed_seconds=$elapsed_seconds"
-          echo "terrain_tiles=$terrain_tiles"
-
-  ctb-rs-slice-timing:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -92,43 +32,49 @@ jobs:
           restore-keys: |
             ctb-rs-benchmark-${{ runner.os }}-
 
-      - name: Install GDAL and utils (fixture synthesis + payload diff)
-        run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y gdal-bin gzip coreutils
-
       - name: Build release ctb-tile
-        run: |
-          set -euxo pipefail
-          cargo build --release --locked --bin ctb-tile
+        run: cargo build --release --locked --bin ctb-tile
 
-      - name: Run ctb-rs benchmark
-        run: |
-          set -euxo pipefail
-          output_file="$(mktemp)"
-          trap 'rm -f "$output_file"' EXIT
-          CTB_RS_BIN="$PWD/target/release/ctb-tile" \
-            sh scripts/benchmark-ctb-tile.sh 512 2 | tee "$output_file"
+      - name: Pull C++ ctb-tile image
+        run: docker pull homme/cesium-terrain-builder:0.4.1
 
-          single_seconds="$(sed -n 's/^single workers=1 seconds=\([0-9][0-9]*\.[0-9][0-9][0-9]\) .*/\1/p' "$output_file" | head -n 1)"
-          parallel_seconds="$(sed -n 's/^parallel workers=2 seconds=\([0-9][0-9]*\.[0-9][0-9][0-9]\) .*/\1/p' "$output_file" | head -n 1)"
-          single_tiles="$(sed -n 's/^single workers=1 seconds=[0-9][0-9]*\.[0-9][0-9][0-9] tiles=\([0-9][0-9]*\)$/\1/p' "$output_file" | head -n 1)"
-          parallel_tiles="$(sed -n 's/^parallel workers=2 seconds=[0-9][0-9]*\.[0-9][0-9][0-9] tiles=\([0-9][0-9]*\)$/\1/p' "$output_file" | head -n 1)"
-          test -n "$single_seconds"
-          test -n "$parallel_seconds"
-          test -n "$single_tiles"
-          test -n "$parallel_tiles"
+      - name: Compare tiling time
+        shell: bash
+        run: |
+          set -euo pipefail
+          input="$PWD/demo/guangxi_8_cities.tif"
+          test -f "$input"
+          workers="$(nproc)"
+          data_size_bytes="$(stat -c %s "$input")"
+          work_dir="$(mktemp -d "$PWD/.benchmark.XXXXXX")"
+          trap 'rm -rf "$work_dir"' EXIT
+          mkdir -p "$work_dir/cpp" "$work_dir/rust"
+
+          start="$(date +%s.%N)"
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD:$PWD" -w "$PWD" \
+            homme/cesium-terrain-builder:0.4.1 \
+            ctb-tile -q -c "$workers" -s 14 -e 1 -o "$work_dir/cpp" "$input"
+          end="$(date +%s.%N)"
+          cpp_seconds="$(awk -v s="$start" -v e="$end" 'BEGIN { printf "%.3f", e - s }')"
+          cpp_tiles="$(find "$work_dir/cpp" -name '*.terrain' -type f | wc -l | tr -d ' ')"
+
+          start="$(date +%s.%N)"
+          "$PWD/target/release/ctb-tile" -q -c "$workers" -s 14 -e 1 -o "$work_dir/rust" "$input"
+          end="$(date +%s.%N)"
+          rust_seconds="$(awk -v s="$start" -v e="$end" 'BEGIN { printf "%.3f", e - s }')"
+          rust_tiles="$(find "$work_dir/rust" -name '*.terrain' -type f | wc -l | tr -d ' ')"
+
           tee -a "$GITHUB_STEP_SUMMARY" <<MDEOF
-          ## ctb-rs-slice-timing (ctb-rs, 512x512 synthetic DEM)
+          ## C++ and Rust tiling benchmark
 
-          | metric | value |
-          | --- | --- |
-          | ctb-rs commit | ${{ github.sha }} |
-          | binaries | $PWD/target/release/ctb-tile |
-          | script | scripts/benchmark-ctb-tile.sh 512 2 |
-          | single workers=1 elapsed_seconds | $single_seconds |
-          | parallel workers=2 elapsed_seconds | $parallel_seconds |
-          | single terrain_tiles | $single_tiles |
-          | parallel terrain_tiles | $parallel_tiles |
+          Input: demo/guangxi_8_cities.tif ($data_size_bytes bytes). Both runs use
+          \`-q -c $workers -s 14 -e 1\` on the same runner, C++ first.
+
+          | implementation | version | workers | elapsed_seconds | terrain_tiles | timing scope |
+          | --- | --- | ---: | ---: | ---: | --- |
+          | C++ | 0.4.1 | $workers | $cpp_seconds | $cpp_tiles | docker run including container startup and shutdown |
+          | Rust | ${{ github.sha }} | $workers | $rust_seconds | $rust_tiles | process runtime |
+
+          These are single runs; filesystem cache and runner load can affect the comparison.
           MDEOF

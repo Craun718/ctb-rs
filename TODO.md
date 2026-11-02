@@ -814,3 +814,9 @@
 - [x] 运行 `sh -n`、workflow YAML 解析和 `git diff --check`。
 - [x] 本地复跑 benchmark，确认亚秒耗时不再为 `0`、tile 数不变且
       `payloads=identical`。
+
+## P47：统一 CI 的 C++ 与 Rust 性能对比
+
+- [x] 使用同一 runner、输入和切片参数依次运行两种实现，并统一汇总字段。
+- [x] 检查 workflow 语法和差异，记录本地验证及 GitHub 实机验证状态。
+- [ ] 在 GitHub runner 上确认 LFS、两次切片和汇总结果。
