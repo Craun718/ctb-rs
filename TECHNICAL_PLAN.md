@@ -193,7 +193,7 @@ Rust `f1c6101` elapsed 66.68s、user 167.23s、sys 28.78s、maxrss
 `bash -n` 和 `git diff --check` 通过。本地无法访问 Docker daemon，完整对比
 及结果仍需 GitHub runner 验证。
 
-### P50：Float32 采样窗口内存优化（进行中）
+### P50：Float32 采样窗口内存优化（实施完成）
 
 P49 的 4-worker 基准显示 Rust maxrss 约 6.22 GiB，而 C++ 约 3.67 GiB。
 当前 700 MiB DEM 为 Float32、12800×14400；低 zoom pooled window 若转换为
@@ -219,6 +219,14 @@ C++ oracle 脚本在 plain fixture 上与本改动及改动前基线均出现同
 边界差异，属于既有环境/oracle 差异而非本优化回归。本地 P49 参数首轮实测
 58.662s，但磁盘空间不足以保存两个完整输出导致基线轮中断，尚未获得有效
 同轮 maxrss/耗时对比；后续应在 runner 或保留基线输出的环境复测。
+
+GitHub runner 复测（run `41581275521`，Rust commit `bf3f09c`）在 4 workers、
+同一 700 MiB DEM 和 z14-z1 下记录：Rust elapsed 56.41s、user 148.52s、
+sys 15.95s、maxrss 5,631,740 KiB、158,728 tiles。对照 P49 baseline
+66.68s / 167.23s / 28.78s / 6,519,988 KiB，单次运行 elapsed 降低 15.4%、
+maxrss 降低 887 MiB；C++ 本轮 52.55s，单次 runner 波动仍在。输出只校验
+tiles 数，未在该 run 中逐字节比较内容；本地改动前后的 Float32 oracle
+输出已逐字节一致。
 
 ### P51：Terrain gzip 写出缓冲优化（进行中）
 

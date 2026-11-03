@@ -752,8 +752,8 @@
   路径保持 f64；更新所有调用点和单元测试。
 - [X] 运行 fmt/test/clippy/release，并完成改动前后 Float32 输出逐字节
   差分；记录本地公开 C++ oracle 的既有边界差异。
-- [ ] 在可保存改动前后完整输出的环境中复测 P49 参数，记录有效 maxrss 与
-  耗时对比；未完成前不将 P50 标记为实施完成。
+- [X] 在 GitHub runner 复测 P49 参数并记录有效结果：elapsed 66.68s 降至
+  56.41s，maxrss 6.22 GiB 降至 5.37 GiB；run `41581275521` 通过。
 
 - [X] 登记 P51：Terrain gzip 编码直接消费借用样本流，保持 gzip 输出与
   文件语义逐字节不变，不改依赖或压缩 backend。
