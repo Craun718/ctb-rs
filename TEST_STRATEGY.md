@@ -1273,3 +1273,23 @@ GitHub runner 首跑证明 C++ 在 Ubuntu 24.04 / GDAL 3.8.4 下可完成 Releas
 旧 CMake 子目录工程的实际可执行文件路径是 `build/tools/ctb-tile`。修复
 断言该路径存在且可执行，并让 benchmark 调用同一路径；以重新 push 触发的
 `ctb-benchmark` run 作为回归反馈环。
+
+## 39. P50 Float32 采样窗口内存优化
+
+P50 只改变直接 GeoTIFF Float32 `read_sampling_window` 的内部样本表示：
+窗口保留 native f32 bytes 转成的 `Vec<f32>`，Terrain Average 采样时按源
+顺序逐样本转 f64；采样公式、NoData 语义、VRT 路径、非 Float32 路径和
+输出写盘不变。
+
+### 39.1 P50 验证范围
+
+- 单元测试覆盖 Float32 与 f64 窗口读取、异常长度拒绝，以及 Terrain Average
+  对 Float32 窗口与既有 f64 采样路径的等价性。
+- 既有 GeoTIFF/cache/sampling/terrain/CLI 测试必须全部通过，确认样本集
+  枚举没有改变公开读取语义和普通 raster 采样。
+- `cargo fmt --check`、`cargo test --all-targets`、
+  `cargo clippy --all-targets -- -D warnings`、`cargo build --release` 通过。
+- 使用公开 oracle 或等价输入比较完整输出路径集合与解压 terrain payload，
+  差异必须为 0。
+- 复测 P49 700 MiB / 4 workers / z14-z1 参数，记录 maxrss 与 elapsed；
+  性能可以不提升，但输出一致性和 RSS 下降必须作为验收证据。

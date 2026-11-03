@@ -258,7 +258,7 @@ mod tests {
             }
             Ok(RasterWindow {
                 request,
-                samples: vec![42.0],
+                samples: vec![42.0].into(),
             })
         }
     }

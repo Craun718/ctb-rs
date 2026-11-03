@@ -5,8 +5,8 @@ use geotiff_reader::{GeoTiffFile, GeoTiffOpenOptions};
 use crate::{
     CtbError,
     raster::{
-        AffineTransform, Crs, RasterMetadata, RasterSampleType, RasterSource, RasterWindow,
-        SamplingLevel, WindowRequest,
+        AffineTransform, Crs, RasterMetadata, RasterSampleType, RasterSamples, RasterSource,
+        RasterWindow, SamplingLevel, WindowRequest,
     },
     vrt::VrtReader,
 };
@@ -147,6 +147,37 @@ impl GeoTiffRasterSource {
         }
     }
 
+    fn read_sampling_samples_f32(
+        &self,
+        level: u16,
+        request: WindowRequest,
+    ) -> Result<Vec<f32>, CtbError> {
+        let RasterData::GeoTiff(file) = &self.data else {
+            return Err(CtbError::UnsupportedRaster(
+                "Float32 sampling is only implemented for GeoTIFF sources".to_owned(),
+            ));
+        };
+        read_geotiff_window_f32(file, level_to_overview(level), 1, request)
+    }
+
+    fn read_sampling_samples(
+        &self,
+        level: u16,
+        request: WindowRequest,
+    ) -> Result<RasterSamples, CtbError> {
+        let sample_type = match &self.data {
+            RasterData::GeoTiff(file) => geotiff_sample_type(file)?,
+            RasterData::Vrt(file) => file.band_sample_type(),
+        };
+        if sample_type != RasterSampleType::Float32 {
+            let samples = self.read_samples(level, request)?;
+            return Ok(RasterSamples::F64(samples));
+        }
+        Ok(RasterSamples::Float32(
+            self.read_sampling_samples_f32(level, request)?,
+        ))
+    }
+
     fn validate_window(
         &self,
         metadata: &RasterMetadata,
@@ -204,7 +235,7 @@ impl RasterSource for GeoTiffRasterSource {
         self.validate_window(&self.metadata, request)?;
         // GDALCreateWarpedVRT does not set padfSrcNoDataReal, so the warp
         // kernel treats NoData pixels as regular values (density=1.0).
-        let samples = self.read_samples(0, request)?;
+        let samples = RasterSamples::F64(self.read_samples(0, request)?);
         Ok(RasterWindow { request, samples })
     }
 
@@ -295,7 +326,7 @@ impl RasterSource for GeoTiffRasterSource {
             ..level.metadata.clone()
         };
         self.validate_window(&data_metadata, request)?;
-        let samples = self.read_samples(level.level, request)?;
+        let samples = self.read_sampling_samples(level.level, request)?;
         Ok(RasterWindow { request, samples })
     }
 }
@@ -330,6 +361,70 @@ fn read_geotiff_overview_window(
     request: WindowRequest,
 ) -> Result<Vec<f64>, CtbError> {
     read_geotiff_window(file, Some(overview), band, request)
+}
+
+fn level_to_overview(level: u16) -> Option<usize> {
+    if level == 0 {
+        None
+    } else {
+        Some(usize::from(level) - 1)
+    }
+}
+
+fn read_geotiff_window_f32(
+    file: &GeoTiffFile,
+    overview: Option<usize>,
+    band: usize,
+    request: WindowRequest,
+) -> Result<Vec<f32>, CtbError> {
+    let row = usize::try_from(request.y).map_err(|_| CtbError::InvalidRasterWindow)?;
+    let column = usize::try_from(request.x).map_err(|_| CtbError::InvalidRasterWindow)?;
+    let height = usize::try_from(request.height).map_err(|_| CtbError::InvalidRasterWindow)?;
+    let width = usize::try_from(request.width).map_err(|_| CtbError::InvalidRasterWindow)?;
+    let sample_count = width
+        .checked_mul(height)
+        .ok_or(CtbError::InvalidRasterWindow)?;
+    let band_index = band.saturating_sub(1);
+    let base_sample_type = geotiff_sample_type(file)?;
+    let tiff = file.tiff();
+    let ifd = if let Some(overview) = overview {
+        file.overview_ifd(overview)
+            .map_err(|error| CtbError::RasterRead(error.to_string()))?
+    } else {
+        tiff.ifd(file.base_ifd_index())
+            .map_err(|error| CtbError::RasterRead(error.to_string()))?
+    };
+    let format = ifd
+        .sample_format()
+        .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+    let bits = ifd
+        .bits_per_sample()
+        .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+    let sample_type = geotiff_sample_type_from_values(&format, &bits)?;
+    if sample_type != RasterSampleType::Float32 || sample_type != base_sample_type {
+        return Err(CtbError::RasterRead(
+            "Float32 sampling requires matching Float32 base and overview samples".to_owned(),
+        ));
+    }
+    let bytes = tiff
+        .read_band_window_bytes_from_ifd(ifd, band_index, row, column, height, width)
+        .map_err(|error| CtbError::RasterRead(error.to_string()))?;
+    let expected_bytes = sample_count
+        .checked_mul(4)
+        .ok_or(CtbError::InvalidRasterWindow)?;
+    if bytes.len() != expected_bytes {
+        return Err(CtbError::RasterRead(format!(
+            "GeoTIFF band window returned {} bytes, expected {expected_bytes}",
+            bytes.len()
+        )));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|value| {
+            let bits = u32::from_ne_bytes(value.try_into().expect("chunk has four bytes"));
+            f32::from_bits(bits)
+        })
+        .collect())
 }
 
 fn read_geotiff_window(
@@ -626,7 +721,7 @@ mod tests {
                     overview: 0,
                 })?
                 .samples,
-            vec![10.0, 11.0, 12.0, 13.0]
+            vec![10.0, 11.0, 12.0, 13.0].into()
         );
         fs::remove_file(path)?;
         Ok(())
@@ -668,7 +763,7 @@ mod tests {
                     overview: 0,
                 })?
                 .samples,
-            vec![10.0, 11.0, 12.0, 13.0]
+            vec![10.0, 11.0, 12.0, 13.0].into()
         );
         fs::remove_file(path)?;
         Ok(())
@@ -770,8 +865,8 @@ mod tests {
             height: 1,
             overview: 0,
         })?;
-        assert_eq!(window.samples[0], 10.0);
-        assert_eq!(window.samples[1], 11.0);
+        assert_eq!(window.samples.get(0), Some(10.0));
+        assert_eq!(window.samples.get(1), Some(11.0));
         fs::remove_file(path)?;
         Ok(())
     }
@@ -803,7 +898,37 @@ mod tests {
                 overview: half.level,
             },
         )?;
-        assert_eq!(window.samples, vec![0.0, 1.0, 8.0, 9.0]);
+        assert_eq!(window.samples, vec![0.0, 1.0, 8.0, 9.0].into());
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn float32_sampling_window_keeps_native_sample_width() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let path = fixture_path("float32-sampling");
+        let samples = Array2::from_shape_vec((2, 2), vec![10.5_f32, 11.5, 12.5, 13.5])?;
+        GeoTiffBuilder::new(2, 2)
+            .geographic_epsg(4326)
+            .pixel_scale(0.5, 0.5)
+            .origin(-180.0, 90.0)
+            .write_2d(&path, samples.view())?;
+        let source = GeoTiffRasterSource::open(&path)?;
+        let level = source.sampling_level_for_ratio(1.0)?;
+        let window = source.read_sampling_window(
+            &level,
+            WindowRequest {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+                overview: level.level,
+            },
+        )?;
+        assert_eq!(
+            window.samples,
+            RasterSamples::Float32(vec![10.5, 11.5, 12.5, 13.5])
+        );
         fs::remove_file(path)?;
         Ok(())
     }

@@ -5,7 +5,9 @@ use std::{
 
 use crate::{
     CtbError,
-    raster::{RasterMetadata, RasterSource, RasterWindow, SamplingLevel, WindowRequest},
+    raster::{
+        RasterMetadata, RasterSamples, RasterSource, RasterWindow, SamplingLevel, WindowRequest,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -102,7 +104,7 @@ impl<S: RasterSource> CachedRasterSource<S> {
         let window = self.source.read_sampling_window(level, block_request)?;
         let block = CachedBlock {
             request: block_request,
-            samples: window.samples.into(),
+            samples: window.samples.into_f64().into(),
         };
         if let Ok(mut state) = self.state.lock() {
             state.blocks.push_front(block.clone());
@@ -235,7 +237,10 @@ impl<S: RasterSource> RasterSource for CachedRasterSource<S> {
                 .checked_add(block_height)
                 .ok_or(CtbError::InvalidRasterWindow)?;
         }
-        Ok(RasterWindow { request, samples })
+        Ok(RasterWindow {
+            request,
+            samples: RasterSamples::F64(samples),
+        })
     }
 }
 
@@ -300,7 +305,10 @@ mod tests {
                     samples.push(f64::from(y * self.metadata.width + x));
                 }
             }
-            Ok(RasterWindow { request, samples })
+            Ok(RasterWindow {
+                request,
+                samples: samples.into(),
+            })
         }
     }
 
@@ -322,8 +330,8 @@ mod tests {
             height: 1,
             overview: 0,
         })?;
-        assert_eq!(first.samples, vec![9.0]);
-        assert_eq!(second.samples, vec![18.0]);
+        assert_eq!(first.samples, vec![9.0].into());
+        assert_eq!(second.samples, vec![18.0].into());
         assert_eq!(reads.load(Ordering::Relaxed), 1);
         Ok(())
     }
@@ -347,8 +355,8 @@ mod tests {
         }
         let first = source.read_window(request)?;
         let second = source.read_window(request)?;
-        assert_eq!(first.samples, expected);
-        assert_eq!(second.samples, expected);
+        assert_eq!(first.samples, RasterSamples::F64(expected.clone()));
+        assert_eq!(second.samples, RasterSamples::F64(expected));
         assert_eq!(reads.load(Ordering::Relaxed), 4);
         Ok(())
     }
@@ -439,7 +447,7 @@ mod tests {
                 overview: 0,
             },
         )?;
-        assert_eq!(window.samples, vec![54.0]);
+        assert_eq!(window.samples, vec![54.0].into());
         assert_eq!(reads.load(Ordering::Relaxed), 1);
         Ok(())
     }

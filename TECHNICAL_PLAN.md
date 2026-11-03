@@ -193,6 +193,33 @@ Rust `f1c6101` elapsed 66.68s、user 167.23s、sys 28.78s、maxrss
 `bash -n` 和 `git diff --check` 通过。本地无法访问 Docker daemon，完整对比
 及结果仍需 GitHub runner 验证。
 
+### P50：Float32 采样窗口内存优化（进行中）
+
+P49 的 4-worker 基准显示 Rust maxrss 约 6.22 GiB，而 C++ 约 3.67 GiB。
+当前 700 MiB DEM 为 Float32、12800×14400；低 zoom pooled window 若转换为
+`Vec<f64>`，单份约 1.374 GiB，4 个 worker 合计约 5.50 GiB，加上 shared
+block cache 后与实测 RSS 基本吻合。因此第一步只改变直接 GeoTIFF Float32
+`read_sampling_window` 的窗口表示：保留 native `Vec<f32>`，Terrain Average
+采样时逐样本转换为 f64；VRT、非 Float32、`read_window`、缓存几何、采样
+公式和输出写盘保持不变。
+
+接口上 `RasterWindow.samples` 从 `Vec<f64>` 收紧为样本集枚举，Float32 为
+专用表示，其余路径仍为 f64 样本。外层 `CachedRasterSource` 如果包装非共享
+GeoTIFF 源，可在进入 f64 block cache 时转换，不改变 CLI 共享 cache 主路径。
+验收为完整测试/clippy/release，公开 oracle 或等价 payload 差分，以及 P49
+同参数基准的 maxrss 与耗时记录；输出路径集合和解压 payload 必须不变。
+
+实施记录：`RasterWindow` 已增加 `RasterSamples`，直接 GeoTIFF Float32
+sampling window 使用 `Vec<f32>`，Terrain Average 按样本索引转换 f64；VRT、
+普通读取与非 Float32 sampling 继续使用 f64 表示，外层 f64 block cache 只在
+fallback 时转换。新增 Float32 native 宽度测试；`cargo fmt --check`、
+`cargo test --all-targets`、clippy `-D warnings` 与 release 构建通过。改动前
+基线与本改动对同一 Float32 oracle fixture 的完整输出逐字节一致；本地公开
+C++ oracle 脚本在 plain fixture 上与本改动及改动前基线均出现同一 4 字节
+边界差异，属于既有环境/oracle 差异而非本优化回归。本地 P49 参数首轮实测
+58.662s，但磁盘空间不足以保存两个完整输出导致基线轮中断，尚未获得有效
+同轮 maxrss/耗时对比；后续应在 runner 或保留基线输出的环境复测。
+
 ### P0：重新建立规格基线（进行中）
 
 固定 C++ CTB 版本、构建命令和基准程序输入；建立完整 CLI/库模块兼容矩阵。对当前 Rust

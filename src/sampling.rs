@@ -836,8 +836,8 @@ fn read_sample_raw(
             overview: level.level,
         },
     )?;
-    match window.samples.as_slice() {
-        [sample] => Ok(*sample),
+    match window.samples.get(0) {
+        Some(sample) if window.samples.len() == 1 => Ok(sample),
         _ => Err(CtbError::RasterRead(
             "a one-pixel raster request did not return exactly one sample".to_owned(),
         )),
@@ -895,7 +895,7 @@ mod tests {
             let index = request.y as usize * self.metadata.width as usize + request.x as usize;
             Ok(RasterWindow {
                 request,
-                samples: vec![self.samples[index]],
+                samples: vec![self.samples[index]].into(),
             })
         }
     }

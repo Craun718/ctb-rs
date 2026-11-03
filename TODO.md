@@ -745,3 +745,12 @@
 - [X] 根据第四轮日志补装 `gdal-bin`，确保 summary 可调用 `gdalinfo --version`。
 - [X] GitHub runner run `41497723029` 确认 C++ 源码 Release 构建、两种实现
   benchmark、tile 数与进程指标汇总均通过；记录最终单次基准数据。
+
+- [X] 登记 P50：直接 GeoTIFF Float32 `read_sampling_window` 保留 f32 窗口，
+  Terrain Average 逐样本转 f64，只优化当前 700 MiB 基准已证实的内存放大。
+- [X] 为 `RasterWindow` 引入样本集表示，Float32 使用专用 f32 存储，其余
+  路径保持 f64；更新所有调用点和单元测试。
+- [X] 运行 fmt/test/clippy/release，并完成改动前后 Float32 输出逐字节
+  差分；记录本地公开 C++ oracle 的既有边界差异。
+- [ ] 在可保存改动前后完整输出的环境中复测 P49 参数，记录有效 maxrss 与
+  耗时对比；未完成前不将 P50 标记为实施完成。

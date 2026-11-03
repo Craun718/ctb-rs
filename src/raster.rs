@@ -254,6 +254,45 @@ pub enum RasterSampleType {
     Float64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum RasterSamples {
+    Float32(Vec<f32>),
+    F64(Vec<f64>),
+}
+
+impl RasterSamples {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Float32(samples) => samples.len(),
+            Self::F64(samples) => samples.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn get(&self, index: usize) -> Option<f64> {
+        match self {
+            Self::Float32(samples) => samples.get(index).map(|sample| f64::from(*sample)),
+            Self::F64(samples) => samples.get(index).copied(),
+        }
+    }
+
+    pub fn into_f64(self) -> Vec<f64> {
+        match self {
+            Self::Float32(samples) => samples.into_iter().map(f64::from).collect(),
+            Self::F64(samples) => samples,
+        }
+    }
+}
+
+impl From<Vec<f64>> for RasterSamples {
+    fn from(samples: Vec<f64>) -> Self {
+        Self::F64(samples)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowRequest {
     pub x: u32,
@@ -266,7 +305,7 @@ pub struct WindowRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RasterWindow {
     pub request: WindowRequest,
-    pub samples: Vec<f64>,
+    pub samples: RasterSamples,
 }
 
 /// The raster resolution used for sampling one terrain tile.

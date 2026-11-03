@@ -665,7 +665,7 @@ mod tests {
                 .ok_or(CtbError::InvalidRasterWindow)?;
             Ok(RasterWindow {
                 request,
-                samples: vec![self.value; count],
+                samples: vec![self.value; count].into(),
             })
         }
     }

@@ -644,7 +644,7 @@ struct AverageWindow<'a> {
     width: usize,
     width_f64: f64,
     height_f64: f64,
-    samples: &'a [f64],
+    samples: &'a crate::raster::RasterSamples,
 }
 
 impl<'a> AverageWindow<'a> {
@@ -672,7 +672,16 @@ impl<'a> AverageWindow<'a> {
         })
     }
 
-    fn row(&self, row: usize, start: usize, len: usize) -> Result<&[f64], CtbError> {
+    fn sample(&self, index: usize) -> Result<f64, CtbError> {
+        self.samples.get(index).ok_or(CtbError::InvalidRasterWindow)
+    }
+
+    fn row_range(
+        &self,
+        row: usize,
+        start: usize,
+        len: usize,
+    ) -> Result<std::ops::Range<usize>, CtbError> {
         let offset = row
             .checked_mul(self.width)
             .and_then(|value| value.checked_add(start))
@@ -680,9 +689,11 @@ impl<'a> AverageWindow<'a> {
         let end = offset
             .checked_add(len)
             .ok_or(CtbError::InvalidRasterWindow)?;
-        self.samples
-            .get(offset..end)
-            .ok_or(CtbError::InvalidRasterWindow)
+        if end <= self.samples.len() {
+            Ok(offset..end)
+        } else {
+            Err(CtbError::InvalidRasterWindow)
+        }
     }
 }
 
@@ -792,8 +803,8 @@ fn sample_average_pixel(
         let row_y = src_y_min
             .checked_add(local_y)
             .ok_or(CtbError::InvalidRasterWindow)?;
-        let row = window.row(row_y, src_x_min, src_x_count)?;
-        for (local_x, sample) in row.iter().enumerate() {
+        let sample_range = window.row_range(row_y, src_x_min, src_x_count)?;
+        for local_x in 0..src_x_count {
             let df_weight = if local_x == 0 {
                 first_weight_x
             } else if local_x + 1 == src_x_count {
@@ -804,6 +815,7 @@ fn sample_average_pixel(
             if df_weight <= 0.0 {
                 continue;
             }
+            let sample = window.sample(sample_range.start + local_x)?;
             if !sample.is_finite() {
                 continue;
             }
@@ -916,7 +928,7 @@ mod tests {
             let value = f64::from(request.y * 2 + request.x);
             Ok(RasterWindow {
                 request,
-                samples: vec![value],
+                samples: vec![value].into(),
             })
         }
     }
@@ -955,7 +967,7 @@ mod tests {
                 .ok_or(CtbError::InvalidRasterWindow)?;
             Ok(RasterWindow {
                 request,
-                samples: vec![self.value; count],
+                samples: vec![self.value; count].into(),
             })
         }
     }
@@ -979,7 +991,7 @@ mod tests {
                 .ok_or(CtbError::InvalidRasterWindow)?;
             Ok(RasterWindow {
                 request,
-                samples: vec![self.value; count],
+                samples: vec![self.value; count].into(),
             })
         }
 
@@ -1017,7 +1029,7 @@ mod tests {
                 .ok_or(CtbError::InvalidRasterWindow)?;
             Ok(RasterWindow {
                 request,
-                samples: vec![0.0; count],
+                samples: vec![0.0; count].into(),
             })
         }
     }
@@ -1364,7 +1376,7 @@ mod tests {
                 height: 1,
                 overview: 0,
             },
-            samples: vec![7.0],
+            samples: vec![7.0].into(),
         };
         let source = AffineTransform::north_up(0.0, 0.0, 1.0, -1.0)?;
         let far = AffineTransform::north_up(10.0, 10.0, 1.0, -1.0)?;
@@ -1394,7 +1406,7 @@ mod tests {
                 height: 3,
                 overview: 0,
             },
-            samples: vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 100.0, 200.0, 300.0],
+            samples: vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 100.0, 200.0, 300.0].into(),
         };
         let source = AffineTransform::north_up(0.0, 0.0, 1.0, -1.0)?;
         let destination = AffineTransform::north_up(0.0, 0.0, 2.0, -2.0)?;
