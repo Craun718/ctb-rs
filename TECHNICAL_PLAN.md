@@ -220,6 +220,23 @@ C++ oracle 脚本在 plain fixture 上与本改动及改动前基线均出现同
 58.662s，但磁盘空间不足以保存两个完整输出导致基线轮中断，尚未获得有效
 同轮 maxrss/耗时对比；后续应在 runner 或保留基线输出的环境复测。
 
+### P51：Terrain gzip 写出缓冲优化（进行中）
+
+P49 生成 158,728 个 terrain，每个 raw payload 约 8.45 KiB。当前写盘路径每次
+先构造完整 raw `Vec<u8>`，再创建 `GzEncoder` 后整块写入。本阶段只优化对象
+生命周期和拷贝：为编码提供借用样本的序列化器，让 encoder 直接消费样本流；
+gzip level、header、raw bytes、临时文件和 rename 语义必须保持不变。
+
+若微基准显示当前 `flate2` Rust backend 仍是显著热点，再另行申请 feature 或
+依赖变更；本 commit 不修改 Cargo.toml。验收为 terrain gzip 逐字节等价、完整
+测试/clippy/release，以及在固定 payload 集上的分配/耗时记录。
+
+实施记录：`encode_raw` 改为复用 `write_raw`，gzip encoder 直接消费序列化
+流；仍使用一个 8.45 KiB 栈上 height scratch 序列化高度，避免额外完整 raw
+heap allocation，child/water mask 直接写入 encoder。既有 compact/detailed
+round-trip 与文件测试证明 gzip 字节语义保持；fmt/test/clippy/release 通过。
+本轮未修改压缩 backend，也不宣称端到端耗时收益，后续以完整基准判断。
+
 ### P0：重新建立规格基线（进行中）
 
 固定 C++ CTB 版本、构建命令和基准程序输入；建立完整 CLI/库模块兼容矩阵。对当前 Rust

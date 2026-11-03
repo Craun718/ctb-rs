@@ -1293,3 +1293,19 @@ P50 只改变直接 GeoTIFF Float32 `read_sampling_window` 的内部样本表示
   差异必须为 0。
 - 复测 P49 700 MiB / 4 workers / z14-z1 参数，记录 maxrss 与 elapsed；
   性能可以不提升，但输出一致性和 RSS 下降必须作为验收证据。
+
+## 40. P51 Terrain gzip 写出缓冲优化
+
+P51 只改变 terrain raw payload 的编码组织方式：gzip encoder 直接读取借用
+heights、child mask 和 water mask 的序列化流，不再先构造完整 raw `Vec<u8>`;
+压缩算法、压缩级别、gzip header、文件字节、临时文件和 rename 语义不变。
+
+### 40.1 P51 验证范围
+
+- 单元测试比较新旧编码路径对 compact/detailed terrain、边界 height 和
+  water mask 的输出字节完全一致。
+- 既有 gzip round-trip、文件写出、tileset 输出和 CLI 测试全部通过。
+- `cargo fmt --check`、`cargo test --all-targets`、
+  `cargo clippy --all-targets -- -D warnings`、`cargo build --release` 通过。
+- 使用固定代表性 payload 集记录改动前后编码耗时；性能若无可测收益，仅
+  保留生命周期优化，不引入依赖变更。

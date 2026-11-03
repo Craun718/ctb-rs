@@ -108,14 +108,44 @@ impl HeightmapTerrain {
     }
 
     pub fn encode_raw(&self) -> Result<Vec<u8>, CtbError> {
-        let mask = self.water_mask.bytes()?;
-        let mut encoded = Vec::with_capacity(HEIGHTMAP_SAMPLE_COUNT * 2 + 1 + mask.len());
-        for height in &self.heights {
-            encoded.extend_from_slice(&height.to_le_bytes());
-        }
-        encoded.push(self.children.bits());
-        encoded.extend_from_slice(&mask);
+        let mut encoded = Vec::with_capacity(self.raw_payload_size()?);
+        self.write_raw(&mut encoded)?;
         Ok(encoded)
+    }
+
+    fn raw_payload_size(&self) -> Result<usize, CtbError> {
+        Ok(HEIGHTMAP_SAMPLE_COUNT * 2
+            + 1
+            + match &self.water_mask {
+                WaterMask::AllLand | WaterMask::AllWater => 1,
+                WaterMask::Detailed(mask) => {
+                    if mask.len() != WATER_MASK_SIZE {
+                        return Err(CtbError::InvalidWaterMaskLength(mask.len()));
+                    }
+                    WATER_MASK_SIZE
+                }
+            })
+    }
+
+    fn write_raw<W: Write>(&self, mut writer: W) -> Result<(), CtbError> {
+        let mut heights = [0_u8; HEIGHTMAP_SAMPLE_COUNT * 2];
+        for (bytes, height) in heights.chunks_exact_mut(2).zip(&self.heights) {
+            bytes.copy_from_slice(&height.to_le_bytes());
+        }
+        writer
+            .write_all(&heights)
+            .and_then(|()| writer.write_all(&[self.children.bits()]))
+            .and_then(|()| match &self.water_mask {
+                WaterMask::AllLand => writer.write_all(&[0]),
+                WaterMask::AllWater => writer.write_all(&[1]),
+                WaterMask::Detailed(mask) if mask.len() == WATER_MASK_SIZE => {
+                    writer.write_all(mask)
+                }
+                WaterMask::Detailed(mask) => Err(std::io::Error::other(
+                    CtbError::InvalidWaterMaskLength(mask.len()),
+                )),
+            })
+            .map_err(|error| CtbError::TerrainCompression(error.to_string()))
     }
 
     pub fn decode_raw(encoded: &[u8]) -> Result<Self, CtbError> {
@@ -136,11 +166,8 @@ impl HeightmapTerrain {
     }
 
     fn encode_gzip_to<W: Write>(&self, writer: W) -> Result<(), CtbError> {
-        let raw = self.encode_raw()?;
         let mut encoder = GzEncoder::new(writer, Compression::default());
-        encoder
-            .write_all(&raw)
-            .map_err(|error| CtbError::TerrainCompression(error.to_string()))?;
+        self.write_raw(&mut encoder)?;
         encoder
             .finish()
             .map_err(|error| CtbError::TerrainCompression(error.to_string()))
