@@ -13,7 +13,7 @@ use crate::{
 
 pub type SharedGeoTiffReader = Arc<GeoTiffFile>;
 
-const GEOTIFF_DECODED_BLOCK_CACHE_BYTES: usize = 819 << 20;
+const GEOTIFF_DECODED_BLOCK_CACHE_BYTES: usize = 512 << 20;
 const GEOTIFF_DECODED_BLOCK_CACHE_SLOTS: usize = 65_536;
 const RASTER_FORMAT_PROBE_LIMIT_BYTES: u64 = 64 << 10;
 
