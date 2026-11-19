@@ -762,8 +762,27 @@
 - [X] 运行 fmt/test/clippy/release；本轮为生命周期/分配优化，不宣称端到端
   耗时收益，后续用完整基准判断。
 
+- [X] 登记 P52：固定本地 700MiB 输入、当前 release commit、4 workers 和
+  P49 CLI 参数，建立至少三轮的本地性能反馈环。
+- [ ] 从本机公开 1GiB DEM 裁取 12800x14400 Float32 子集，记录 SHA-256、
+  尺寸、压缩和分块元数据。
+- [ ] 构建当前 release，并连续运行三轮基准，记录 elapsed/user/sys/maxrss
+  与 tile 数；本地缺少 perf/GNU time 时记录替代计时和采样的局限。
+- [ ] 用 GDB/proc 线程栈与状态采样区分低 zoom 并行、GeoTIFF cache 竞争、
+  窗口/样本分配、gzip 和文件写出四类假设。
+- [ ] 若证据支持，先保留基线输出并实施输出逐字节等价的优化；否则只记录
+  排序后的瓶颈结论和下一阶段方案。
+- [ ] 完整测试/clippy/release、改动前后输出差分；有代码优化时在 GitHub
+  runner 复测 P49 参数。
+
+- [X] P53：构建 Rust/C++ Release，记录 4 workers 首轮的 Rust 失败边界。
+- [X] P53：使用同一原图、8 workers 跑 10–7 级，记录双方进程指标。
+- [X] P53：核对 8 workers 输出的瓦片路径和解压内容，汇总实测结果。
+
 - [X] P54：保留 Release 基线，在独立运行中采样 RSS 与线程栈。
 - [X] P54：实现 Int16 原生采样窗口，覆盖条带和边界子窗口回归。
 - [X] P54：通过格式、测试、Clippy、Release 构建及六轮交替基准，
   核对与基线 Rust、P53 C++ 的瓦片路径及解压字节，记录中位数与结论。
 - [X] P54：通过验收后暂存并提交本阶段改动。
+
+- [X] P55：对当前 Rust 和指定 C++ Release 各跑一轮 8 workers 基准，记录指标并核对全部瓦片。

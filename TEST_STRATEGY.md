@@ -1310,6 +1310,21 @@ heights、child mask 和 water mask 的序列化流，不再先构造完整 raw 
 - 使用固定代表性 payload 集记录改动前后编码耗时；性能若无可测收益，仅
   保留生命周期优化，不引入依赖变更。
 
+## 41. P52 当前版本性能定位与后续优化
+
+P52 的反馈环不是性能阈值测试，而是可复现实验记录。本地基准必须使用当前
+commit 的 release `ctb-tile`、固定 12800x14400 Float32 输入、4 workers 和
+`-q -s 14 -e 1`，至少运行三轮；每轮记录 elapsed、user、sys、maxrss、tile
+数、输出目录和输入 SHA-256，输入或参数不一致时不得与 P49 数据混合比较。
+
+ profiling 只作为证据采集，不进入常规测试矩阵。GDB 采样不得改变程序输入
+和输出；采样报告需区分 on-CPU 栈、锁等待、I/O 等待和无法归因样本。若随后
+修改生产代码，必须先保留改动前完整输出，再比较完整路径集合和全部
+`.terrain` 解压 payload；两者完全一致后才接受性能数据。最终门禁为
+`cargo fmt --check`、`cargo test --all-targets`、
+`cargo clippy --all-targets -- -D warnings`、`cargo build --release`，并以
+GitHub runner 的 P49 参数复测作为公开环境复核。
+
 ## 42. P54 广西 DEM 的 Int16 采样窗口
 
 - Int16 条带 GeoTIFF 窗口回归覆盖负值、零值和边界子窗口，逐样本对比
