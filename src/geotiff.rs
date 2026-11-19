@@ -427,11 +427,7 @@ fn read_geotiff_sampling_window(
         )));
     }
     if sample_type == RasterSampleType::Signed16 {
-        let samples = bytes
-            .chunks_exact(2)
-            .map(|value| i16::from_ne_bytes(value.try_into().expect("chunk has two bytes")))
-            .collect();
-        return Ok(RasterSamples::Signed16(samples));
+        return Ok(RasterSamples::Signed16NativeBytes(bytes));
     }
     let samples = bytes
         .chunks_exact(4)
@@ -978,9 +974,16 @@ mod tests {
         };
         let native = source.read_sampling_window(&level, request)?.samples;
         let ordinary = source.read_window(request)?.samples;
+        let expected = [i16::MIN, 0, -12, i16::MAX];
         assert_eq!(
             native,
-            RasterSamples::Signed16(vec![i16::MIN, 0, -12, i16::MAX])
+            RasterSamples::Signed16NativeBytes(
+                expected.into_iter().flat_map(i16::to_ne_bytes).collect()
+            )
+        );
+        assert_eq!(
+            RasterSamples::Signed16(expected.to_vec()).into_f64(),
+            expected.map(f64::from)
         );
         assert!(matches!(ordinary, RasterSamples::F64(_)));
         assert_eq!(ordinary.len(), native.len());

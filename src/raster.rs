@@ -257,6 +257,8 @@ pub enum RasterSampleType {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RasterSamples {
     Signed16(Vec<i16>),
+    /// 每两个字节表示一个原生字节序的有符号样本。
+    Signed16NativeBytes(Vec<u8>),
     Float32(Vec<f32>),
     F64(Vec<f64>),
 }
@@ -265,6 +267,7 @@ impl RasterSamples {
     pub fn len(&self) -> usize {
         match self {
             Self::Signed16(samples) => samples.len(),
+            Self::Signed16NativeBytes(bytes) => bytes.len() / 2,
             Self::Float32(samples) => samples.len(),
             Self::F64(samples) => samples.len(),
         }
@@ -277,6 +280,11 @@ impl RasterSamples {
     pub fn get(&self, index: usize) -> Option<f64> {
         match self {
             Self::Signed16(samples) => samples.get(index).map(|sample| f64::from(*sample)),
+            Self::Signed16NativeBytes(bytes) => bytes
+                .as_chunks::<2>()
+                .0
+                .get(index)
+                .map(|sample| f64::from(i16::from_ne_bytes(*sample))),
             Self::Float32(samples) => samples.get(index).map(|sample| f64::from(*sample)),
             Self::F64(samples) => samples.get(index).copied(),
         }
@@ -285,6 +293,12 @@ impl RasterSamples {
     pub fn into_f64(self) -> Vec<f64> {
         match self {
             Self::Signed16(samples) => samples.into_iter().map(f64::from).collect(),
+            Self::Signed16NativeBytes(bytes) => bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|sample| f64::from(i16::from_ne_bytes(*sample)))
+                .collect(),
             Self::Float32(samples) => samples.into_iter().map(f64::from).collect(),
             Self::F64(samples) => samples,
         }
