@@ -1309,3 +1309,16 @@ heights、child mask 和 water mask 的序列化流，不再先构造完整 raw 
   `cargo clippy --all-targets -- -D warnings`、`cargo build --release` 通过。
 - 使用固定代表性 payload 集记录改动前后编码耗时；性能若无可测收益，仅
   保留生命周期优化，不引入依赖变更。
+
+## 42. P54 广西 DEM 的 Int16 采样窗口
+
+- Int16 条带 GeoTIFF 窗口回归覆盖负值、零值和边界子窗口，逐样本对比
+  常规 F64 读窗结果。
+- 在沙盒外运行 `cargo fmt --check`、`cargo test --all-targets`、
+  `cargo clippy --all-targets -- -D warnings` 和 `cargo build --release`。
+- 沿用 P53 的完整广西 DEM、8 workers、Geodetic Terrain、Average 和
+  zoom 10–7。优化前后交替串行各跑三轮，每轮使用同一文件系统上的空目录。
+  各轮须成功退出并生成 2,014 张瓦片。优化后的路径和解压内容逐字节匹配
+  原 Rust 与 P53 C++ 输出。
+- 记录耗时、CPU user/sys 和峰值 RSS 的中位数。RSS 至少下降 10%，耗时
+  中位数不高于本轮基线。

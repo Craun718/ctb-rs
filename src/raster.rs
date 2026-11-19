@@ -256,6 +256,7 @@ pub enum RasterSampleType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RasterSamples {
+    Signed16(Vec<i16>),
     Float32(Vec<f32>),
     F64(Vec<f64>),
 }
@@ -263,6 +264,7 @@ pub enum RasterSamples {
 impl RasterSamples {
     pub fn len(&self) -> usize {
         match self {
+            Self::Signed16(samples) => samples.len(),
             Self::Float32(samples) => samples.len(),
             Self::F64(samples) => samples.len(),
         }
@@ -274,6 +276,7 @@ impl RasterSamples {
 
     pub fn get(&self, index: usize) -> Option<f64> {
         match self {
+            Self::Signed16(samples) => samples.get(index).map(|sample| f64::from(*sample)),
             Self::Float32(samples) => samples.get(index).map(|sample| f64::from(*sample)),
             Self::F64(samples) => samples.get(index).copied(),
         }
@@ -281,6 +284,7 @@ impl RasterSamples {
 
     pub fn into_f64(self) -> Vec<f64> {
         match self {
+            Self::Signed16(samples) => samples.into_iter().map(f64::from).collect(),
             Self::Float32(samples) => samples.into_iter().map(f64::from).collect(),
             Self::F64(samples) => samples,
         }
