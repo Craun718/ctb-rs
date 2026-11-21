@@ -260,6 +260,8 @@ pub enum RasterSamples {
     /// 每两个字节表示一个原生字节序的有符号样本。
     Signed16NativeBytes(Vec<u8>),
     Float32(Vec<f32>),
+    /// 每四个字节表示一个原生字节序的浮点样本。
+    Float32NativeBytes(Vec<u8>),
     F64(Vec<f64>),
 }
 
@@ -269,6 +271,7 @@ impl RasterSamples {
             Self::Signed16(samples) => samples.len(),
             Self::Signed16NativeBytes(bytes) => bytes.len() / 2,
             Self::Float32(samples) => samples.len(),
+            Self::Float32NativeBytes(bytes) => bytes.len() / 4,
             Self::F64(samples) => samples.len(),
         }
     }
@@ -286,6 +289,11 @@ impl RasterSamples {
                 .get(index)
                 .map(|sample| f64::from(i16::from_ne_bytes(*sample))),
             Self::Float32(samples) => samples.get(index).map(|sample| f64::from(*sample)),
+            Self::Float32NativeBytes(bytes) => bytes
+                .as_chunks::<4>()
+                .0
+                .get(index)
+                .map(|sample| f64::from(f32::from_ne_bytes(*sample))),
             Self::F64(samples) => samples.get(index).copied(),
         }
     }
@@ -300,6 +308,12 @@ impl RasterSamples {
                 .map(|sample| f64::from(i16::from_ne_bytes(*sample)))
                 .collect(),
             Self::Float32(samples) => samples.into_iter().map(f64::from).collect(),
+            Self::Float32NativeBytes(bytes) => bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|sample| f64::from(f32::from_ne_bytes(*sample)))
+                .collect(),
             Self::F64(samples) => samples,
         }
     }

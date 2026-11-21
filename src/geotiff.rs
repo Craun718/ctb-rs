@@ -429,14 +429,7 @@ fn read_geotiff_sampling_window(
     if sample_type == RasterSampleType::Signed16 {
         return Ok(RasterSamples::Signed16NativeBytes(bytes));
     }
-    let samples = bytes
-        .chunks_exact(4)
-        .map(|value| {
-            let bits = u32::from_ne_bytes(value.try_into().expect("chunk has four bytes"));
-            f32::from_bits(bits)
-        })
-        .collect();
-    Ok(RasterSamples::Float32(samples))
+    Ok(RasterSamples::Float32NativeBytes(bytes))
 }
 
 fn read_geotiff_window(
@@ -919,7 +912,8 @@ mod tests {
     fn float32_sampling_window_keeps_native_sample_width() -> Result<(), Box<dyn std::error::Error>>
     {
         let path = fixture_path("float32-sampling");
-        let samples = Array2::from_shape_vec((2, 2), vec![10.5_f32, 11.5, 12.5, 13.5])?;
+        let values = [-10.5_f32, -0.0, 12.5, 13.5];
+        let samples = Array2::from_shape_vec((2, 2), values.to_vec())?;
         GeoTiffBuilder::new(2, 2)
             .geographic_epsg(4326)
             .pixel_scale(0.5, 0.5)
@@ -939,8 +933,19 @@ mod tests {
         )?;
         assert_eq!(
             window.samples,
-            RasterSamples::Float32(vec![10.5, 11.5, 12.5, 13.5])
+            RasterSamples::Float32NativeBytes(
+                values.into_iter().flat_map(f32::to_ne_bytes).collect()
+            )
         );
+        assert_eq!(window.samples.len(), values.len());
+        for (index, expected) in values.into_iter().enumerate() {
+            assert_eq!(
+                window.samples.get(index).map(f64::to_bits),
+                Some(f64::from(expected).to_bits())
+            );
+        }
+        assert_eq!(window.samples.get(values.len()), None);
+        assert_eq!(window.samples.into_f64(), values.map(f64::from));
         fs::remove_file(path)?;
         Ok(())
     }
