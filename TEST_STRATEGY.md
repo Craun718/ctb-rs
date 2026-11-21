@@ -179,7 +179,7 @@ CLI 默认值测试分别覆盖 Terrain 65、GTiff 256、geodetic extents 65、m
 Terrain 携带 creation option 必须在输出目录写入前失败。
 
 CLI 版本测试固定 C++ oracle 的四个工具 `--version` stdout 为 `0.4.1`；Rust 四个 CLI
-`--version` 固定输出当前 Cargo package 版本（当前为 `0.0.1`），不再跟随 C++ oracle
+`--version` 固定输出当前 Cargo package 版本（当前为 `0.1.0`），不再跟随 C++ oracle
 版本号。帮助测试比较选项集合、默认值、参数顺序和退出状态，路径前缀与 clap 自动换行
 属于需单独归一化的展示差异。
 
