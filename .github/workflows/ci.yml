@@ -14,7 +14,7 @@ jobs:
             artifact: ctb-binaries-windows-x64
             platform_suffix: windows-x64
             binary_ext: .exe
-          - os: macos-14
+          - os: macos-15
             artifact: ctb-binaries-macos-arm64
             platform_suffix: macos-arm64
             binary_ext: ''
