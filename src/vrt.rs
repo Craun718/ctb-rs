@@ -372,7 +372,7 @@ impl VrtDocument {
         let mut document = None;
         loop {
             match reader.read_event_into(&mut buffer) {
-                Ok(Event::Start(event)) if event.name().as_ref() == b"VRTDataset" => {
+                Ok(Event::Start(event)) if event.name().as_ref() == "VRTDataset" => {
                     document = Some(parse_dataset(&mut reader, &event)?);
                 }
                 Ok(Event::Eof) => break,
@@ -391,11 +391,11 @@ impl VrtDocument {
 }
 
 fn parse_dataset(reader: &mut Reader<&[u8]>, start: &BytesStart) -> Result<VrtDocument, CtbError> {
-    let width = parse_u32_attribute(start, b"rasterXSize")?
+    let width = parse_u32_attribute(start, "rasterXSize")?
         .ok_or_else(|| CtbError::RasterRead("VRTDataset has no rasterXSize".to_owned()))?;
-    let height = parse_u32_attribute(start, b"rasterYSize")?
+    let height = parse_u32_attribute(start, "rasterYSize")?
         .ok_or_else(|| CtbError::RasterRead("VRTDataset has no rasterYSize".to_owned()))?;
-    let subclass = parse_string_attribute(start, b"subClass")?;
+    let subclass = parse_string_attribute(start, "subClass")?;
     let mut srs = None;
     let mut geo_transform = None;
     let mut bands = Vec::new();
@@ -404,20 +404,20 @@ fn parse_dataset(reader: &mut Reader<&[u8]>, start: &BytesStart) -> Result<VrtDo
     loop {
         match reader.read_event_into(&mut buffer) {
             Ok(Event::Start(event)) => match event.name().as_ref() {
-                b"SRS" => srs = Some(parse_text(reader, b"SRS")?),
-                b"GeoTransform" => {
-                    let text = parse_text(reader, b"GeoTransform")?;
+                "SRS" => srs = Some(parse_text(reader, "SRS")?),
+                "GeoTransform" => {
+                    let text = parse_text(reader, "GeoTransform")?;
                     geo_transform = Some(parse_geo_transform(&text)?);
                 }
-                b"VRTRasterBand" => bands.push(parse_band(reader, &event)?),
-                b"GDALWarpOptions" => {
+                "VRTRasterBand" => bands.push(parse_band(reader, &event)?),
+                "GDALWarpOptions" => {
                     return Err(CtbError::UnsupportedRaster(
                         "warped VRT datasets are not supported".to_owned(),
                     ));
                 }
-                _ => skip_element(reader, event.name().as_ref().to_vec())?,
+                _ => skip_element(reader, event.name().as_ref())?,
             },
-            Ok(Event::End(event)) if event.name().as_ref() == b"VRTDataset" => break,
+            Ok(Event::End(event)) if event.name().as_ref() == "VRTDataset" => break,
             Ok(Event::Eof) => {
                 return Err(CtbError::RasterRead("unexpected end of VRT XML".to_owned()));
             }
@@ -446,7 +446,7 @@ fn parse_band(
     reader: &mut Reader<&[u8]>,
     start: &BytesStart,
 ) -> Result<VrtBandDefinition, CtbError> {
-    let type_name = parse_string_attribute(start, b"dataType")?
+    let type_name = parse_string_attribute(start, "dataType")?
         .ok_or_else(|| CtbError::RasterRead("VRT band has no dataType".to_owned()))?;
     let sample_type = parse_sample_type(&type_name)?;
     let mut no_data = None;
@@ -457,18 +457,18 @@ fn parse_band(
     loop {
         match reader.read_event_into(&mut buffer) {
             Ok(Event::Start(event)) => match event.name().as_ref() {
-                b"NoDataValue" => {
-                    no_data = parse_f64_text(reader, b"NoDataValue")?;
+                "NoDataValue" => {
+                    no_data = parse_f64_text(reader, "NoDataValue")?;
                 }
-                b"PixelFunctionType" => {
-                    pixel_function = Some(parse_text(reader, b"PixelFunctionType")?);
+                "PixelFunctionType" => {
+                    pixel_function = Some(parse_text(reader, "PixelFunctionType")?);
                 }
-                b"SimpleSource" | b"ComplexSource" => {
+                "SimpleSource" | "ComplexSource" => {
                     sources.push(parse_source(reader, &event)?);
                 }
-                _ => skip_element(reader, event.name().as_ref().to_vec())?,
+                _ => skip_element(reader, event.name().as_ref())?,
             },
-            Ok(Event::End(event)) if event.name().as_ref() == b"VRTRasterBand" => break,
+            Ok(Event::End(event)) if event.name().as_ref() == "VRTRasterBand" => break,
             Ok(Event::Eof) => {
                 return Err(CtbError::RasterRead(
                     "unexpected end of VRT band".to_owned(),
@@ -506,47 +506,47 @@ fn parse_source(
     let mut scale_ratio = 1.0;
     let mut scale_offset = 0.0;
     let end_name = if complex {
-        b"ComplexSource".to_vec()
+        "ComplexSource"
     } else {
-        b"SimpleSource".to_vec()
+        "SimpleSource"
     };
     let mut buffer = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buffer) {
             Ok(Event::Start(event)) => match event.name().as_ref() {
-                b"SourceFilename" => {
-                    relative_to_vrt = parse_string_attribute(&event, b"relativeToVRT")?
+                "SourceFilename" => {
+                    relative_to_vrt = parse_string_attribute(&event, "relativeToVRT")?
                         .is_some_and(|value| value == "1");
-                    path = Some(PathBuf::from(parse_text(reader, b"SourceFilename")?));
+                    path = Some(PathBuf::from(parse_text(reader, "SourceFilename")?));
                 }
-                b"SourceBand" => {
-                    let text = parse_text(reader, b"SourceBand")?;
+                "SourceBand" => {
+                    let text = parse_text(reader, "SourceBand")?;
                     band = Some(text.parse::<usize>().map_err(|_| {
                         CtbError::RasterRead(format!("invalid VRT SourceBand {text:?}"))
                     })?);
                 }
-                b"SrcRect" => source_rect = Some(parse_rect(reader, &event, b"SrcRect")?),
-                b"DstRect" => {
-                    destination_rect = Some(parse_rect(reader, &event, b"DstRect")?);
+                "SrcRect" => source_rect = Some(parse_rect(reader, &event, "SrcRect")?),
+                "DstRect" => {
+                    destination_rect = Some(parse_rect(reader, &event, "DstRect")?);
                 }
-                b"NODATA" if complex => no_data = parse_f64_text(reader, b"NODATA")?,
-                b"ScaleRatio" if complex => {
-                    scale_ratio = parse_f64_text(reader, b"ScaleRatio")?.ok_or_else(|| {
+                "NODATA" if complex => no_data = parse_f64_text(reader, "NODATA")?,
+                "ScaleRatio" if complex => {
+                    scale_ratio = parse_f64_text(reader, "ScaleRatio")?.ok_or_else(|| {
                         CtbError::RasterRead("VRT ScaleRatio is empty".to_owned())
                     })?;
                 }
-                b"ScaleOffset" if complex => {
-                    scale_offset = parse_f64_text(reader, b"ScaleOffset")?.ok_or_else(|| {
+                "ScaleOffset" if complex => {
+                    scale_offset = parse_f64_text(reader, "ScaleOffset")?.ok_or_else(|| {
                         CtbError::RasterRead("VRT ScaleOffset is empty".to_owned())
                     })?;
                 }
-                _ => skip_element(reader, event.name().as_ref().to_vec())?,
+                _ => skip_element(reader, event.name().as_ref())?,
             },
-            Ok(Event::End(event)) if event.name().as_ref() == end_name.as_slice() => break,
+            Ok(Event::End(event)) if event.name().as_ref() == end_name => break,
             Ok(Event::Empty(event)) => match event.name().as_ref() {
-                b"SrcRect" => source_rect = Some(parse_rect_start(&event)?),
-                b"DstRect" => destination_rect = Some(parse_rect_start(&event)?),
+                "SrcRect" => source_rect = Some(parse_rect_start(&event)?),
+                "DstRect" => destination_rect = Some(parse_rect_start(&event)?),
                 _ => {}
             },
             Ok(Event::Eof) => {
@@ -592,7 +592,7 @@ fn parse_source(
 fn parse_rect(
     reader: &mut Reader<&[u8]>,
     start: &BytesStart,
-    end_name: &[u8],
+    end_name: &str,
 ) -> Result<PixelRect, CtbError> {
     let rect = parse_rect_start(start)?;
     let mut buffer = Vec::new();
@@ -616,13 +616,13 @@ fn parse_rect(
 }
 
 fn parse_rect_start(start: &BytesStart) -> Result<PixelRect, CtbError> {
-    let x = parse_u32_attribute(start, b"xOff")?
+    let x = parse_u32_attribute(start, "xOff")?
         .ok_or_else(|| CtbError::RasterRead("VRT rectangle has no xOff".to_owned()))?;
-    let y = parse_u32_attribute(start, b"yOff")?
+    let y = parse_u32_attribute(start, "yOff")?
         .ok_or_else(|| CtbError::RasterRead("VRT rectangle has no yOff".to_owned()))?;
-    let width = parse_u32_attribute(start, b"xSize")?
+    let width = parse_u32_attribute(start, "xSize")?
         .ok_or_else(|| CtbError::RasterRead("VRT rectangle has no xSize".to_owned()))?;
-    let height = parse_u32_attribute(start, b"ySize")?
+    let height = parse_u32_attribute(start, "ySize")?
         .ok_or_else(|| CtbError::RasterRead("VRT rectangle has no ySize".to_owned()))?;
     Ok(PixelRect {
         x,
@@ -632,16 +632,13 @@ fn parse_rect_start(start: &BytesStart) -> Result<PixelRect, CtbError> {
     })
 }
 
-fn parse_text(reader: &mut Reader<&[u8]>, end_name: &[u8]) -> Result<String, CtbError> {
+fn parse_text(reader: &mut Reader<&[u8]>, end_name: &str) -> Result<String, CtbError> {
     let mut text = String::new();
     let mut buffer = Vec::new();
     loop {
         match reader.read_event_into(&mut buffer) {
             Ok(Event::Text(event)) => {
-                let decoded = event
-                    .decode()
-                    .map_err(|error| CtbError::RasterRead(format!("invalid VRT text: {error}")))?;
-                let decoded = quick_xml::escape::unescape(&decoded).map_err(|error| {
+                let decoded = quick_xml::escape::unescape(event.as_ref()).map_err(|error| {
                     CtbError::RasterRead(format!("invalid VRT text escape: {error}"))
                 })?;
                 text.push_str(&decoded);
@@ -665,7 +662,7 @@ fn parse_text(reader: &mut Reader<&[u8]>, end_name: &[u8]) -> Result<String, Ctb
     }
 }
 
-fn parse_f64_text(reader: &mut Reader<&[u8]>, end_name: &[u8]) -> Result<Option<f64>, CtbError> {
+fn parse_f64_text(reader: &mut Reader<&[u8]>, end_name: &str) -> Result<Option<f64>, CtbError> {
     let text = parse_text(reader, end_name)?;
     if text.is_empty() {
         return Ok(None);
@@ -675,17 +672,17 @@ fn parse_f64_text(reader: &mut Reader<&[u8]>, end_name: &[u8]) -> Result<Option<
         .map_err(|_| CtbError::RasterRead(format!("invalid VRT numeric value {text:?}")))
 }
 
-fn skip_element(reader: &mut Reader<&[u8]>, name: Vec<u8>) -> Result<(), CtbError> {
+fn skip_element(reader: &mut Reader<&[u8]>, name: &str) -> Result<(), CtbError> {
     let mut buffer = Vec::new();
     let mut depth = 1_usize;
     loop {
         match reader.read_event_into(&mut buffer) {
-            Ok(Event::Start(event)) if event.name().as_ref() == name.as_slice() => {
+            Ok(Event::Start(event)) if event.name().as_ref() == name => {
                 depth = depth
                     .checked_add(1)
                     .ok_or_else(|| CtbError::RasterRead("VRT XML depth overflow".to_owned()))?;
             }
-            Ok(Event::End(event)) if event.name().as_ref() == name.as_slice() => {
+            Ok(Event::End(event)) if event.name().as_ref() == name => {
                 depth -= 1;
                 if depth == 0 {
                     return Ok(());
@@ -705,20 +702,18 @@ fn skip_element(reader: &mut Reader<&[u8]>, name: Vec<u8>) -> Result<(), CtbErro
     }
 }
 
-fn parse_string_attribute(event: &BytesStart, name: &[u8]) -> Result<Option<String>, CtbError> {
+fn parse_string_attribute(event: &BytesStart, name: &str) -> Result<Option<String>, CtbError> {
     for attribute in event.attributes() {
         let attribute = attribute
             .map_err(|error| CtbError::RasterRead(format!("invalid VRT XML attribute: {error}")))?;
         if attribute.key.as_ref() == name {
-            return Ok(Some(
-                String::from_utf8_lossy(attribute.value.as_ref()).into_owned(),
-            ));
+            return Ok(Some(attribute.value.into_owned()));
         }
     }
     Ok(None)
 }
 
-fn parse_u32_attribute(event: &BytesStart, name: &[u8]) -> Result<Option<u32>, CtbError> {
+fn parse_u32_attribute(event: &BytesStart, name: &str) -> Result<Option<u32>, CtbError> {
     parse_string_attribute(event, name)?
         .map(|value| {
             value.parse::<u32>().map_err(|_| {
@@ -765,7 +760,7 @@ fn parse_sample_type(value: &str) -> Result<RasterSampleType, CtbError> {
 }
 
 fn event_is_complex_source(event: &BytesStart) -> bool {
-    event.name().as_ref() == b"ComplexSource"
+    event.name().as_ref() == "ComplexSource"
 }
 
 fn absolute_path(path: &Path) -> Result<PathBuf, CtbError> {
