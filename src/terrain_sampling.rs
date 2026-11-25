@@ -6,6 +6,11 @@ use crate::{
     terrain::{HEIGHTMAP_SAMPLE_COUNT, HEIGHTMAP_TILE_SIZE},
 };
 
+// Per worker, for the raw sampling buffer only; decoder caches are additional.
+// Eight bytes covers every RasterSamples representation, including F64 fallbacks.
+const AVERAGE_READ_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+const AVERAGE_SAMPLE_BYTES: usize = std::mem::size_of::<f64>();
+
 const SOURCE_WINDOW_STEP_COUNT: usize = 21;
 const SOURCE_WINDOW_EPS: f64 = 1e-6;
 const COORD_EPS: f64 = 1e-10;
@@ -142,6 +147,19 @@ impl TerrainSamplePlan {
         source: &dyn RasterSource,
         level: &crate::raster::SamplingLevel,
     ) -> Result<Vec<f64>, CtbError> {
+        self.sample_average_with_budget(source, level, AVERAGE_READ_BUDGET_BYTES)
+    }
+
+    fn sample_average_with_budget(
+        self,
+        source: &dyn RasterSource,
+        level: &crate::raster::SamplingLevel,
+        budget_bytes: usize,
+    ) -> Result<Vec<f64>, CtbError> {
+        let max_samples = budget_bytes / AVERAGE_SAMPLE_BYTES;
+        if max_samples == 0 {
+            return Err(CtbError::InvalidRasterWindow);
+        }
         let overlap =
             overlap_destination_transform(self.bounds, self.cell_width, self.cell_height)?;
         let source_transform = &level.metadata.transform;
@@ -182,23 +200,35 @@ impl TerrainSamplePlan {
         let count = width
             .checked_mul(height)
             .ok_or(CtbError::InvalidRasterWindow)?;
-        let window = source.read_sampling_window(
-            level,
-            crate::raster::WindowRequest {
-                x: u32::try_from(src_x_off).map_err(|_| CtbError::InvalidRasterWindow)?,
-                y: u32::try_from(src_y_off).map_err(|_| CtbError::InvalidRasterWindow)?,
-                width: u32::try_from(src_x_size).map_err(|_| CtbError::InvalidRasterWindow)?,
-                height: u32::try_from(src_y_size).map_err(|_| CtbError::InvalidRasterWindow)?,
-                overview: level.level,
+        let request = crate::raster::WindowRequest {
+            x: u32::try_from(src_x_off).map_err(|_| CtbError::InvalidRasterWindow)?,
+            y: u32::try_from(src_y_off).map_err(|_| CtbError::InvalidRasterWindow)?,
+            width: u32::try_from(src_x_size).map_err(|_| CtbError::InvalidRasterWindow)?,
+            height: u32::try_from(src_y_size).map_err(|_| CtbError::InvalidRasterWindow)?,
+            overview: level.level,
+        };
+        let window = if count <= max_samples {
+            Some(source.read_sampling_window(level, request)?)
+        } else {
+            None
+        };
+        let average_window = match &window {
+            Some(window) => AverageWindow::new(window)?,
+            None => AverageWindow {
+                offset_x: f64::from(request.x),
+                offset_y: f64::from(request.y),
+                width_f64: f64::from(request.width),
+                height_f64: f64::from(request.height),
+                no_data: None,
+                data: AverageData::Bounded {
+                    source,
+                    level,
+                    request,
+                    max_samples,
+                },
             },
-        )?;
-        if window.samples.len() != count {
-            return Err(CtbError::RasterRead(format!(
-                "source window returned {} samples, expected {count}",
-                window.samples.len()
-            )));
         }
-        let average_window = AverageWindow::new(&window)?.with_no_data(level.metadata.no_data);
+        .with_no_data(level.metadata.no_data);
         let mut heights = Vec::with_capacity(HEIGHTMAP_SAMPLE_COUNT);
         let mut x1 = vec![0.0; self.warp_block_width as usize];
         let mut y1 = vec![0.0; self.warp_block_width as usize];
@@ -641,11 +671,20 @@ fn warp_scale(destination_size: i32, source_size: i32) -> f64 {
 struct AverageWindow<'a> {
     offset_x: f64,
     offset_y: f64,
-    width: usize,
     width_f64: f64,
     height_f64: f64,
     no_data: Option<f64>,
-    samples: &'a crate::raster::RasterSamples,
+    data: AverageData<'a>,
+}
+
+enum AverageData<'a> {
+    Pooled(&'a RasterWindow),
+    Bounded {
+        source: &'a dyn RasterSource,
+        level: &'a crate::raster::SamplingLevel,
+        request: crate::raster::WindowRequest,
+        max_samples: usize,
+    },
 }
 
 impl<'a> AverageWindow<'a> {
@@ -666,41 +705,16 @@ impl<'a> AverageWindow<'a> {
         Ok(Self {
             offset_x: f64::from(window.request.x),
             offset_y: f64::from(window.request.y),
-            width,
             width_f64: f64::from(window.request.width),
             height_f64: f64::from(window.request.height),
             no_data: None,
-            samples: &window.samples,
+            data: AverageData::Pooled(window),
         })
     }
 
     fn with_no_data(mut self, no_data: Option<f64>) -> Self {
         self.no_data = no_data;
         self
-    }
-
-    fn sample(&self, index: usize) -> Result<f64, CtbError> {
-        self.samples.get(index).ok_or(CtbError::InvalidRasterWindow)
-    }
-
-    fn row_range(
-        &self,
-        row: usize,
-        start: usize,
-        len: usize,
-    ) -> Result<std::ops::Range<usize>, CtbError> {
-        let offset = row
-            .checked_mul(self.width)
-            .and_then(|value| value.checked_add(start))
-            .ok_or(CtbError::InvalidRasterWindow)?;
-        let end = offset
-            .checked_add(len)
-            .ok_or(CtbError::InvalidRasterWindow)?;
-        if end <= self.samples.len() {
-            Ok(offset..end)
-        } else {
-            Err(CtbError::InvalidRasterWindow)
-        }
     }
 }
 
@@ -779,59 +793,119 @@ fn sample_average_pixel(
 
     let mut value = 0.0;
     let mut total_weight = 0.0;
-    for local_y in 0..src_y_count {
-        let df_weight_y = if local_y == 0 {
-            first_weight_y
-        } else if local_y + 1 == src_y_count {
-            last_weight_y
-        } else {
-            1.0
-        };
-        let first_weight_x = compute_weight(
-            i_src_x_min,
-            df_weight_y,
-            i_src_x_min,
-            i_src_x_max,
-            df_x_min,
-            df_x_max,
-        );
-        let last_weight_x = if src_x_count > 1 {
-            compute_weight(
-                i_src_x_max - 1,
-                df_weight_y,
-                i_src_x_min,
-                i_src_x_max,
-                df_x_min,
-                df_x_max,
-            )
-        } else {
-            0.0
-        };
-        let row_y = src_y_min
-            .checked_add(local_y)
-            .ok_or(CtbError::InvalidRasterWindow)?;
-        let sample_range = window.row_range(row_y, src_x_min, src_x_count)?;
-        for local_x in 0..src_x_count {
-            let df_weight = if local_x == 0 {
-                first_weight_x
-            } else if local_x + 1 == src_x_count {
-                last_weight_x
-            } else {
-                df_weight_y
+    if src_x_count == 0 || src_y_count == 0 {
+        return Ok(0.0);
+    }
+    let max_samples = match &window.data {
+        AverageData::Pooled(_) => usize::MAX,
+        AverageData::Bounded { max_samples, .. } => *max_samples,
+    };
+    let batch_width = src_x_count.min(max_samples);
+    let batch_height = (max_samples / batch_width).min(src_y_count);
+    // Horizontal splitting is only used when a full row exceeds the budget.
+    // In that case batch_height is one, preserving the original row-major order.
+    for batch_y in (0..src_y_count).step_by(batch_height) {
+        let rows = batch_height.min(src_y_count - batch_y);
+        for batch_x in (0..src_x_count).step_by(batch_width) {
+            let columns = batch_width.min(src_x_count - batch_x);
+            let owned;
+            let (samples, stride, read_x, read_y) = match &window.data {
+                AverageData::Pooled(pooled) => {
+                    (&pooled.samples, pooled.request.width as usize, 0, 0)
+                }
+                AverageData::Bounded {
+                    source,
+                    level,
+                    request,
+                    ..
+                } => {
+                    let read_x = src_x_min + batch_x;
+                    let read_y = src_y_min + batch_y;
+                    owned = source.read_sampling_window(
+                        level,
+                        crate::raster::WindowRequest {
+                            x: request
+                                .x
+                                .checked_add(
+                                    u32::try_from(read_x)
+                                        .map_err(|_| CtbError::InvalidRasterWindow)?,
+                                )
+                                .ok_or(CtbError::InvalidRasterWindow)?,
+                            y: request
+                                .y
+                                .checked_add(
+                                    u32::try_from(read_y)
+                                        .map_err(|_| CtbError::InvalidRasterWindow)?,
+                                )
+                                .ok_or(CtbError::InvalidRasterWindow)?,
+                            width: u32::try_from(columns)
+                                .map_err(|_| CtbError::InvalidRasterWindow)?,
+                            height: u32::try_from(rows)
+                                .map_err(|_| CtbError::InvalidRasterWindow)?,
+                            overview: request.overview,
+                        },
+                    )?;
+                    AverageWindow::new(&owned)?;
+                    (&owned.samples, columns, read_x, read_y)
+                }
             };
-            if df_weight <= 0.0 {
-                continue;
+            for local_y in batch_y..batch_y + rows {
+                let df_weight_y = if local_y == 0 {
+                    first_weight_y
+                } else if local_y + 1 == src_y_count {
+                    last_weight_y
+                } else {
+                    1.0
+                };
+                let first_weight_x = compute_weight(
+                    i_src_x_min,
+                    df_weight_y,
+                    i_src_x_min,
+                    i_src_x_max,
+                    df_x_min,
+                    df_x_max,
+                );
+                let last_weight_x = if src_x_count > 1 {
+                    compute_weight(
+                        i_src_x_max - 1,
+                        df_weight_y,
+                        i_src_x_min,
+                        i_src_x_max,
+                        df_x_min,
+                        df_x_max,
+                    )
+                } else {
+                    0.0
+                };
+                let row_offset = (src_y_min + local_y - read_y)
+                    .checked_mul(stride)
+                    .and_then(|offset| offset.checked_add(src_x_min + batch_x - read_x))
+                    .ok_or(CtbError::InvalidRasterWindow)?;
+                for local_x in batch_x..batch_x + columns {
+                    let df_weight = if local_x == 0 {
+                        first_weight_x
+                    } else if local_x + 1 == src_x_count {
+                        last_weight_x
+                    } else {
+                        df_weight_y
+                    };
+                    if df_weight <= 0.0 {
+                        continue;
+                    }
+                    let sample = samples
+                        .get(row_offset + local_x - batch_x)
+                        .ok_or(CtbError::InvalidRasterWindow)?;
+                    if !sample.is_finite() {
+                        continue;
+                    }
+                    if window.no_data.is_some_and(|no_data| no_data == sample) {
+                        continue;
+                    }
+                    total_weight += df_weight;
+                    let ratio = df_weight / total_weight;
+                    value = ratio.mul_add(sample - value, value);
+                }
             }
-            let sample = window.sample(sample_range.start + local_x)?;
-            if !sample.is_finite() {
-                continue;
-            }
-            if window.no_data.is_some_and(|no_data| no_data == sample) {
-                continue;
-            }
-            total_weight += df_weight;
-            let ratio = df_weight / total_weight;
-            value = ratio.mul_add(sample - value, value);
         }
     }
     if total_weight == 0.0 {
@@ -924,6 +998,340 @@ mod tests {
 
     use super::*;
     use crate::sampling::sample_with_footprint;
+
+    /// Records the actual sampling reads and rejects over-budget requests before
+    /// allocating. The supplied level can deliberately use overview coordinates
+    /// with base-dataset read dimensions, just like GeoTiffRasterSource.
+    struct RecordingRaster {
+        raster: VariableRaster,
+        level: crate::raster::SamplingLevel,
+        requests: std::sync::Mutex<Vec<WindowRequest>>,
+        budget_bytes: usize,
+        fail_after: Option<usize>,
+        truncate: bool,
+        native_bytes: bool,
+    }
+
+    impl RasterSource for RecordingRaster {
+        fn metadata(&self) -> &RasterMetadata {
+            &self.raster.metadata
+        }
+        fn overview_count(&self) -> u16 {
+            1
+        }
+        fn sampling_level_for_ratio(
+            &self,
+            _: f64,
+        ) -> Result<crate::raster::SamplingLevel, CtbError> {
+            Ok(self.level.clone())
+        }
+        fn read_window(&self, _: WindowRequest) -> Result<RasterWindow, CtbError> {
+            panic!("average sampling must use read_sampling_window")
+        }
+        fn read_sampling_window(
+            &self,
+            level: &crate::raster::SamplingLevel,
+            request: WindowRequest,
+        ) -> Result<RasterWindow, CtbError> {
+            assert_eq!(level, &self.level);
+            assert_eq!(request.overview, level.level);
+            assert!(
+                u64::from(request.width) * u64::from(request.height) * 8
+                    <= self.budget_bytes as u64
+            );
+            let mut requests = self
+                .requests
+                .lock()
+                .expect("test request lock is not poisoned");
+            if self.fail_after == Some(requests.len()) {
+                return Err(CtbError::RasterRead("injected batch read failure".into()));
+            }
+            requests.push(request);
+            let mut window = self.raster.read_window(request)?;
+            let mut samples = window.samples.into_f64();
+            if self.truncate {
+                samples.pop();
+            }
+            window.samples = match (level.metadata.sample_type, self.native_bytes) {
+                (RasterSampleType::Float32, false) => crate::raster::RasterSamples::Float32(
+                    samples.into_iter().map(|v| v as f32).collect(),
+                ),
+                (RasterSampleType::Signed16, false) => crate::raster::RasterSamples::Signed16(
+                    samples.into_iter().map(|v| v as i16).collect(),
+                ),
+                (RasterSampleType::Float32, true) => {
+                    crate::raster::RasterSamples::Float32NativeBytes(
+                        samples
+                            .into_iter()
+                            .flat_map(|v| (v as f32).to_ne_bytes())
+                            .collect(),
+                    )
+                }
+                (RasterSampleType::Signed16, true) => {
+                    crate::raster::RasterSamples::Signed16NativeBytes(
+                        samples
+                            .into_iter()
+                            .flat_map(|v| (v as i16).to_ne_bytes())
+                            .collect(),
+                    )
+                }
+                _ => samples.into(),
+            };
+            Ok(window)
+        }
+    }
+
+    fn recording_raster(metadata: RasterMetadata) -> RecordingRaster {
+        let count = metadata.width as usize * metadata.height as usize;
+        let samples = (0..count)
+            .map(|i| match i % 19 {
+                0 => -9999.0,
+                1 => f64::NAN,
+                2 => f64::INFINITY,
+                3 => f64::NEG_INFINITY,
+                _ => ((i * 7919 % 20000) as f64 - 10000.0) / 8.0,
+            })
+            .collect();
+        RecordingRaster {
+            level: crate::raster::SamplingLevel {
+                level: 0,
+                data_width: metadata.width,
+                data_height: metadata.height,
+                metadata: metadata.clone(),
+            },
+            raster: VariableRaster { metadata, samples },
+            requests: Default::default(),
+            budget_bytes: usize::MAX,
+            fail_after: None,
+            truncate: false,
+            native_bytes: false,
+        }
+    }
+
+    fn assert_bounded_matches_pooled(
+        plan: TerrainSamplePlan,
+        source: &mut RecordingRaster,
+    ) -> Result<(), CtbError> {
+        let level = source.sampling_level_for_ratio(1.0)?;
+        source.budget_bytes = usize::MAX;
+        let expected = plan.sample_heights(source, ResamplingMethod::Average)?;
+        assert!(expected.iter().any(|v| *v != 0.0));
+        assert_eq!(source.requests.lock().unwrap().len(), 1);
+        for budget in [8, 24, 56, 256, 4096] {
+            source.budget_bytes = budget;
+            source.requests.lock().unwrap().clear();
+            let actual = plan.sample_average_with_budget(source, &level, budget)?;
+            assert_eq!(
+                actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "budget {budget}"
+            );
+            assert!(!source.requests.lock().unwrap().is_empty());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_average_matches_pooled_typed_samples_and_overview_coordinates()
+    -> Result<(), CtbError> {
+        let plan = TerrainSamplePlan::new(
+            GlobalGeodeticGrid::new(65)?,
+            TileCoord {
+                zoom: 0,
+                x: 0,
+                y: 0,
+            },
+        )?;
+        for sample_type in [
+            RasterSampleType::Float32,
+            RasterSampleType::Signed16,
+            RasterSampleType::Float64,
+        ] {
+            for no_data in [None, Some(-9999.0)] {
+                for native_bytes in [false, true] {
+                    for overview in [false, true] {
+                        let mut source = recording_raster(RasterMetadata {
+                            width: 193,
+                            height: 149,
+                            band_count: 1,
+                            crs: Crs::Epsg4326,
+                            transform: AffineTransform::north_up(-179.75, 89.75, 0.95, -1.23)?,
+                            no_data,
+                            sample_type,
+                        });
+                        source.native_bytes = native_bytes;
+                        if overview {
+                            source.level.metadata.width = 97;
+                            source.level.metadata.height = 75;
+                            source.level.metadata.transform.pixel_width *= 2.0;
+                            source.level.metadata.transform.pixel_height *= 2.0;
+                            // Deliberately keep level 0 and base read dimensions:
+                            // the existing GeoTIFF overview path does the same.
+                        }
+                        assert_bounded_matches_pooled(plan, &mut source)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_average_matches_pooled_projected_and_cross_crs() -> Result<(), CtbError> {
+        let mercator = TerrainSamplePlan::from_grid(
+            &crate::grid::GlobalMercatorGrid::new(256)?,
+            TileCoord {
+                zoom: 0,
+                x: 0,
+                y: 0,
+            },
+        )?;
+        let mut source = recording_raster(RasterMetadata {
+            width: 193,
+            height: 149,
+            band_count: 1,
+            crs: Crs::Epsg3857,
+            transform: AffineTransform::north_up(
+                -20_037_508.342_789_244,
+                20_037_508.342_789_244,
+                40_075_016.685_578_49 / 193.0,
+                -40_075_016.685_578_49 / 149.0,
+            )?,
+            no_data: Some(-9999.0),
+            sample_type: RasterSampleType::Float32,
+        });
+        assert_bounded_matches_pooled(mercator, &mut source)?;
+        let geodetic = TerrainSamplePlan::new(
+            GlobalGeodeticGrid::new(65)?,
+            TileCoord {
+                zoom: 6,
+                x: 62,
+                y: 32,
+            },
+        )?;
+        let mut source = recording_raster(RasterMetadata {
+            width: 193,
+            height: 149,
+            band_count: 1,
+            crs: Crs::Epsg(32630),
+            transform: AffineTransform::north_up(400_000.0, 100_000.0, 1300.0, -1700.0)?,
+            no_data: Some(-9999.0),
+            sample_type: RasterSampleType::Float32,
+        });
+        // Also exercise nonzero overview indices passed through unchanged.
+        source.level.level = 1;
+        assert_bounded_matches_pooled(geodetic, &mut source)
+    }
+
+    #[test]
+    fn bounded_average_splits_rows_and_columns_without_changing_edge_weights()
+    -> Result<(), CtbError> {
+        let mut source = recording_raster(RasterMetadata {
+            width: 23,
+            height: 17,
+            band_count: 1,
+            crs: Crs::Epsg4326,
+            transform: AffineTransform::north_up(0.0, 0.0, 1.0, -1.0)?,
+            no_data: Some(-9999.0),
+            sample_type: RasterSampleType::Float64,
+        });
+        // Nonzero pooled origin, fractional weights, reversed corners, clipping,
+        // margin rejection and degenerate/empty footprints.
+        let request = WindowRequest {
+            x: 2,
+            y: 3,
+            width: 19,
+            height: 12,
+            overview: 0,
+        };
+        let pooled = source.read_sampling_window(&source.level, request)?;
+        let window = AverageWindow::new(&pooled)?.with_no_data(Some(-9999.0));
+        for coords in [
+            (2.2, 3.7, 20.4, 14.6),
+            (20.4, 14.6, 2.2, 3.7),
+            (1.5, 2.9, 21.4, 15.1),
+            (-20.0, 3.0, -10.0, 7.0),
+            (2.2, 4.3, 2.2, 4.3),
+            (21.0, 15.0, 21.0, 15.0),
+        ] {
+            let expected =
+                sample_average_pixel(&window, coords.0, coords.1, coords.2, coords.3, 2, 2)?;
+            for budget in [8, 24, 19 * 8, 19 * 3 * 8] {
+                source.budget_bytes = budget;
+                source.requests.lock().unwrap().clear();
+                let bounded = AverageWindow {
+                    offset_x: 2.0,
+                    offset_y: 3.0,
+                    width_f64: 19.0,
+                    height_f64: 12.0,
+                    no_data: Some(-9999.0),
+                    data: AverageData::Bounded {
+                        source: &source,
+                        level: &source.level,
+                        request,
+                        max_samples: budget / 8,
+                    },
+                };
+                let actual =
+                    sample_average_pixel(&bounded, coords.0, coords.1, coords.2, coords.3, 2, 2)?;
+                assert_eq!(actual.to_bits(), expected.to_bits());
+                let requests = source.requests.lock().unwrap();
+                for pair in requests.windows(2) {
+                    assert!(
+                        pair[1].y > pair[0].y || (pair[1].y == pair[0].y && pair[1].x > pair[0].x)
+                    );
+                }
+                if coords.0 == 2.2 && coords.2 == 20.4 {
+                    if budget < 19 * 8 {
+                        assert!(requests.iter().all(|r| r.height == 1));
+                        assert!(requests.iter().any(|r| r.x > request.x));
+                    } else {
+                        assert!(requests.iter().any(|r| r.height > 1) || budget == 19 * 8);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_average_propagates_read_errors_and_rejects_short_buffers() -> Result<(), CtbError> {
+        let plan = TerrainSamplePlan::new(
+            GlobalGeodeticGrid::new(65)?,
+            TileCoord {
+                zoom: 0,
+                x: 0,
+                y: 0,
+            },
+        )?;
+        let mut source = recording_raster(RasterMetadata {
+            width: 193,
+            height: 149,
+            band_count: 1,
+            crs: Crs::Epsg4326,
+            transform: AffineTransform::north_up(-180.0, 90.0, 1.0, -1.0)?,
+            no_data: None,
+            sample_type: RasterSampleType::Float32,
+        });
+        source.budget_bytes = 8;
+        source.fail_after = Some(2);
+        let error = plan
+            .sample_average_with_budget(&source, &source.level, 8)
+            .unwrap_err();
+        assert!(error.to_string().contains("injected batch read failure"));
+        assert_eq!(source.requests.lock().unwrap().len(), 2);
+        source.fail_after = None;
+        source.truncate = true;
+        let error = plan
+            .sample_average_with_budget(&source, &source.level, 8)
+            .unwrap_err();
+        assert!(error.to_string().contains("expected 1"));
+        assert!(
+            plan.sample_average_with_budget(&source, &source.level, 7)
+                .is_err()
+        );
+        Ok(())
+    }
 
     struct TestRaster {
         metadata: RasterMetadata,
