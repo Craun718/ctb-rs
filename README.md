@@ -133,8 +133,11 @@ cargo test
 
 terrain 高程以 C++ 的 `uint16_t((Float32_height + 1000) * 5)` 编码（有效范围内向零截断）；
 未被源覆盖的区域初始值为 `0.0` m。`ctb-tile` 的 Terrain 路径忽略 CLI 的 resample 算法，
-固定使用原版 Average 路径；GTiff 路径则使用所选的 GDAL 算法。关于切片大小、bounds、
-最大 zoom、child flags 与遍历边界的精确规则，详见 [TECHNICAL_PLAN.md](TECHNICAL_PLAN.md)。
+固定使用原版 Average 路径；GTiff 路径则使用所选的 GDAL 算法。Terrain Average 会过滤
+`NaN`、`±inf` 和与当前采样层声明 NoData 精确相等的样本；只要目标源窗口内有有效样本，
+就计算有效样本加权平均，否则输出海平面 `0 m` 并保持水掩模默认全陆地。GeoTIFF 和 VRT
+声明的数值 NoData 都按同一规则处理。关于切片大小、bounds、最大 zoom、child flags 与
+遍历边界的精确规则，详见 [TECHNICAL_PLAN.md](TECHNICAL_PLAN.md)。
 
 ## 状态
 

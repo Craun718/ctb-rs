@@ -13,6 +13,7 @@ use ndarray::Array2;
 #[derive(Clone, Copy)]
 enum TestRasterDataType {
     Unsigned8,
+    Float32,
     Float64,
 }
 
@@ -49,6 +50,7 @@ fn write_geotiff_bytes(
     samples: &[f64],
     epsg: u32,
     transform: TestGeoTransform,
+    no_data: Option<f64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let expected = usize::try_from(width)?.checked_mul(usize::try_from(height)?);
     if expected != Some(samples.len()) {
@@ -58,6 +60,10 @@ fn write_geotiff_bytes(
         .epsg(u16::try_from(epsg)?)
         .pixel_scale(transform.pixel_width, transform.pixel_height.abs())
         .origin(transform.origin_x, transform.origin_y);
+    let builder = match no_data {
+        Some(value) => builder.nodata(&value.to_string()),
+        None => builder,
+    };
     match data_type {
         TestRasterDataType::Unsigned8 => {
             let values = samples
@@ -69,6 +75,14 @@ fn write_geotiff_bytes(
         }
         TestRasterDataType::Float64 => {
             let values = samples.to_vec();
+            let values = Array2::from_shape_vec((height as usize, width as usize), values)?;
+            builder.write_2d(path, values.view())?;
+        }
+        TestRasterDataType::Float32 => {
+            let values = samples
+                .iter()
+                .map(|sample| *sample as f32)
+                .collect::<Vec<_>>();
             let values = Array2::from_shape_vec((height as usize, width as usize), values)?;
             builder.write_2d(path, values.view())?;
         }
@@ -92,6 +106,24 @@ fn write_float64_geotiff(
         samples,
         epsg,
         transform,
+        None,
+    )
+}
+
+fn write_float32_nodata_geotiff(
+    path: &Path,
+    samples: &[f64],
+    no_data: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    write_geotiff_bytes(
+        path,
+        65,
+        65,
+        TestRasterDataType::Float32,
+        samples,
+        4326,
+        TestGeoTransform::north_up(-180.0, 90.0, 360.0 / 65.0, -180.0 / 65.0),
+        Some(no_data),
     )
 }
 
@@ -127,6 +159,7 @@ fn write_u8_geotiff(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         &[10.0, 20.0, 30.0, 40.0],
         4326,
         TestGeoTransform::north_up(-1.0, 1.0, 1.0, -1.0),
+        None,
     )
 }
 
@@ -173,6 +206,34 @@ fn read_f64_window(
     let height = usize::try_from(height)?;
     let samples = file.read_band_window::<f64>(0, 0, 0, height, width)?;
     Ok(samples.iter().copied().collect())
+}
+
+#[test]
+fn ctb_tile_accepts_nodata_float32_geotiff() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = temporary_directory("tile-nodata")?;
+    let input = directory.join("nodata-dem.tif");
+    let output = directory.join("tiles");
+    write_float32_nodata_geotiff(&input, &vec![-9999.0; 65 * 65], -9999.0)?;
+    fs::create_dir(&output)?;
+
+    let result = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+        .arg(&input)
+        .args([
+            "--output-dir",
+            output.to_str().ok_or("invalid output path")?,
+        ])
+        .output()?;
+    assert!(
+        result.status.success(),
+        "ctb-tile failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+
+    let terrain = HeightmapTerrain::read_gzip(output.join("0/0/0.terrain"))?;
+    assert_eq!(terrain.water_mask, WaterMask::AllLand);
+    assert_eq!(terrain.heights, vec![5000; HEIGHTMAP_SAMPLE_COUNT]);
+    fs::remove_dir_all(directory)?;
+    Ok(())
 }
 
 #[test]

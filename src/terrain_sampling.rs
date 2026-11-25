@@ -198,7 +198,7 @@ impl TerrainSamplePlan {
                 window.samples.len()
             )));
         }
-        let average_window = AverageWindow::new(&window)?;
+        let average_window = AverageWindow::new(&window)?.with_no_data(level.metadata.no_data);
         let mut heights = Vec::with_capacity(HEIGHTMAP_SAMPLE_COUNT);
         let mut x1 = vec![0.0; self.warp_block_width as usize];
         let mut y1 = vec![0.0; self.warp_block_width as usize];
@@ -644,6 +644,7 @@ struct AverageWindow<'a> {
     width: usize,
     width_f64: f64,
     height_f64: f64,
+    no_data: Option<f64>,
     samples: &'a crate::raster::RasterSamples,
 }
 
@@ -668,8 +669,14 @@ impl<'a> AverageWindow<'a> {
             width,
             width_f64: f64::from(window.request.width),
             height_f64: f64::from(window.request.height),
+            no_data: None,
             samples: &window.samples,
         })
+    }
+
+    fn with_no_data(mut self, no_data: Option<f64>) -> Self {
+        self.no_data = no_data;
+        self
     }
 
     fn sample(&self, index: usize) -> Result<f64, CtbError> {
@@ -819,10 +826,16 @@ fn sample_average_pixel(
             if !sample.is_finite() {
                 continue;
             }
+            if window.no_data.is_some_and(|no_data| no_data == sample) {
+                continue;
+            }
             total_weight += df_weight;
             let ratio = df_weight / total_weight;
             value = ratio.mul_add(sample - value, value);
         }
+    }
+    if total_weight == 0.0 {
+        return Ok(0.0);
     }
     Ok(value)
 }
@@ -903,6 +916,7 @@ mod tests {
 
     use crate::{
         CtbError,
+        cache::CachedRasterSource,
         raster::{
             AffineTransform, Crs, RasterMetadata, RasterSampleType, RasterWindow, WindowRequest,
         },
@@ -938,6 +952,12 @@ mod tests {
         value: f64,
     }
 
+    #[derive(Clone)]
+    struct VariableRaster {
+        metadata: RasterMetadata,
+        samples: Vec<f64>,
+    }
+
     struct CountingRaster {
         metadata: RasterMetadata,
         value: f64,
@@ -968,6 +988,43 @@ mod tests {
             Ok(RasterWindow {
                 request,
                 samples: vec![self.value; count].into(),
+            })
+        }
+    }
+
+    impl RasterSource for VariableRaster {
+        fn metadata(&self) -> &RasterMetadata {
+            &self.metadata
+        }
+
+        fn overview_count(&self) -> u16 {
+            0
+        }
+
+        fn read_window(&self, request: WindowRequest) -> Result<RasterWindow, CtbError> {
+            let width =
+                usize::try_from(request.width).map_err(|_| CtbError::InvalidRasterWindow)?;
+            let height =
+                usize::try_from(request.height).map_err(|_| CtbError::InvalidRasterWindow)?;
+            let count = width
+                .checked_mul(height)
+                .ok_or(CtbError::InvalidRasterWindow)?;
+            let source_width = self.metadata.width as usize;
+            let mut samples = Vec::with_capacity(count);
+            for row in request.y..request.y + request.height {
+                for column in request.x..request.x + request.width {
+                    let index = row as usize * source_width + column as usize;
+                    samples.push(
+                        self.samples
+                            .get(index)
+                            .copied()
+                            .ok_or(CtbError::InvalidRasterWindow)?,
+                    );
+                }
+            }
+            Ok(RasterWindow {
+                request,
+                samples: samples.into(),
             })
         }
     }
@@ -1434,6 +1491,63 @@ mod tests {
     }
 
     #[test]
+    fn average_excludes_declared_nodata_and_keeps_gdal_order() -> Result<(), CtbError> {
+        let window = RasterWindow {
+            request: WindowRequest {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+                overview: 0,
+            },
+            samples: vec![-9999.0, 100.0, f64::INFINITY, 200.0].into(),
+        };
+        let average_window = AverageWindow::new(&window)?.with_no_data(Some(-9999.0));
+
+        let value = sample_average_pixel(&average_window, 0.0, 0.0, 2.0, 2.0, 2, 2)?;
+        assert!((value - 150.0).abs() < 1e-12, "value was {value}");
+        Ok(())
+    }
+
+    #[test]
+    fn average_keeps_samples_near_declared_nodata() -> Result<(), CtbError> {
+        let window = RasterWindow {
+            request: WindowRequest {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 1,
+                overview: 0,
+            },
+            samples: vec![-9999.0, -9998.9].into(),
+        };
+        let average_window = AverageWindow::new(&window)?.with_no_data(Some(-9999.0));
+
+        let value = sample_average_pixel(&average_window, 0.0, 0.0, 2.0, 1.0, 2, 2)?;
+        assert!((value - -9998.9).abs() < 1e-12, "value was {value}");
+        Ok(())
+    }
+
+    #[test]
+    fn average_without_nodata_keeps_existing_samples() -> Result<(), CtbError> {
+        let window = RasterWindow {
+            request: WindowRequest {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+                overview: 0,
+            },
+            samples: vec![-9999.0, 100.0, f64::INFINITY, 200.0].into(),
+        };
+        let average_window = AverageWindow::new(&window)?;
+
+        let value = sample_average_pixel(&average_window, 0.0, 0.0, 2.0, 2.0, 2, 2)?;
+        assert_eq!(value, -3233.0);
+        Ok(())
+    }
+
+    #[test]
     fn compute_weight_functions_match_gdal_boundaries() {
         assert!((compute_weight_y(0, 0, 3, 0.2, 2.8) - 0.8).abs() < 1e-12);
         assert_eq!(compute_weight_y(1, 0, 3, 0.2, 2.8), 1.0);
@@ -1503,6 +1617,75 @@ mod tests {
         let heights = plan.sample_heights(&source, ResamplingMethod::Average)?;
         assert_eq!(heights.len(), HEIGHTMAP_TILE_SIZE * HEIGHTMAP_TILE_SIZE);
         assert!(heights.iter().all(|value| (*value - 100.0).abs() < 1e-12));
+        Ok(())
+    }
+
+    #[test]
+    fn nodata_only_average_window_returns_sea_level() -> Result<(), CtbError> {
+        let source = VariableRaster {
+            metadata: RasterMetadata {
+                width: 65,
+                height: 65,
+                band_count: 1,
+                crs: Crs::Epsg4326,
+                transform: AffineTransform::north_up(-180.0, 90.0, 360.0 / 65.0, -180.0 / 65.0)?,
+                no_data: Some(-9999.0),
+                sample_type: RasterSampleType::Float32,
+            },
+            samples: vec![-9999.0; 65 * 65],
+        };
+        let grid = GlobalGeodeticGrid::new(65)?;
+        let plan = TerrainSamplePlan::new(
+            grid,
+            TileCoord {
+                zoom: 0,
+                x: 0,
+                y: 0,
+            },
+        )?;
+
+        let heights = plan.sample_heights(&source, ResamplingMethod::Average)?;
+        assert_eq!(heights.len(), HEIGHTMAP_SAMPLE_COUNT);
+        assert!(heights.iter().all(|height| *height == 0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn cached_and_direct_sources_match_nodata_sampling() -> Result<(), CtbError> {
+        let metadata = RasterMetadata {
+            width: 65,
+            height: 65,
+            band_count: 1,
+            crs: Crs::Epsg4326,
+            transform: AffineTransform::north_up(-180.0, 90.0, 360.0 / 65.0, -180.0 / 65.0)?,
+            no_data: Some(-9999.0),
+            sample_type: RasterSampleType::Float32,
+        };
+        let mut samples = vec![100.0; 65 * 65];
+        samples[0] = -9999.0;
+        let direct = VariableRaster {
+            metadata: metadata.clone(),
+            samples,
+        };
+        let cached = CachedRasterSource::new_with_nodata_cache(direct.clone(), 4, 16);
+
+        let grid = GlobalGeodeticGrid::new(65)?;
+        let plan = TerrainSamplePlan::new(
+            grid,
+            TileCoord {
+                zoom: 0,
+                x: 0,
+                y: 0,
+            },
+        )?;
+        let heights = plan.sample_heights(&direct, ResamplingMethod::Average)?;
+        let cached_heights = plan.sample_heights(&cached, ResamplingMethod::Average)?;
+        assert_eq!(heights, cached_heights);
+        assert!(
+            heights
+                .iter()
+                .all(|height| *height == 0.0 || (*height - 100.0).abs() < 1e-12)
+        );
         Ok(())
     }
 
