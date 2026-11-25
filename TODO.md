@@ -47,3 +47,9 @@ P62 的内联候选在 12–6 级本地样本上中位耗时从 16.44 秒降至 
 
 `cargo clippy --all-targets -- -D warnings` 因既有 `src/geotiff.rs`、
 `src/sampling.rs` 和 `src/terrain.rs` 中的 10 个 lint 失败；相关文件未经授权未修改。
+
+## P68：低级别地形瓦片投影越界
+
+1. [x] 用 EPSG:4545 GeoTIFF 复现两种瓦片网格的第 0 级投影错误。
+2. [x] 按单点有效性计算地形平均采样窗口及像元。
+3. [x] 验证低级别瓦片写出，并检查源数据覆盖区的高程。

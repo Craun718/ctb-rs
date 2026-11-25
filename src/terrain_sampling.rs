@@ -1,7 +1,10 @@
 use crate::{
     CtbError,
     grid::{Bounds, GlobalGeodeticGrid, TileCoord, TileGrid},
-    raster::{AffineTransform, RasterSource, RasterWindow, transform_bounds, transform_coordinate},
+    raster::{
+        AffineTransform, RasterSource, RasterWindow, transform_bounds, transform_coordinate,
+        transform_warp_coordinate,
+    },
     sampling::{ResamplingMethod, sample_with_footprint_level},
     terrain::{HEIGHTMAP_SAMPLE_COUNT, HEIGHTMAP_TILE_SIZE},
 };
@@ -169,7 +172,7 @@ impl TerrainSamplePlan {
             } else {
                 let world_x = dst_x.mul_add(overlap.pixel_width, overlap.origin_x);
                 let world_y = dst_y.mul_add(overlap.pixel_height, overlap.origin_y);
-                let (source_x, source_y) = transform_coordinate(
+                let (source_x, source_y) = transform_warp_coordinate(
                     world_x,
                     world_y,
                     &self.target_crs,
@@ -393,6 +396,12 @@ fn gdal_approx_transform_internal_with_transform(
     sme_y: &[f64; 3],
     transform: &PixelTransform<'_>,
 ) -> Result<bool, CtbError> {
+    // Invalid anchors cannot interpolate neighboring pixels. Transform the
+    // original scanline points individually so valid samples are preserved.
+    if sme_x.iter().chain(sme_y).any(|value| !value.is_finite()) {
+        return gdal_gen_img_proj_transform_row_with_transform(dst_x, dst_y, transform);
+    }
+
     let n_points = dst_x.len();
     let n_middle = (n_points - 1) / 2;
     let df_delta_x = (sme_x[2] - sme_x[0]) / (dst_x[n_points - 1] - dst_x[0]);
@@ -587,26 +596,38 @@ fn compute_source_window_with_transform(
     let mut max_x = f64::NEG_INFINITY;
     let mut max_y = f64::NEG_INFINITY;
 
+    let mut include_point = |dst_x, dst_y| -> Result<bool, CtbError> {
+        let (src_x, src_y) = transform(dst_x, dst_y)?;
+        if !src_x.is_finite() || !src_y.is_finite() {
+            return Ok(false);
+        }
+        min_x = min_x.min(src_x);
+        min_y = min_y.min(src_y);
+        max_x = max_x.max(src_x);
+        max_y = max_y.max(src_y);
+        Ok(true)
+    };
+    let mut valid_edge = true;
+    let segments = SOURCE_WINDOW_STEP_COUNT - 1;
+    let step_x = |step: usize| (step as f64 / segments as f64) * f64::from(destination_width);
+    let step_y = |step: usize| (step as f64 / segments as f64) * f64::from(destination_height);
     for step in 0..SOURCE_WINDOW_STEP_COUNT {
-        let ratio = step as f64 / (SOURCE_WINDOW_STEP_COUNT - 1) as f64;
-        let destination_width_f = f64::from(destination_width);
-        let destination_height_f = f64::from(destination_height);
-        let x = ratio * destination_width_f;
-        let y = ratio * destination_height_f;
         for (dst_x, dst_y) in [
-            (x, 0.0),
-            (x, destination_height_f),
-            (0.0, y),
-            (destination_width_f, y),
+            (step_x(step), 0.0),
+            (step_x(step), f64::from(destination_height)),
+            (0.0, step_y(step)),
+            (f64::from(destination_width), step_y(step)),
         ] {
-            let (src_x, src_y) = transform(dst_x, dst_y)?;
-            if !src_x.is_finite() || !src_y.is_finite() {
-                continue;
+            valid_edge &= include_point(dst_x, dst_y)?;
+        }
+    }
+    if !valid_edge {
+        // A projection domain can intersect the tile interior even when its
+        // edge provides too few valid points to bound the source window.
+        for row in 1..segments {
+            for column in 1..segments {
+                include_point(step_x(column), step_y(row))?;
             }
-            min_x = min_x.min(src_x);
-            min_y = min_y.min(src_y);
-            max_x = max_x.max(src_x);
-            max_y = max_y.max(src_y);
         }
     }
 
@@ -623,8 +644,8 @@ fn compute_source_window_with_transform(
     let base_height_f = f64::from(base_height);
     let min_x_clamped = min_x.max(0.0) as i32;
     let min_y_clamped = min_y.max(0.0) as i32;
-    let max_x_clamped = max_x.ceil().min(base_width_f) as i32;
-    let max_y_clamped = max_y.ceil().min(base_height_f) as i32;
+    let max_x_clamped = max_x.ceil().clamp(0.0, base_width_f) as i32;
+    let max_y_clamped = max_y.ceil().clamp(0.0, base_height_f) as i32;
 
     let src_x_off = min_x_clamped.max(0).min(base_width as i32);
     let src_x_size = (max_x_clamped - src_x_off)

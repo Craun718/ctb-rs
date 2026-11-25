@@ -237,6 +237,47 @@ fn ctb_tile_accepts_nodata_float32_geotiff() -> Result<(), Box<dyn std::error::E
 }
 
 #[test]
+fn ctb_tile_writes_root_terrain_from_epsg_4545() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = temporary_directory("tile-epsg-4545")?;
+    let input = directory.join("dem.tif");
+    write_float64_geotiff(
+        &input,
+        16,
+        16,
+        &[123.0; 16 * 16],
+        4545,
+        TestGeoTransform::north_up(498_000.0, 2_652_000.0, 250.0, -250.0),
+    )?;
+
+    for (profile, max_zoom, root) in [
+        ("geodetic", "11", "0/1/0.terrain"),
+        ("mercator", "0", "0/0/0.terrain"),
+    ] {
+        let output = directory.join(profile);
+        fs::create_dir(&output)?;
+        let result = Command::new(env!("CARGO_BIN_EXE_ctb-tile"))
+            .args(["--profile", profile, "-s", max_zoom, "-e", "0", "-c", "1"])
+            .arg("--output-dir")
+            .arg(&output)
+            .arg(&input)
+            .output()?;
+        assert!(
+            result.status.success(),
+            "{profile} terrain failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let terrain = HeightmapTerrain::read_gzip(output.join(root))?;
+        assert_eq!(terrain.heights.len(), HEIGHTMAP_SAMPLE_COUNT);
+        assert_eq!(terrain.heights[0], 5000);
+    }
+
+    let detail = HeightmapTerrain::read_gzip(directory.join("geodetic/11/3276/1296.terrain"))?;
+    assert!(detail.heights.contains(&5615));
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
 fn ctb_cli_versions_match_cargo_package_version() -> Result<(), Box<dyn std::error::Error>> {
     let binaries = [
         ("ctb-tile", env!("CARGO_BIN_EXE_ctb-tile")),

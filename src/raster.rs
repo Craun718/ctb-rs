@@ -19,6 +19,26 @@ pub fn transform_coordinate(
     source: &Crs,
     target: &Crs,
 ) -> Result<(f64, f64), CtbError> {
+    transform_coordinate_impl(x, y, source, target, false)
+}
+
+/// Return NaN for points outside the projection domain during a warp.
+pub(crate) fn transform_warp_coordinate(
+    x: f64,
+    y: f64,
+    source: &Crs,
+    target: &Crs,
+) -> Result<(f64, f64), CtbError> {
+    transform_coordinate_impl(x, y, source, target, true)
+}
+
+fn transform_coordinate_impl(
+    x: f64,
+    y: f64,
+    source: &Crs,
+    target: &Crs,
+    allow_outside_domain: bool,
+) -> Result<(f64, f64), CtbError> {
     if !x.is_finite() || !y.is_finite() {
         return Err(CtbError::InvalidBounds);
     }
@@ -41,7 +61,7 @@ pub fn transform_coordinate(
             (2.0 * (y / WEB_MERCATOR_RADIUS).exp().atan() - std::f64::consts::FRAC_PI_2)
                 .to_degrees(),
         )),
-        _ => transform_with_proj4rs(x, y, source, target),
+        _ => transform_with_proj4rs(x, y, source, target, allow_outside_domain),
     }
 }
 
@@ -77,7 +97,10 @@ fn transform_with_proj4rs(
     y: f64,
     source: &Crs,
     target: &Crs,
+    allow_outside_domain: bool,
 ) -> Result<(f64, f64), CtbError> {
+    use proj4rs::errors::Error::{CoordTransOutsideProjectionDomain, CoordinateOutOfRange};
+
     let source_code = epsg_code(source);
     let target_code = epsg_code(target);
     PROJECTION_CACHE.with(|projection_cache| {
@@ -104,13 +127,24 @@ fn transform_with_proj4rs(
             projected_x = projected_x.to_radians();
             projected_y = projected_y.to_radians();
         }
-        let (mut result_x, mut result_y) =
-            proj4rs::adaptors::transform_xy(&pair.source, &pair.target, projected_x, projected_y)
-                .map_err(|error| {
-                CtbError::UnsupportedCrs(format!(
+        let (mut result_x, mut result_y) = match proj4rs::adaptors::transform_xy(
+            &pair.source,
+            &pair.target,
+            projected_x,
+            projected_y,
+        ) {
+            Ok(point) => point,
+            Err(CoordinateOutOfRange | CoordTransOutsideProjectionDomain)
+                if allow_outside_domain =>
+            {
+                return Ok((f64::NAN, f64::NAN));
+            }
+            Err(error) => {
+                return Err(CtbError::UnsupportedCrs(format!(
                     "cannot transform EPSG:{source_code} to EPSG:{target_code}: {error}"
-                ))
-            })?;
+                )));
+            }
+        };
         if pair.target.is_latlong() {
             result_x = result_x.to_degrees();
             result_y = result_y.to_degrees();

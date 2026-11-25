@@ -31,3 +31,11 @@ claiming unverified compatibility or output formats.
    counterpart to `README.zh-CN.md`, adding reciprocal links.
 4. Update the GitHub repository description in English and verify the result.
 5. Review both README files for matching scope and links.
+
+## 4. Terrain average reprojection at low zoom
+
+Destination pixels outside the source projection domain are invalid warp
+samples. Exclude them from the source window and return the existing zero
+fill for pixels with invalid corners. Probe the tile interior when the edge
+contains invalid points, and transform scanlines directly when interpolation
+anchors are invalid. Keep CRS resolution and forward bounds planning strict.
