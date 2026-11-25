@@ -144,9 +144,8 @@ dst_y[n_middle + 1..n_points - 1]
 
 - `src/terrain_sampling.rs`：Terrain pooled Average、source window、margin、
   `GDALApproxTransform` 行坐标和 FMA 对齐。
-- `TECHNICAL_PLAN.md`：P14/P15 的根因、实施范围和验证记录。
-- `TEST_STRATEGY.md`：C++/Rust oracle 测试策略和实测结果。
-- `TODO.md`：P14/P15 任务状态。
+- 本文前文记录了 P14/P15 的根因、实施范围和 C++/Rust oracle 验证结果。
+- 当前待办事项见 `TODO.md`；历史 P14/P15 阶段已不在当前待办列表中。
 
 ## 7. 范围说明
 
