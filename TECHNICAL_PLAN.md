@@ -53,6 +53,22 @@ Generate layer.json after successful Terrain output by default. The
 `--no-layerjson` flag disables this step. GTiff output remains unchanged.
 Verify both flag states and their generated files through the CLI.
 
+## 7. Terrain formats and compression
+
+Add quantized-mesh-1.0 alongside the existing heightmap-1.0 output, with
+optional gzip and matching layer.json metadata. The desktop defaults to
+quantized-mesh and gzip; existing library and CLI heightmap behavior remains
+compatible. Quantized mesh needs a geographically located sample grid spanning
+the complete tile, independently of the CTB-compatible heightmap sampling
+path. Use an error threshold derived from tile ground resolution and retain
+shared boundary samples so adjacent meshes have matching edges. Encode the
+Cesium header, delta-coded vertices, high-water-mark triangle indices and
+edge lists. Preserve TMS paths, profile selection and optional metadata.
+
+Test both formats with and without gzip using an independent decoder, flat
+and varying DEMs, adjacent tile edges and multiple zoom levels. Recheck
+progress, cancellation, errors and the existing heightmap behavior.
+
 ## 8. Desktop mesh sampling at low zoom
 
 Expose the heightmap warp coordinate transform for desktop mesh vertex
