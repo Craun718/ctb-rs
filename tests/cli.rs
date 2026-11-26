@@ -209,6 +209,38 @@ fn read_f64_window(
 }
 
 #[test]
+fn terrain_cli_controls_layer_json() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = temporary_directory("layer-json")?;
+    let input = directory.join("dem.tif");
+    write_float32_nodata_geotiff(&input, &vec![-9999.0; 65 * 65], -9999.0)?;
+    for (name, disabled) in [("default", false), ("disabled", true)] {
+        let output = directory.join(name);
+        fs::create_dir(&output)?;
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ctb-tile"));
+        command.arg(&input).arg("--output-dir").arg(&output);
+        if disabled {
+            command.arg("--no-layerjson");
+        }
+        let result = command.output()?;
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(output.join("0/0/0.terrain").exists());
+        assert_eq!(output.join("layer.json").exists(), !disabled);
+        if !disabled {
+            let layer: serde_json::Value =
+                serde_json::from_slice(&fs::read(output.join("layer.json"))?)?;
+            assert_eq!(layer["format"], "heightmap-1.0");
+            assert_eq!(layer["projection"], "EPSG:4326");
+        }
+    }
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
 fn ctb_tile_accepts_nodata_float32_geotiff() -> Result<(), Box<dyn std::error::Error>> {
     let directory = temporary_directory("tile-nodata")?;
     let input = directory.join("nodata-dem.tif");

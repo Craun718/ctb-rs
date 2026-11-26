@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -11,7 +11,7 @@ use std::{
 use crate::{
     CtbError,
     grid::{Bounds, GlobalGeodeticGrid, TileCoord, TileGrid},
-    raster::{RasterMetadata, RasterSource, transform_bounds},
+    raster::{Crs, RasterMetadata, RasterSource, transform_bounds},
     sampling::ResamplingMethod,
     terrain::{ChildMask, HeightmapTerrain},
     terrain_sampling::TerrainSamplePlan,
@@ -57,6 +57,76 @@ pub struct TileWriteProgress {
     pub tile: TileCoord,
     pub completed: usize,
     pub total: usize,
+}
+
+/// Write Cesium heightmap metadata for a completed TMS tileset.
+pub fn write_layer_json(
+    output_directory: impl AsRef<Path>,
+    grid: &dyn TileGrid,
+    plan: &TilesetPlan,
+) -> Result<(), CtbError> {
+    let projection = match grid.crs() {
+        Crs::Epsg4326 => "EPSG:4326",
+        Crs::Epsg3857 => "EPSG:3857",
+        crs => return Err(CtbError::UnsupportedCrs(format!("{crs:?}"))),
+    };
+    let mut available = vec![Vec::new(); usize::from(plan.max_zoom) + 1];
+    for level in &plan.levels {
+        let ranges = available
+            .get_mut(usize::from(level.zoom))
+            .ok_or_else(|| CtbError::TilesetIo("tileset level exceeds its maximum zoom".into()))?;
+        let tiles = level.tiles.iter().copied().collect::<BTreeSet<_>>();
+        let mut runs: Vec<(u32, u32, u32, u32)> = Vec::new();
+        for tile in tiles {
+            if tile.zoom != level.zoom {
+                return Err(CtbError::TilesetIo("invalid tile in tileset plan".into()));
+            }
+            if tile.x >= grid.tiles_x(level.zoom)? || tile.y >= grid.tiles_y(level.zoom)? {
+                continue;
+            }
+            if let Some(last) = runs.last_mut()
+                && last.0 == tile.x
+                && last.3.checked_add(1) == Some(tile.y)
+            {
+                last.3 = tile.y;
+            } else {
+                runs.push((tile.x, tile.x, tile.y, tile.y));
+            }
+        }
+        let mut rectangles: Vec<(u32, u32, u32, u32)> = Vec::new();
+        let mut latest: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+        for (start_x, end_x, start_y, end_y) in runs {
+            if let Some(&index) = latest.get(&(start_y, end_y))
+                && let Some(rectangle) = rectangles.get_mut(index)
+                && rectangle.1.checked_add(1) == Some(start_x)
+            {
+                rectangle.1 = end_x;
+            } else {
+                latest.insert((start_y, end_y), rectangles.len());
+                rectangles.push((start_x, end_x, start_y, end_y));
+            }
+        }
+        ranges.extend(
+            rectangles
+                .into_iter()
+                .map(|(start_x, end_x, start_y, end_y)| {
+                    serde_json::json!({
+                        "startX": start_x, "endX": end_x, "startY": start_y, "endY": end_y
+                    })
+                }),
+        );
+    }
+    let layer = serde_json::json!({
+        "tilejson": "2.1.0", "format": "heightmap-1.0", "version": "1.0.0",
+        "scheme": "tms", "projection": projection, "tiles": ["{z}/{x}/{y}.terrain"],
+        "maxzoom": plan.max_zoom, "available": available
+    });
+    let path = output_directory.as_ref().join("layer.json");
+    let file = fs::File::create(&path)
+        .map_err(|error| CtbError::TilesetIo(format!("{}: {error}", path.display())))?;
+    serde_json::to_writer_pretty(file, &layer)
+        .map_err(|error| CtbError::TilesetIo(format!("{}: {error}", path.display())))?;
+    Ok(())
 }
 
 impl TilesetPlan {
@@ -570,6 +640,77 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn layer_json_covers_only_planned_tiles_for_both_profiles()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("ctb-rs-layer-json-{}", std::process::id()));
+        fs::create_dir_all(&dir)?;
+        let plan = TilesetPlan {
+            max_zoom: 2,
+            levels: vec![TilesetLevel {
+                zoom: 2,
+                tiles: vec![
+                    TileCoord {
+                        zoom: 2,
+                        x: 1,
+                        y: 1,
+                    },
+                    TileCoord {
+                        zoom: 2,
+                        x: 1,
+                        y: 2,
+                    },
+                    TileCoord {
+                        zoom: 2,
+                        x: 2,
+                        y: 1,
+                    },
+                    TileCoord {
+                        zoom: 2,
+                        x: 2,
+                        y: 2,
+                    },
+                    TileCoord {
+                        zoom: 2,
+                        x: 3,
+                        y: 3,
+                    },
+                ],
+            }],
+        };
+        for (grid, projection) in [
+            (
+                Box::new(GlobalGeodeticGrid::new(65)?) as Box<dyn TileGrid>,
+                "EPSG:4326",
+            ),
+            (
+                Box::new(GlobalMercatorGrid::new(256)?) as Box<dyn TileGrid>,
+                "EPSG:3857",
+            ),
+        ] {
+            write_layer_json(&dir, grid.as_ref(), &plan)?;
+            let layer: serde_json::Value =
+                serde_json::from_slice(&fs::read(dir.join("layer.json"))?)?;
+            assert_eq!(layer["projection"], projection);
+            assert_eq!(layer["scheme"], "tms");
+            assert_eq!(layer["format"], "heightmap-1.0");
+            assert_eq!(layer["tiles"][0], "{z}/{x}/{y}.terrain");
+            assert_eq!(layer["maxzoom"], 2);
+            assert_eq!(
+                layer["available"],
+                serde_json::json!([[], [], [
+                    {"startX": 1, "endX": 2, "startY": 1, "endY": 2},
+                    {"startX": 3, "endX": 3, "startY": 3, "endY": 3}
+                ]])
+            );
+        }
+        assert!(
+            write_layer_json(dir.join("missing"), &GlobalGeodeticGrid::new(65)?, &plan).is_err()
+        );
+        fs::remove_dir_all(dir)?;
+        Ok(())
+    }
 
     fn metadata() -> Result<RasterMetadata, CtbError> {
         Ok(RasterMetadata {

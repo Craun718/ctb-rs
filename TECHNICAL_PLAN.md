@@ -39,3 +39,16 @@ samples. Exclude them from the source window and return the existing zero
 fill for pixels with invalid corners. Probe the tile interior when the edge
 contains invalid points, and transform scanlines directly when interpolation
 anchors are invalid. Keep CRS resolution and forward bounds planning strict.
+
+## 5. Cesium terrain metadata
+
+Expose an optional layer.json writer for completed heightmap tilesets. Use the
+grid CRS and the actual tileset plan to describe TMS tile URLs and availability.
+Keep tile generation and the existing CLI behavior unchanged. Verify both
+supported profiles, missing lower levels and output errors.
+
+## 6. CLI terrain metadata option
+
+Generate layer.json after successful Terrain output by default. The
+`--no-layerjson` flag disables this step. GTiff output remains unchanged.
+Verify both flag states and their generated files through the CLI.

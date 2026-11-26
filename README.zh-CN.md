@@ -16,16 +16,18 @@
 - [x] 函数级一比一复刻原版实现
 - [x] 在输出结果不变的前提下进行优化
 - [ ] 性能达到cpp版同级水平
-- [ ] 支持输出layer.json
+- [x] 提供输出 layer.json 的库接口
 - [ ] 支持输出quantized-mesh
 
 ## 特性
 
+库调用方可在地形瓦片写入完成后，使用 `tileset::write_layer_json` 根据网格和瓦片计划生成 Cesium 元数据。
+`ctb-tile` 默认在地形输出中生成该文件，使用 `--no-layerjson` 可关闭。
+
 - **纯 Rust，无 GDAL/PROJ FFI**：不链接 GDAL、PROJ 或任何 C/C++ GIS FFI；GeoTIFF/VRT
   输入读取使用 `geotiff-reader`，GeoTIFF 写出使用 `geotiff-writer`，标准 VRT XML
   由项目内兼容层解析；通用 EPSG 坐标变换使用纯 Rust proj4rs。
-- **行为基准对齐**：数值公式、迭代顺序、边界包含规则、默认参数、数据类型转换和错误条件均以
-  C++ CTB 为唯一基准，不新增原版没有的算法、接口或命令行语义。
+- **行为基准对齐**：瓦片生成以 C++ CTB 为行为基准。可选的 `layer.json` 输出是 ctb-rs 扩展。
 - **TMS 双 profile**：Global Geodetic（EPSG:4326）与 Global Mercator（EPSG:3857），
   y 轴自南向北。Geodetic 根层为 `2x1`，Mercator 根层为 `1x1`。
 - **12 种重采样算法**：nearest、bilinear、cubic、cubicspline、lanczos、average、mode、
@@ -64,6 +66,7 @@ ctb-tile --output-dir ./terrain-tiles dem.tif
 -m, --warp-memory <bytes>       warp 内存上限，0 用默认值
 -c, --thread-count <count>      工作线程数，非正值按 CPU 数
 -R, --resume                    不覆盖已写出的最终切片
+    --no-layerjson              不为地形输出生成 layer.json
 -q, --quiet                     仅输出错误
 -v, --verbose                   输出每个完成的切片
 ```

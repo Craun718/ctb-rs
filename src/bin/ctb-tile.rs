@@ -15,7 +15,7 @@ use ctb_rs::{
     sampling::ResamplingMethod::{self, Average},
     tileset::{
         HeightmapTilesetOptions, TileWriteProgress, terrain_path,
-        write_heightmap_tileset_with_factory,
+        write_heightmap_tileset_with_factory, write_layer_json,
     },
 };
 
@@ -135,6 +135,10 @@ struct Arguments {
     /// Do not overwrite already written final terrain files.
     #[arg(short = 'R', long)]
     resume: bool,
+
+    /// Do not generate layer.json for Terrain output.
+    #[arg(long = "no-layerjson")]
+    no_layerjson: bool,
 
     /// Number of tile workers. Non-positive values use the CPU count.
     #[arg(short = 'c', long, allow_hyphen_values = true)]
@@ -266,7 +270,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 "mercator" => Box::new(GlobalMercatorGrid::new(terrain_grid_size)?),
                 profile => return Err(format!("unsupported TMS profile {profile}").into()),
             };
-            write_heightmap_tileset_with_factory(
+            let plan = write_heightmap_tileset_with_factory(
                 &source_factory,
                 grid.as_ref(),
                 &arguments.output_dir,
@@ -281,6 +285,9 @@ fn run() -> Result<(), Box<dyn Error>> {
                 },
                 progress.as_deref(),
             )?;
+            if !arguments.no_layerjson {
+                write_layer_json(&arguments.output_dir, grid.as_ref(), &plan)?;
+            }
         }
         "GTiff" => {
             let geotiff_options = gtiff_options(&arguments.creation_options)?;

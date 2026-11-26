@@ -11,13 +11,16 @@ This project generates terrain tiles; it does not publish them to a browser. For
 - [x] Reproduce the original implementation function by function
 - [x] Optimize without changing output
 - [ ] Match the C++ implementation's performance
-- [ ] Support generating `layer.json`
+- [x] Provide a library API to generate `layer.json`
 - [ ] Support quantized-mesh output
 
 ## Features
 
+Library callers can use `tileset::write_layer_json` after writing terrain tiles to generate Cesium metadata from the grid and tileset plan.
+The `ctb-tile` Terrain output generates this file by default. Pass `--no-layerjson` to disable it.
+
 - **Pure Rust, with no GDAL/PROJ FFI:** No GDAL, PROJ, or other C/C++ GIS FFI is linked. GeoTIFF and VRT input use `geotiff-reader`; GeoTIFF output uses `geotiff-writer`; standard VRT XML is parsed by an in-project compatibility layer; general EPSG coordinate transformations use pure Rust `proj4rs`.
-- **Behavior aligned with the reference:** Numeric formulas, iteration order, boundary inclusion, defaults, type conversions, and error conditions use C++ CTB as the sole behavioral reference. No algorithms, interfaces, or CLI semantics absent from the original are added.
+- **Behavior aligned with the reference:** Tile generation uses C++ CTB as its behavioral reference. The optional `layer.json` output is a ctb-rs extension.
 - **Two TMS profiles:** Global Geodetic (EPSG:4326) and Global Mercator (EPSG:3857), with y increasing from south to north. The Geodetic root level is `2x1`; the Mercator root level is `1x1`.
 - **12 resampling algorithms:** nearest, bilinear, cubic, cubicspline, lanczos, average, mode, max, min, med, q1, and q3.
 - **`#![forbid(unsafe_code)]`:** Library code contains no unsafe code.
@@ -49,6 +52,7 @@ Main options:
 -m, --warp-memory <bytes>       Warp memory limit; 0 uses the default
 -c, --thread-count <count>      Worker count; non-positive values use the CPU count
 -R, --resume                    Do not overwrite tiles already written
+    --no-layerjson              Do not generate layer.json for terrain output
 -q, --quiet                     Print errors only
 -v, --verbose                   Print each completed tile
 ```
