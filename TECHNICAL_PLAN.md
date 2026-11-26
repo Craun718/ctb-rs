@@ -52,3 +52,17 @@ supported profiles, missing lower levels and output errors.
 Generate layer.json after successful Terrain output by default. The
 `--no-layerjson` flag disables this step. GTiff output remains unchanged.
 Verify both flag states and their generated files through the CLI.
+
+## 8. Desktop mesh sampling at low zoom
+
+Expose the heightmap warp coordinate transform for desktop mesh vertex
+sampling. A coordinate outside the projection domain returns NaN for both
+ordinates. Other transform errors propagate to the caller. For mesh vertices,
+encode invalid warp coordinates as the existing 0 m NoData value without
+reading the raster. Continue bilinear sampling for valid coordinates.
+Tile bounds, tileset planning and raster reads retain strict error handling.
+
+Verify level 0 and detail mesh elevations from the same EPSG:4545 GeoTIFF
+with the WGS84 and Mercator grids. Check that unknown CRS and raster read
+errors fail the export, and verify heightmap regression coverage and desktop
+export metadata.

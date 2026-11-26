@@ -22,8 +22,11 @@ pub fn transform_coordinate(
     transform_coordinate_impl(x, y, source, target, false)
 }
 
-/// Return NaN for points outside the projection domain during a warp.
-pub(crate) fn transform_warp_coordinate(
+/// Transform a sample coordinate for a raster warp.
+///
+/// Returns `Ok((NaN, NaN))` for points outside the projection domain. Callers
+/// should skip raster sampling for those points. Other errors are propagated.
+pub fn transform_warp_coordinate(
     x: f64,
     y: f64,
     source: &Crs,
